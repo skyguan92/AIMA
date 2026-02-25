@@ -287,6 +287,25 @@ func BuildSyntheticModelAsset(name, modelType, family, paramCount, format string
 	if et, ok := formatEngineMap[strings.ToLower(format)]; ok {
 		engineType = et
 	}
+
+	variants := []ModelVariant{{
+		Name:     name + "-auto",
+		Hardware: ModelVariantHardware{GPUArch: "*"},
+		Engine:   engineType,
+		Format:   format,
+	}}
+	// Add llamacpp fallback when primary is a container-only engine (e.g. vllm).
+	// InferEngineType tries each variant's engine via findEngine; if vllm is
+	// unavailable (native runtime, no Source), it falls through to llamacpp.
+	if engineType != "llamacpp" {
+		variants = append(variants, ModelVariant{
+			Name:     name + "-auto-fallback",
+			Hardware: ModelVariantHardware{GPUArch: "*"},
+			Engine:   "llamacpp",
+			Format:   format,
+		})
+	}
+
 	return ModelAsset{
 		Kind: "model_asset",
 		Metadata: ModelMetadata{
@@ -298,12 +317,7 @@ func BuildSyntheticModelAsset(name, modelType, family, paramCount, format string
 		Storage: ModelStorage{
 			Formats: []string{format},
 		},
-		Variants: []ModelVariant{{
-			Name:     name + "-auto",
-			Hardware: ModelVariantHardware{GPUArch: "*"},
-			Engine:   engineType,
-			Format:   format,
-		}},
+		Variants: variants,
 	}
 }
 
