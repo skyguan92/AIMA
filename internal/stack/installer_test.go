@@ -193,7 +193,7 @@ func TestInitSkipsUnsupportedPlatform(t *testing.T) {
 	components := []knowledge.StackComponent{
 		{
 			Metadata: knowledge.StackMetadata{Name: "linux-only", Version: "1.0"},
-			Source:   knowledge.StackSource{Binary: "something", Platforms: []string{"linux/amd64", "linux/arm64"}},
+			Source:   knowledge.StackSource{Binary: "something", Platforms: []string{"fakeos/fakearch"}},
 			Install:  knowledge.StackInstall{Method: "binary"},
 			Verify: knowledge.StackVerify{
 				Command:        "something status",
