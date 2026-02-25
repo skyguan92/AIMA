@@ -46,6 +46,10 @@ install:
       rationale: "HAMi device-plugin DaemonSet requires gpu=on selector"
       source: "hami-chart"
       verified: true
+    - flag: "--write-kubeconfig-mode=0644"
+      rationale: "Allow non-root users to run aima deploy/status without sudo"
+      source: "k3s-docs"
+      verified: true
   env:
     INSTALL_K3S_SKIP_DOWNLOAD: "true"
 
