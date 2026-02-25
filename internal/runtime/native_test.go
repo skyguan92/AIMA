@@ -12,7 +12,7 @@ import (
 
 func TestNativeDeployAndDelete(t *testing.T) {
 	logDir := filepath.Join(t.TempDir(), "logs")
-	rt := NewNativeRuntime(logDir)
+	rt := NewNativeRuntime(logDir, "")
 
 	// Use a command that exists cross-platform and exits quickly after a while
 	var cmd []string
@@ -71,7 +71,7 @@ func TestNativeDeployAndDelete(t *testing.T) {
 
 func TestNativeDeployDuplicate(t *testing.T) {
 	logDir := filepath.Join(t.TempDir(), "logs")
-	rt := NewNativeRuntime(logDir)
+	rt := NewNativeRuntime(logDir, "")
 
 	var cmd []string
 	if runtime.GOOS == "windows" {
@@ -107,7 +107,7 @@ func TestNativeDeployDuplicate(t *testing.T) {
 
 func TestNativeModelPathSubstitution(t *testing.T) {
 	logDir := filepath.Join(t.TempDir(), "logs")
-	rt := NewNativeRuntime(logDir)
+	rt := NewNativeRuntime(logDir, "")
 
 	// Deploy with a command containing {{.ModelPath}} — use echo to verify substitution
 	var cmd []string
@@ -171,7 +171,7 @@ func TestNativeLogsReadTail(t *testing.T) {
 }
 
 func TestNativeDeleteNotFound(t *testing.T) {
-	rt := NewNativeRuntime(t.TempDir())
+	rt := NewNativeRuntime(t.TempDir(), "")
 	err := rt.Delete(context.Background(), "nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent deployment")
@@ -179,7 +179,7 @@ func TestNativeDeleteNotFound(t *testing.T) {
 }
 
 func TestNativeEmptyCommand(t *testing.T) {
-	rt := NewNativeRuntime(t.TempDir())
+	rt := NewNativeRuntime(t.TempDir(), "")
 	err := rt.Deploy(context.Background(), &DeployRequest{
 		Name:    "empty",
 		Engine:  "test",

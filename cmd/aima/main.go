@@ -209,7 +209,8 @@ func selectRuntime(ctx context.Context, k3sClient *k3s.Client, dataDir string) r
 	if goruntime.GOOS == "linux" && runtime.K3SAvailable(ctx, k3sClient) {
 		return runtime.NewK3SRuntime(k3sClient)
 	}
-	return runtime.NewNativeRuntime(filepath.Join(dataDir, "logs"))
+	platform := goruntime.GOOS + "-" + goruntime.GOARCH
+	return runtime.NewNativeRuntime(filepath.Join(dataDir, "logs"), filepath.Join(dataDir, "dist", platform))
 }
 
 // buildHardwareInfo creates a HardwareInfo with platform and runtime awareness.

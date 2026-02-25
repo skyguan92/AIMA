@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,13 +35,15 @@ type nativeProcess struct {
 // NativeRuntime manages inference engines as direct OS processes.
 type NativeRuntime struct {
 	logDir    string
+	distDir   string // e.g. ~/.aima/dist/windows-amd64/
 	processes map[string]*nativeProcess
 	mu        sync.RWMutex
 }
 
-func NewNativeRuntime(logDir string) *NativeRuntime {
+func NewNativeRuntime(logDir, distDir string) *NativeRuntime {
 	return &NativeRuntime{
 		logDir:    logDir,
+		distDir:   distDir,
 		processes: make(map[string]*nativeProcess),
 	}
 }
@@ -85,6 +88,13 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return fmt.Errorf("create log file: %w", err)
+	}
+
+	// Resolve binary: dist/ first, then PATH
+	if r.distDir != "" {
+		if resolved := r.findInDist(command[0]); resolved != "" {
+			command[0] = resolved
+		}
 	}
 
 	// Create cancellable context for this process
@@ -292,4 +302,20 @@ func readTail(path string, n int) (string, error) {
 	}
 
 	return strings.Join(lines, "\n"), nil
+}
+
+// findInDist checks for a binary in the dist directory.
+// On Windows, also tries with .exe suffix.
+func (r *NativeRuntime) findInDist(name string) string {
+	candidates := []string{name}
+	if goruntime.GOOS == "windows" && !strings.HasSuffix(name, ".exe") {
+		candidates = append(candidates, name+".exe")
+	}
+	for _, c := range candidates {
+		p := filepath.Join(r.distDir, c)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
