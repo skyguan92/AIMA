@@ -152,21 +152,38 @@ func listDockerImages(ctx context.Context, runner CommandRunner) ([]imageInfo, e
 
 func matchImages(images []imageInfo, engineAssets map[string][]string) []*EngineImage {
 	var matched []*EngineImage
+	seen := make(map[string]bool)
 
 	for engineType, knownImages := range engineAssets {
 		for _, img := range images {
+			if seen[img.id] || img.repo == "<none>" || img.tag == "<none>" {
+				continue
+			}
+
+			// Exact match on known image names
+			hit := false
 			for _, knownImage := range knownImages {
 				if img.repo == knownImage {
-					matched = append(matched, &EngineImage{
-						ID:        img.id,
-						Type:      engineType,
-						Image:     img.repo,
-						Tag:       img.tag,
-						SizeBytes: img.size,
-						Available: true,
-					})
+					hit = true
 					break
 				}
+			}
+
+			// Keyword fallback: repo name contains engine type
+			if !hit && strings.Contains(strings.ToLower(img.repo), strings.ToLower(engineType)) {
+				hit = true
+			}
+
+			if hit {
+				matched = append(matched, &EngineImage{
+					ID:        img.id,
+					Type:      engineType,
+					Image:     img.repo,
+					Tag:       img.tag,
+					SizeBytes: img.size,
+					Available: true,
+				})
+				seen[img.id] = true
 			}
 		}
 	}
