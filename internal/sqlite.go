@@ -454,6 +454,23 @@ func (d *DB) InsertModel(ctx context.Context, m *Model) error {
 	return nil
 }
 
+// UpsertScannedModel inserts a new model or updates metadata of an existing one.
+// Preserves status and download_progress of existing records.
+func (d *DB) UpsertScannedModel(ctx context.Context, m *Model) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO models (id, name, type, path, format, size_bytes, detected_arch, detected_params, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'registered')
+		 ON CONFLICT(id) DO UPDATE SET
+		   name=excluded.name, type=excluded.type, path=excluded.path,
+		   format=excluded.format, size_bytes=excluded.size_bytes,
+		   detected_arch=excluded.detected_arch, detected_params=excluded.detected_params`,
+		m.ID, m.Name, m.Type, m.Path, m.Format, m.SizeBytes, m.DetectedArch, m.DetectedParams)
+	if err != nil {
+		return fmt.Errorf("upsert scanned model %s: %w", m.ID, err)
+	}
+	return nil
+}
+
 func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 	m := &Model{}
 	err := d.db.QueryRowContext(ctx,
@@ -527,6 +544,22 @@ func (d *DB) InsertEngine(ctx context.Context, e *Engine) error {
 		e.ID, e.Type, e.Image, e.Tag, e.SizeBytes, e.Platform, e.Available)
 	if err != nil {
 		return fmt.Errorf("insert engine %s: %w", e.ID, err)
+	}
+	return nil
+}
+
+// UpsertScannedEngine inserts a new engine or updates an existing one.
+func (d *DB) UpsertScannedEngine(ctx context.Context, e *Engine) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO engines (id, type, image, tag, size_bytes, platform, available)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   type=excluded.type, image=excluded.image, tag=excluded.tag,
+		   size_bytes=excluded.size_bytes, platform=excluded.platform,
+		   available=excluded.available`,
+		e.ID, e.Type, e.Image, e.Tag, e.SizeBytes, e.Platform, e.Available)
+	if err != nil {
+		return fmt.Errorf("upsert scanned engine %s: %w", e.ID, err)
 	}
 	return nil
 }

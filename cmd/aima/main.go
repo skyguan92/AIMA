@@ -288,6 +288,18 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if err != nil {
 				return nil, err
 			}
+			for _, m := range models {
+				_ = db.UpsertScannedModel(ctx, &state.Model{
+					ID:             m.ID,
+					Name:           m.Name,
+					Type:           m.Type,
+					Path:           m.Path,
+					Format:         m.Format,
+					SizeBytes:      m.SizeBytes,
+					DetectedArch:   m.DetectedArch,
+					DetectedParams: m.DetectedParams,
+				})
+			}
 			return json.Marshal(models)
 		},
 		ListModels: func(ctx context.Context) (json.RawMessage, error) {
@@ -381,6 +393,17 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			images, err := engine.Scan(ctx, engine.ScanOptions{EngineAssets: engineAssets, Runner: &execRunner{}})
 			if err != nil {
 				return nil, err
+			}
+			for _, img := range images {
+				_ = db.UpsertScannedEngine(ctx, &state.Engine{
+					ID:        img.ID,
+					Type:      img.Type,
+					Image:     img.Image,
+					Tag:       img.Tag,
+					SizeBytes: img.SizeBytes,
+					Platform:  img.Platform,
+					Available: img.Available,
+				})
 			}
 			return json.Marshal(images)
 		},
