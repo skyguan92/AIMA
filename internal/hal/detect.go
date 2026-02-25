@@ -59,7 +59,7 @@ func collectMetricsWithRunner(ctx context.Context, runner CommandRunner) (*Metri
 	m := &Metrics{}
 
 	m.GPU = collectGPUMetrics(ctx, runner)
-	m.CPU = collectCPUMetrics()
+	m.CPU = collectCPUMetrics(ctx, runner)
 	m.RAM = collectRAMMetrics(ctx, runner)
 
 	return m, nil

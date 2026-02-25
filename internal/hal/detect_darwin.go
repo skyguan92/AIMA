@@ -4,6 +4,7 @@ package hal
 
 import (
 	"context"
+	"math"
 	"runtime"
 	"strconv"
 	"strings"
@@ -100,8 +101,30 @@ func parseVMStatLine(line string) (string, int64) {
 	return key, val
 }
 
-func collectCPUMetrics() CPUMetrics {
-	return CPUMetrics{}
+func collectCPUMetrics(ctx context.Context, runner CommandRunner) CPUMetrics {
+	out, err := runner.Run(ctx, "ps", "-A", "-o", "%cpu")
+	if err != nil {
+		return CPUMetrics{}
+	}
+
+	var total float64
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if v, err := strconv.ParseFloat(line, 64); err == nil {
+			total += v
+		}
+	}
+
+	// ps reports per-core percentages; normalize to 0-100 range
+	cpus := runtime.NumCPU()
+	if cpus > 0 {
+		total = total / float64(cpus)
+	}
+	if total > 100 {
+		total = 100
+	}
+
+	return CPUMetrics{UsagePercent: math.Round(total*10) / 10}
 }
 
 func collectRAMMetrics(ctx context.Context, runner CommandRunner) RAMMetrics {

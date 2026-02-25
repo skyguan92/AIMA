@@ -5,10 +5,12 @@ package hal
 import (
 	"bufio"
 	"context"
+	"math"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func detectCPU(ctx context.Context, runner CommandRunner) CPUInfo {
@@ -109,10 +111,65 @@ func detectRAM(ctx context.Context, runner CommandRunner) RAMInfo {
 	return info
 }
 
-func collectCPUMetrics() CPUMetrics {
-	// Reading /proc/stat requires two samples with a delay to compute usage.
-	// For simplicity we return 0; a future enhancement can sample /proc/stat.
-	return CPUMetrics{}
+type cpuSample struct {
+	idle  uint64
+	total uint64
+}
+
+func readCPUSample() *cpuSample {
+	f, err := os.Open("/proc/stat")
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	if !scanner.Scan() {
+		return nil
+	}
+	line := scanner.Text()
+	if !strings.HasPrefix(line, "cpu ") {
+		return nil
+	}
+
+	fields := strings.Fields(line)
+	if len(fields) < 5 {
+		return nil
+	}
+
+	var total, idle uint64
+	for i, field := range fields[1:] {
+		v, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			continue
+		}
+		total += v
+		if i == 3 { // user, nice, system, idle
+			idle = v
+		}
+	}
+	return &cpuSample{idle: idle, total: total}
+}
+
+func collectCPUMetrics(_ context.Context, _ CommandRunner) CPUMetrics {
+	s1 := readCPUSample()
+	if s1 == nil {
+		return CPUMetrics{}
+	}
+	time.Sleep(200 * time.Millisecond)
+	s2 := readCPUSample()
+	if s2 == nil {
+		return CPUMetrics{}
+	}
+
+	totalDelta := s2.total - s1.total
+	idleDelta := s2.idle - s1.idle
+	if totalDelta == 0 {
+		return CPUMetrics{}
+	}
+
+	usage := float64(totalDelta-idleDelta) / float64(totalDelta) * 100
+	return CPUMetrics{UsagePercent: math.Round(usage*10) / 10}
 }
 
 func collectRAMMetrics(ctx context.Context, runner CommandRunner) RAMMetrics {
