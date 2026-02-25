@@ -101,7 +101,29 @@ func parseWMICRAM(output string, info *RAMInfo) {
 	}
 }
 
-func collectCPUMetrics() CPUMetrics {
+func collectCPUMetrics(ctx context.Context, runner CommandRunner) CPUMetrics {
+	out, err := runner.Run(ctx, "wmic", "cpu", "get", "LoadPercentage", "/format:csv")
+	if err != nil {
+		return CPUMetrics{}
+	}
+
+	lines := nonEmptyLines(string(out))
+	if len(lines) < 2 {
+		return CPUMetrics{}
+	}
+
+	header := splitCSV(lines[0])
+	colIdx := make(map[string]int)
+	for i, h := range header {
+		colIdx[strings.TrimSpace(h)] = i
+	}
+
+	fields := splitCSV(lines[1])
+	if idx, ok := colIdx["LoadPercentage"]; ok && idx < len(fields) {
+		if pct, err := strconv.ParseFloat(fields[idx], 64); err == nil {
+			return CPUMetrics{UsagePercent: pct}
+		}
+	}
 	return CPUMetrics{}
 }
 
