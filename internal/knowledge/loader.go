@@ -75,9 +75,10 @@ type HardwarePartition struct {
 
 // EngineSource describes how to obtain an engine binary for native runtime.
 type EngineSource struct {
-	Binary    string   `yaml:"binary,omitempty"`
-	Platforms []string `yaml:"platforms,omitempty"`
+	Binary    string            `yaml:"binary,omitempty"`
+	Platforms []string          `yaml:"platforms,omitempty"`
 	Download  map[string]string `yaml:"download,omitempty"`
+	Mirror    map[string]string `yaml:"mirror,omitempty"`
 }
 
 type EngineAsset struct {
