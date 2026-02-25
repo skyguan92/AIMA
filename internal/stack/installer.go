@@ -454,10 +454,18 @@ func (inst *Installer) installDaemonSystemd(ctx context.Context, comp knowledge.
 	args := collectArgs(comp, hwProfile)
 	env := collectEnv(comp, hwProfile)
 
-	// Resolve absolute binary path
-	absBinary, err := filepath.Abs(binary)
+	// Copy binary to /usr/local/bin/ so it's accessible to all users.
+	// This matches the K3S official install script convention.
+	systemBinary := filepath.Join("/usr/local/bin", name)
+	if err := copyFile(binary, systemBinary, 0o755); err != nil {
+		slog.Warn("failed to copy binary to system path, using original", "error", err)
+		systemBinary = binary
+	} else {
+		slog.Info("installed binary to system path", "path", systemBinary)
+	}
+	absBinary, err := filepath.Abs(systemBinary)
 	if err != nil {
-		absBinary = binary
+		absBinary = systemBinary
 	}
 
 	// Write env file: /etc/rancher/k3s/k3s.env
@@ -739,15 +747,22 @@ func (inst *Installer) ensureKubectlLink(binaryName string) {
 		return // already exists (symlink, real binary, anything)
 	}
 
-	// Resolve binary: dist/ first, then PATH
-	binary := filepath.Join(inst.distDir, binaryName)
-	if !fileExists(binary) {
+	// Prefer system-installed binary (/usr/local/bin/k3s), then dist/, then PATH
+	var binary string
+	systemPath := filepath.Join("/usr/local/bin", binaryName)
+	switch {
+	case fileExists(systemPath):
+		binary = systemPath
+	case fileExists(filepath.Join(inst.distDir, binaryName)):
+		binary = filepath.Join(inst.distDir, binaryName)
+	default:
 		if p, err := exec.LookPath(binaryName); err == nil {
 			binary = p
 		} else {
 			return
 		}
 	}
+
 	absBinary, err := filepath.Abs(binary)
 	if err != nil {
 		return
@@ -758,6 +773,23 @@ func (inst *Installer) ensureKubectlLink(binaryName string) {
 	} else {
 		slog.Info("created kubectl symlink", "link", kubectlLink, "target", absBinary)
 	}
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func fileExists(path string) bool {
