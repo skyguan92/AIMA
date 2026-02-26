@@ -20,7 +20,7 @@ type ToolDeps struct {
 	PullModel   func(ctx context.Context, name string) error
 	ImportModel func(ctx context.Context, path string) (json.RawMessage, error)
 	GetModelInfo func(ctx context.Context, name string) (json.RawMessage, error)
-	RemoveModel func(ctx context.Context, name string) error
+	RemoveModel func(ctx context.Context, name string, deleteFiles bool) error
 
 	// Engine management
 	ScanEngines  func(ctx context.Context) (json.RawMessage, error)
@@ -265,22 +265,28 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "model.remove",
 		Description: "Remove a model from the database",
-		InputSchema: schema(`"name":{"type":"string","description":"Model name to remove"}`, "name"),
+		InputSchema: schema(`"name":{"type":"string","description":"Model name to remove"}`, "name", `"delete_files":{"type":"boolean","description":"Delete model files from disk"}`, "delete_files"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.RemoveModel == nil {
 				return ErrorResult("model.remove not implemented"), nil
 			}
-			var p struct{ Name string `json:"name"` }
+			var p struct {
+				Name        string `json:"name"`
+				DeleteFiles bool   `json:"delete_files"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
 			if p.Name == "" {
 				return ErrorResult("name is required"), nil
 			}
-			if err := deps.RemoveModel(ctx, p.Name); err != nil {
+			if err := deps.RemoveModel(ctx, p.Name, p.DeleteFiles); err != nil {
 				return nil, fmt.Errorf("remove model %s: %w", p.Name, err)
 			}
-			return TextResult(fmt.Sprintf("model %s removed", p.Name)), nil
+			if p.DeleteFiles {
+				return TextResult(fmt.Sprintf("model %s removed (files deleted)", p.Name)), nil
+			}
+			return TextResult(fmt.Sprintf("model %s removed (database only)", p.Name)), nil
 		},
 	})
 
