@@ -455,16 +455,39 @@ func (d *DB) InsertModel(ctx context.Context, m *Model) error {
 }
 
 // UpsertScannedModel inserts a new model or updates metadata of an existing one.
-// Preserves status and download_progress of existing records.
+// If a model with the same path exists, update that record instead of creating a duplicate.
+// Status defaults to 'registered' if not set.
 func (d *DB) UpsertScannedModel(ctx context.Context, m *Model) error {
-	_, err := d.db.ExecContext(ctx,
+	// First check if a model with this path already exists
+	var existingID string
+	var existingStatus string
+	err := d.db.QueryRowContext(ctx, `SELECT id, COALESCE(status,'registered') FROM models WHERE path = ?`, m.Path).Scan(&existingID, &existingStatus)
+	if err == nil {
+		// Existing model found with same path, use its ID for update
+		m.ID = existingID
+		// Preserve existing status if new status is empty
+		if m.Status == "" {
+			m.Status = existingStatus
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check existing model by path %s: %w", m.Path, err)
+	}
+	// else: no existing model, use the scanned hash ID
+
+	// Default status to 'registered' if not set
+	if m.Status == "" {
+		m.Status = "registered"
+	}
+
+	_, err = d.db.ExecContext(ctx,
 		`INSERT INTO models (id, name, type, path, format, size_bytes, detected_arch, detected_params, status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'registered')
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   name=excluded.name, type=excluded.type, path=excluded.path,
 		   format=excluded.format, size_bytes=excluded.size_bytes,
-		   detected_arch=excluded.detected_arch, detected_params=excluded.detected_params`,
-		m.ID, m.Name, m.Type, m.Path, m.Format, m.SizeBytes, m.DetectedArch, m.DetectedParams)
+		   detected_arch=excluded.detected_arch, detected_params=excluded.detected_params,
+		   status=excluded.status`,
+		m.ID, m.Name, m.Type, m.Path, m.Format, m.SizeBytes, m.DetectedArch, m.DetectedParams, m.Status)
 	if err != nil {
 		return fmt.Errorf("upsert scanned model %s: %w", m.ID, err)
 	}
