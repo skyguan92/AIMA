@@ -366,6 +366,11 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 					SizeBytes:      m.SizeBytes,
 					DetectedArch:   m.DetectedArch,
 					DetectedParams: m.DetectedParams,
+					ModelClass:     m.ModelClass,
+					TotalParams:    m.TotalParams,
+					ActiveParams:   m.ActiveParams,
+					Quantization:   m.Quantization,
+					QuantSrc:       m.QuantSrc,
 				})
 			}
 			return json.Marshal(models)
@@ -452,6 +457,11 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				SizeBytes:      info.SizeBytes,
 				DetectedArch:   info.DetectedArch,
 				DetectedParams: info.DetectedParams,
+				ModelClass:     info.ModelClass,
+				TotalParams:    info.TotalParams,
+				ActiveParams:   info.ActiveParams,
+				Quantization:   info.Quantization,
+				QuantSrc:       info.QuantSrc,
 				Status:         "registered",
 			}); err != nil {
 				return nil, fmt.Errorf("register imported model: %w", err)

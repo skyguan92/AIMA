@@ -31,6 +31,11 @@ type Model struct {
 	SizeBytes        int64
 	DetectedArch     string
 	DetectedParams   string
+	ModelClass       string
+	TotalParams      int64
+	ActiveParams     int64
+	Quantization     string
+	QuantSrc         string
 	Status           string
 	DownloadProgress float64
 	CreatedAt        time.Time
@@ -151,6 +156,10 @@ func (d *DB) migrate(ctx context.Context) error {
 	}
 	// v2: knowledge architecture tables (static + dynamic)
 	if err := d.migrateV2(ctx); err != nil {
+		return err
+	}
+	// v3: enhanced model metadata
+	if err := d.migrateV3(ctx); err != nil {
 		return err
 	}
 	return nil
@@ -411,6 +420,82 @@ CREATE TABLE perf_vectors (
 	return nil
 }
 
+func (d *DB) migrateV3(ctx context.Context) error {
+	var version int
+	_ = d.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	if version >= 3 {
+		return nil
+	}
+
+	// Add new columns to models table for enhanced metadata
+	// Use ALTER TABLE with IF NOT EXISTS pattern by checking column existence first
+	var count int
+	err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='model_class'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check model_class column: %w", err)
+	}
+	if count == 0 {
+		_, err = d.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN model_class TEXT DEFAULT ''`)
+		if err != nil {
+			return fmt.Errorf("add model_class column: %w", err)
+		}
+	}
+
+	err = d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='total_params'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check total_params column: %w", err)
+	}
+	if count == 0 {
+		_, err = d.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN total_params INTEGER DEFAULT 0`)
+		if err != nil {
+			return fmt.Errorf("add total_params column: %w", err)
+		}
+	}
+
+	err = d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='active_params'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check active_params column: %w", err)
+	}
+	if count == 0 {
+		_, err = d.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN active_params INTEGER DEFAULT 0`)
+		if err != nil {
+			return fmt.Errorf("add active_params column: %w", err)
+		}
+	}
+
+	err = d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='quantization'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check quantization column: %w", err)
+	}
+	if count == 0 {
+		_, err = d.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN quantization TEXT DEFAULT ''`)
+		if err != nil {
+			return fmt.Errorf("add quantization column: %w", err)
+		}
+	}
+
+	err = d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='quant_src'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check quant_src column: %w", err)
+	}
+	if count == 0 {
+		_, err = d.db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN quant_src TEXT DEFAULT ''`)
+		if err != nil {
+			return fmt.Errorf("add quant_src column: %w", err)
+		}
+	}
+
+	if _, err := d.db.ExecContext(ctx, "PRAGMA user_version = 3"); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
+}
+
 // ClearStaticKnowledge deletes all rows from static knowledge tables.
 // Called on startup before reloading from go:embed YAML.
 func (d *DB) ClearStaticKnowledge(ctx context.Context) error {
@@ -445,9 +530,11 @@ func (d *DB) Analyze(ctx context.Context) error {
 
 func (d *DB) InsertModel(ctx context.Context, m *Model) error {
 	_, err := d.db.ExecContext(ctx,
-		`INSERT INTO models (id, name, type, path, format, size_bytes, detected_arch, detected_params, status, download_progress)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.Name, m.Type, m.Path, m.Format, m.SizeBytes, m.DetectedArch, m.DetectedParams, m.Status, m.DownloadProgress)
+		`INSERT INTO models (id, name, type, path, format, size_bytes, detected_arch, detected_params,
+		                    model_class, total_params, active_params, quantization, quant_src, status, download_progress)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.Name, m.Type, m.Path, m.Format, m.SizeBytes, m.DetectedArch, m.DetectedParams,
+		m.ModelClass, m.TotalParams, m.ActiveParams, m.Quantization, m.QuantSrc, m.Status, m.DownloadProgress)
 	if err != nil {
 		return fmt.Errorf("insert model %s: %w", m.ID, err)
 	}
@@ -480,14 +567,18 @@ func (d *DB) UpsertScannedModel(ctx context.Context, m *Model) error {
 	}
 
 	_, err = d.db.ExecContext(ctx,
-		`INSERT INTO models (id, name, type, path, format, size_bytes, detected_arch, detected_params, status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO models (id, name, type, path, format, size_bytes, detected_arch, detected_params,
+		                    model_class, total_params, active_params, quantization, quant_src, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   name=excluded.name, type=excluded.type, path=excluded.path,
 		   format=excluded.format, size_bytes=excluded.size_bytes,
 		   detected_arch=excluded.detected_arch, detected_params=excluded.detected_params,
-		   status=excluded.status`,
-		m.ID, m.Name, m.Type, m.Path, m.Format, m.SizeBytes, m.DetectedArch, m.DetectedParams, m.Status)
+		   model_class=excluded.model_class, total_params=excluded.total_params,
+		   active_params=excluded.active_params, quantization=excluded.quantization,
+		   quant_src=excluded.quant_src, status=excluded.status`,
+		m.ID, m.Name, m.Type, m.Path, m.Format, m.SizeBytes, m.DetectedArch, m.DetectedParams,
+		m.ModelClass, m.TotalParams, m.ActiveParams, m.Quantization, m.QuantSrc, m.Status)
 	if err != nil {
 		return fmt.Errorf("upsert scanned model %s: %w", m.ID, err)
 	}
@@ -499,12 +590,15 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 	err := d.db.QueryRowContext(ctx,
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
+		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),
+		        COALESCE(quantization,''), COALESCE(quant_src,''),
 		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
 		 FROM models WHERE id = ? OR name = ?
 		 ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END
 		 LIMIT 1`, id, id, id).Scan(
 		&m.ID, &m.Name, &m.Type, &m.Path, &m.Format, &m.SizeBytes,
-		&m.DetectedArch, &m.DetectedParams, &m.Status, &m.DownloadProgress, &m.CreatedAt)
+		&m.DetectedArch, &m.DetectedParams, &m.ModelClass, &m.TotalParams, &m.ActiveParams,
+		&m.Quantization, &m.QuantSrc, &m.Status, &m.DownloadProgress, &m.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("model %s not found", id)
 	}
@@ -518,6 +612,8 @@ func (d *DB) ListModels(ctx context.Context) ([]*Model, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
+		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),
+		        COALESCE(quantization,''), COALESCE(quant_src,''),
 		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
 		 FROM models ORDER BY created_at DESC`)
 	if err != nil {
@@ -528,7 +624,8 @@ func (d *DB) ListModels(ctx context.Context) ([]*Model, error) {
 	for rows.Next() {
 		m := &Model{}
 		if err := rows.Scan(&m.ID, &m.Name, &m.Type, &m.Path, &m.Format, &m.SizeBytes,
-			&m.DetectedArch, &m.DetectedParams, &m.Status, &m.DownloadProgress, &m.CreatedAt); err != nil {
+			&m.DetectedArch, &m.DetectedParams, &m.ModelClass, &m.TotalParams, &m.ActiveParams,
+			&m.Quantization, &m.QuantSrc, &m.Status, &m.DownloadProgress, &m.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan model row: %w", err)
 		}
 		models = append(models, m)
@@ -554,14 +651,20 @@ func (d *DB) FindModelByName(ctx context.Context, name string) (*Model, error) {
 	queries := []string{
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
+		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),
+		        COALESCE(quantization,''), COALESCE(quant_src,''),
 		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
 		 FROM models WHERE name = ?`,
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
+		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),
+		        COALESCE(quantization,''), COALESCE(quant_src,''),
 		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
 		 FROM models WHERE LOWER(name) = LOWER(?)`,
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
+		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),
+		        COALESCE(quantization,''), COALESCE(quant_src,''),
 		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
 		 FROM models WHERE LOWER(name) LIKE '%' || LOWER(?) || '%'`,
 	}
@@ -569,7 +672,8 @@ func (d *DB) FindModelByName(ctx context.Context, name string) (*Model, error) {
 		m := &Model{}
 		err := d.db.QueryRowContext(ctx, q, name).Scan(
 			&m.ID, &m.Name, &m.Type, &m.Path, &m.Format, &m.SizeBytes,
-			&m.DetectedArch, &m.DetectedParams, &m.Status, &m.DownloadProgress, &m.CreatedAt)
+			&m.DetectedArch, &m.DetectedParams, &m.ModelClass, &m.TotalParams, &m.ActiveParams,
+			&m.Quantization, &m.QuantSrc, &m.Status, &m.DownloadProgress, &m.CreatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
