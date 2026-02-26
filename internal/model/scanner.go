@@ -230,7 +230,14 @@ type ModelInfo struct {
 	Format         string `json:"format"`
 	SizeBytes      int64  `json:"size_bytes"`
 	DetectedArch   string `json:"detected_arch"`
-	DetectedParams string `json:"detected_params"`
+	DetectedParams string `json:"detected_params"` // Legacy: e.g., "8B"
+
+	// Enhanced metadata fields
+	ModelClass     string `json:"model_class"`     // dense | moe | hybrid | unknown
+	TotalParams    int64  `json:"total_params"`    // Exact parameter count (0 = unknown)
+	ActiveParams   int64  `json:"active_params"`   // For MOE: active parameters per token
+	Quantization   string `json:"quantization"`     // int8 | int4 | fp8 | fp16 | bf16 | nf4 | fp32 | unknown
+	QuantSrc       string `json:"quant_src"`        // config | filename | header | unknown
 }
 
 // Store is the persistence interface for model records.
@@ -252,6 +259,11 @@ type StoreModel struct {
 	SizeBytes        int64
 	DetectedArch     string
 	DetectedParams   string
+	ModelClass       string
+	TotalParams      int64
+	ActiveParams     int64
+	Quantization     string
+	QuantSrc         string
 	Status           string  // unknown|downloading|registered|failed
 	DownloadProgress float64 // 0.0-1.0
 }
@@ -396,7 +408,7 @@ func scanDirectory(ctx context.Context, dir string, depth int, seen map[string]b
 		return models, nil
 	}
 
-	if m := tryDetectModel(ctx, dir, entries); m != nil {
+	for _, m := range tryDetectModel(ctx, dir, entries) {
 		if !seen[m.Path] {
 			seen[m.Path] = true
 			models = append(models, m)
@@ -447,25 +459,86 @@ func shouldSkipParentChild(dir string, skipParentPaths map[string]bool) bool {
 	return false
 }
 
-func tryDetectModel(_ context.Context, dir string, entries []os.DirEntry) *ModelInfo {
+func tryDetectModel(_ context.Context, dir string, entries []os.DirEntry) []*ModelInfo {
 	for _, p := range modelPatterns {
-		if m := detectByPattern(dir, entries, p); m != nil {
-			return m
+		if ms := detectByPattern(dir, entries, p); len(ms) > 0 {
+			return ms
 		}
 	}
 	return nil
 }
 
-func detectByPattern(dir string, entries []os.DirEntry, p ModelPattern) *ModelInfo {
+func detectByPattern(dir string, entries []os.DirEntry, p ModelPattern) []*ModelInfo {
 	if !hasConfigFile(entries, p.configFiles) {
 		return nil
 	}
 
+	// For GGUF format, detect all .gguf files in the directory
+	if p.format == "gguf" {
+		return detectGGUFModels(dir, entries, p)
+	}
+
+	// For other formats, find the first weight file (existing behavior)
 	weightPath := findWeightFile(dir, entries, p.weightExts)
 	if weightPath == "" {
 		return nil
 	}
 
+	return buildModelInfo(dir, entries, p, weightPath, "")
+}
+
+// detectGGUFModels detects all GGUF models in a directory.
+// GGUF models don't have config.json, so we detect one model per .gguf file.
+// Each GGUF file gets its own Path (file path, not directory) for uniqueness.
+func detectGGUFModels(dir string, entries []os.DirEntry, p ModelPattern) []*ModelInfo {
+	weightFiles := findAllWeightFiles(dir, entries, p.weightExts)
+	if len(weightFiles) == 0 {
+		return nil
+	}
+
+	var models []*ModelInfo
+	for _, weightPath := range weightFiles {
+		// Check individual file size against minimum
+		info, err := os.Stat(weightPath)
+		if err != nil {
+			continue
+		}
+		if info.Size() < minModelSize {
+			continue
+		}
+
+		// Use the file path as the model path (unique per GGUF file)
+		// This allows multiple GGUF files in the same directory to be detected
+		model := &ModelInfo{
+			ID:             fmt.Sprintf("%x", sha256.Sum256([]byte(weightPath))),
+			Name:           strings.TrimSuffix(filepath.Base(weightPath), ".gguf"),
+			Type:           p.typeHint,
+			Path:           weightPath, // Use file path for uniqueness
+			Format:         p.format,
+			SizeBytes:      info.Size(),
+			DetectedArch:   "",
+			DetectedParams: "",
+			ModelClass:     "unknown",
+			TotalParams:    0,
+			ActiveParams:   0,
+		}
+
+		// Detect quantization from filename
+		weightName := filepath.Base(weightPath)
+		model.Quantization, model.QuantSrc = detectQuantization(nil, weightName, p.format)
+
+		if model.Type == "" {
+			model.Type = "llm" // Default GGUF models to LLM
+		}
+
+		models = append(models, model)
+	}
+	return models
+}
+
+// buildModelInfo builds a ModelInfo from a single weight file.
+// For formats with config files (safetensors, pytorch, etc.).
+func buildModelInfo(dir string, entries []os.DirEntry, p ModelPattern, weightPath string, overrideName string) []*ModelInfo {
 	var config map[string]any
 	configPath := findConfigFile(dir, entries, p.configFiles)
 	if configPath != "" {
@@ -493,22 +566,47 @@ func detectByPattern(dir string, entries []os.DirEntry, p ModelPattern) *ModelIn
 	numLayers := jsonInt(config, "num_hidden_layers")
 	params := estimateParams(hiddenSize, numLayers)
 
+	// Enhanced metadata detection
+	modelClass := detectModelClass(config)
+	totalParams := int64(0)
+	activeParams := int64(0)
+
+	if modelClass == "moe" {
+		baseParams := calculateDenseParams(hiddenSize, numLayers)
+		totalParams, activeParams = calculateMOEParams(config, baseParams)
+	} else if modelClass == "dense" {
+		totalParams = calculateDenseParams(hiddenSize, numLayers)
+		activeParams = totalParams
+	}
+
+	// Detect quantization
 	name := filepath.Base(dir)
-	if p.format == "gguf" {
+	if overrideName != "" {
+		name = overrideName
+	} else if p.format == "gguf" {
 		name = strings.TrimSuffix(filepath.Base(weightPath), ".gguf")
 	} else {
 		name = normalizeModelName(dir)
 	}
+	weightName := filepath.Base(weightPath)
+	quantization, quantSrc := detectQuantization(config, weightName, p.format)
 
-	return &ModelInfo{
-		ID:             fmt.Sprintf("%x", sha256.Sum256([]byte(dir))),
-		Name:           name,
-		Type:           mType,
-		Path:           dir,
-		Format:         p.format,
-		SizeBytes:      sizeBytes,
-		DetectedArch:   arch,
-		DetectedParams: params,
+	return []*ModelInfo{
+		{
+			ID:             fmt.Sprintf("%x", sha256.Sum256([]byte(dir))),
+			Name:           name,
+			Type:           mType,
+			Path:           dir,
+			Format:         p.format,
+			SizeBytes:      sizeBytes,
+			DetectedArch:   arch,
+			DetectedParams: params,
+			ModelClass:     modelClass,
+			TotalParams:    totalParams,
+			ActiveParams:   activeParams,
+			Quantization:   quantization,
+			QuantSrc:       quantSrc,
+		},
 	}
 }
 
@@ -593,6 +691,24 @@ func findWeightFile(dir string, entries []os.DirEntry, exts []string) string {
 		}
 	}
 	return ""
+}
+
+// findAllWeightFiles returns all weight files matching the given extensions.
+func findAllWeightFiles(dir string, entries []os.DirEntry, exts []string) []string {
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		for _, ext := range exts {
+			if strings.HasSuffix(strings.ToLower(name), ext) {
+				files = append(files, filepath.Join(dir, name))
+				break
+			}
+		}
+	}
+	return files
 }
 
 func calculateModelSize(dir string, entries []os.DirEntry, exts []string) int64 {
@@ -750,6 +866,273 @@ func estimateParams(hiddenSize, numLayers int) string {
 	}
 
 	return fmt.Sprintf("%.0fB", closest)
+}
+
+// detectModelClass determines if a model is dense, MOE, hybrid, or unknown.
+func detectModelClass(config map[string]any) string {
+	// MOE indicators from config
+	if hasField(config, "num_experts") || hasField(config, "num_local_experts") || hasField(config, "num_experts_per_tok") {
+		return "moe"
+	}
+	if hasField(config, "router_aux_loss_coef") || hasField(config, "router_z_loss_coef") {
+		return "moe"
+	}
+
+	// Architecture-specific patterns
+	modelType := jsonStr(config, "model_type", "")
+	archFamily := strings.ToLower(modelType)
+
+	// Known MOE architectures
+	moePatterns := []string{
+		"mixtral", "deepseek-moe", "deepseek_v2", "deepseek-v2", "deepseekv2",
+		"grok", "qwen-moe", "phi-mix", "arctic", "bridgetower",
+		"jamba", "aqlm", "moe",
+	}
+	for _, p := range moePatterns {
+		if strings.Contains(archFamily, p) {
+			return "moe"
+		}
+	}
+
+	// Known hybrid architectures (vision-language, multimodal)
+	hybridPatterns := []string{
+		"phi3_vision", "phi3-vision", "llava", "internvl",
+		"minicpm_v", "minicpm-v", "qwen_vl", "qwen-vl",
+		"glm_v", "glm-v", "multimodal", "vision",
+	}
+	for _, p := range hybridPatterns {
+		if strings.Contains(archFamily, p) {
+			return "hybrid"
+		}
+	}
+
+	// Default to dense for LLMs
+	if isLLMModelType(modelType) {
+		return "dense"
+	}
+
+	return "unknown"
+}
+
+// calculateDenseParams estimates parameter count for dense transformer models.
+func calculateDenseParams(hiddenSize, numLayers int) int64 {
+	if hiddenSize == 0 || numLayers == 0 {
+		return 0
+	}
+	// Standard transformer formula: ~12 * layers * hidden_size^2
+	return int64(12 * float64(numLayers) * float64(hiddenSize) * float64(hiddenSize))
+}
+
+// calculateMOEParams estimates total and active parameters for MOE models.
+func calculateMOEParams(config map[string]any, baseParams int64) (total, active int64) {
+	numExperts := jsonInt(config, "num_experts")
+	if numExperts == 0 {
+		numExperts = jsonInt(config, "num_local_experts")
+	}
+	expertsPerTok := jsonInt(config, "num_experts_per_tok")
+
+	// If num_experts_per_tok not specified, assume 2 (common pattern)
+	if expertsPerTok == 0 {
+		expertsPerTok = 2
+	}
+
+	// For MOE models:
+	// - Base params: embedding, attention layers (shared across all tokens)
+	// - Expert params: MoE layers (only active experts used per token)
+	// - Total params ≈ base_params + (expert_params * num_experts)
+	// - Active params ≈ base_params + (expert_params * experts_per_tok)
+
+	if numExperts > 0 && baseParams > 0 {
+		// Approximate: base is 1/3 of total, experts are 2/3
+		baseShare := baseParams / 3
+		expertShare := baseParams * 2 / 3
+		total = baseParams + expertShare*int64(numExperts-1) // Already counted one in baseParams
+		active = baseShare + (expertShare/int64(numExperts))*int64(expertsPerTok)
+	} else {
+		total = baseParams
+		active = baseParams
+	}
+	return
+}
+
+// detectQuantization determines the quantization format of a model.
+func detectQuantization(config map[string]any, filename, format string) (quant, src string) {
+	// Priority 1: From config.json (HuggingFace models)
+	if q := quantFromConfig(config); q != "" {
+		return q, "config"
+	}
+
+	// Priority 2: From filename (GGUF or directory name)
+	if q := quantFromFilename(filename, format); q != "" {
+		return q, "filename"
+	}
+
+	// Priority 3: From torch_dtype in config
+	if q := quantFromTorchDtype(config); q != "" {
+		return q, "config"
+	}
+
+	return "unknown", "unknown"
+}
+
+// quantFromConfig extracts quantization from HuggingFace config.
+func quantFromConfig(config map[string]any) string {
+	// Check quantization_config
+	if qc, ok := config["quantization_config"].(map[string]any); ok {
+		if q, ok := qc["quant_method"].(string); ok {
+			return normalizeQuantString(q)
+		}
+		if q, ok := qc["load_in_8bit"].(bool); ok && q {
+			return "int8"
+		}
+		if q, ok := qc["load_in_4bit"].(bool); ok && q {
+			return "int4"
+		}
+	}
+	// Check for GGUF format specific configs
+	if _, ok := config["gguf"]; ok {
+		return "unknown" // GGUF quantization is determined from filename
+	}
+	return ""
+}
+
+// quantFromFilename detects quantization from filename patterns.
+func quantFromFilename(filename, format string) string {
+	lower := strings.ToLower(filename)
+
+	// GGUF quantization codes (llama.cpp naming)
+	ggufPatterns := []struct {
+		pattern string
+		quant   string
+	}{
+		{"q4_k_m", "int4"},
+		{"q4_k_s", "int4"},
+		{"q4_0", "int4"},
+		{"q4_1", "int4"},
+		{"q5_k_m", "int5"},
+		{"q5_k_s", "int5"},
+		{"q5_0", "int5"},
+		{"q5_1", "int5"},
+		{"q6_k", "int6"},
+		{"q8_0", "int8"},
+		{"bf16", "bf16"},  // Match before f16 to avoid false positives
+		{"f16", "fp16"},
+		{"f32", "fp32"},
+	}
+
+	// Check GGUF patterns first (more specific)
+	for _, p := range ggufPatterns {
+		if strings.Contains(lower, p.pattern) {
+			return p.quant
+		}
+	}
+
+	// General patterns
+	generalPatterns := []struct {
+		pattern string
+		quant   string
+	}{
+		{"int8", "int8"},
+		{"8bit", "int8"},
+		{"int4", "int4"},
+		{"4bit", "int4"},
+		{"fp8", "fp8"},
+		{"8bit", "int8"},
+		{"fp16", "fp16"},
+		{"16bit", "fp16"},
+		{"half", "fp16"},
+		{"bf16", "bf16"},
+		{"bfloat16", "bf16"},
+		{"nf4", "nf4"},
+	}
+
+	for _, p := range generalPatterns {
+		if strings.Contains(lower, p.pattern) {
+			return p.quant
+		}
+	}
+
+	// Check torch_dtype specific to format
+	if format == "safetensors" || format == "pytorch" {
+		if strings.Contains(lower, "fp32") || strings.Contains(lower, "float32") {
+			return "fp32"
+		}
+		if strings.Contains(lower, "fp16") || strings.Contains(lower, "float16") {
+			return "fp16"
+		}
+	}
+
+	return ""
+}
+
+// quantFromTorchDtype extracts quantization from torch_dtype field.
+func quantFromTorchDtype(config map[string]any) string {
+	dtype := jsonStr(config, "torch_dtype", "")
+	switch strings.ToLower(dtype) {
+	case "float16", "half":
+		return "fp16"
+	case "bfloat16":
+		return "bf16"
+	case "float32":
+		return "fp32"
+	case "float8":
+		return "fp8"
+	default:
+		return ""
+	}
+}
+
+// normalizeQuantString normalizes quantization format strings.
+func normalizeQuantString(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "bnb", "bitsandbytes", "8bit", "8-bit":
+		return "int8"
+	case "gptq", "awq", "4bit", "4-bit":
+		return "int4"
+	case "fp8":
+		return "fp8"
+	default:
+		return s
+	}
+}
+
+// isLLMModelType checks if a model type is an LLM.
+func isLLMModelType(modelType string) bool {
+	if modelType == "" {
+		return false
+	}
+	llmTypes := []string{
+		"llama", "glm", "qwen", "mistral", "baichuan", "internlm",
+		"deepseek", "phi", "gemma", "yi", "bloom", "falcon", "mpt",
+		"opt", "gpt2", "gptneox", "stablelm", "minicpm", "roberta",
+		"albert", "t5", "bart", "pegasus", "bigbird", "electra",
+	}
+	lower := strings.ToLower(modelType)
+	for _, t := range llmTypes {
+		if strings.Contains(lower, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasField checks if a field exists in a map.
+func hasField(m map[string]any, key string) bool {
+	_, ok := m[key]
+	return ok
+}
+
+// jsonStr extracts a string value from a map with default.
+func jsonStr(m map[string]any, key, defaultVal string) string {
+	v, ok := m[key]
+	if !ok {
+		return defaultVal
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return defaultVal
 }
 
 func jsonInt(m map[string]any, key string) int {
