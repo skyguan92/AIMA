@@ -475,14 +475,32 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			}
 			return json.Marshal(m)
 		},
-		RemoveModel: func(ctx context.Context, name string) error {
-			// First get the model to find its ID
+		RemoveModel: func(ctx context.Context, name string, deleteFiles bool) error {
+			// First get the model to find its ID and Path
 			m, err := db.GetModel(ctx, name)
 			if err != nil {
 				return err
 			}
-			// Delete using ID
-			return db.DeleteModel(ctx, m.ID)
+			// Delete from database
+			if err := db.DeleteModel(ctx, m.ID); err != nil {
+				return err
+			}
+			// Delete files from disk if requested
+			if deleteFiles {
+				if m.Path != "" {
+					// For GGUF models, Path is the file path itself
+					// For other models, Path is the directory
+					info, statErr := os.Stat(m.Path)
+					if statErr == nil {
+						if info.IsDir() {
+							os.RemoveAll(m.Path)
+						} else {
+							os.Remove(m.Path)
+						}
+					}
+				}
+			}
+			return nil
 		},
 
 		// Engine management
