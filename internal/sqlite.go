@@ -500,7 +500,9 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
 		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
-		 FROM models WHERE id = ?`, id).Scan(
+		 FROM models WHERE id = ? OR name = ?
+		 ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END
+		 LIMIT 1`, id, id, id).Scan(
 		&m.ID, &m.Name, &m.Type, &m.Path, &m.Format, &m.SizeBytes,
 		&m.DetectedArch, &m.DetectedParams, &m.Status, &m.DownloadProgress, &m.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
