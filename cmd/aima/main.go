@@ -382,6 +382,9 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if ma == nil {
 				return fmt.Errorf("model %q not found in catalog\navailable: %s", name, catalogModelNames(cat))
 			}
+			if ma == nil {
+				return fmt.Errorf("model %q not found in catalog\navailable: %s", name, catalogModelNames(cat))
+			}
 
 			// Determine required format: resolve what engine this hardware would use
 			requiredFormat := ""
