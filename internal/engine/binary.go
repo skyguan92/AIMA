@@ -297,11 +297,12 @@ func extractTarGz(archivePath, destDir string) error {
 		if err != nil {
 			return fmt.Errorf("read tar: %w", err)
 		}
-		if hdr.Typeflag != tar.TypeReg {
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
 			continue
 		}
 
-		name := strings.TrimPrefix(hdr.Name, prefix)
+		name := normalizeTarPath(hdr.Name)
+		name = strings.TrimPrefix(name, prefix)
 		if name == "" {
 			continue
 		}
@@ -331,6 +332,7 @@ func extractTarGz(archivePath, destDir string) error {
 }
 
 // tarGzCommonPrefix reads archive headers to find a shared top-level directory prefix.
+// It handles archives with or without explicit directory entries, and with leading "./".
 func tarGzCommonPrefix(archivePath string) (string, error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
@@ -354,18 +356,38 @@ func tarGzCommonPrefix(archivePath string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		parts := strings.SplitN(hdr.Name, "/", 2)
-		if len(parts) < 2 {
-			return "", nil // file at root, no prefix
+
+		name := normalizeTarPath(hdr.Name)
+		if name == "" {
+			continue // skip "." or empty entries
 		}
-		candidate := parts[0] + "/"
+
+		idx := strings.Index(name, "/")
+		if idx < 0 {
+			// Entry is at root level (bare filename or bare dirname with no slash)
+			if hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeRegA {
+				return "", nil // regular file at root: no prefix to strip
+			}
+			continue // root-level directory entry: skip, look at file entries
+		}
+
+		// Entry is inside a subdirectory
+		candidate := name[:idx+1] // e.g. "llama-b8149/"
 		if prefix == "" {
 			prefix = candidate
 		} else if candidate != prefix {
-			return "", nil // multiple top-level dirs
+			return "", nil // multiple top-level dirs: no common prefix
 		}
 	}
 	return prefix, nil
+}
+
+// normalizeTarPath strips leading "./" sequences and trailing "/" from a tar entry name.
+func normalizeTarPath(name string) string {
+	for strings.HasPrefix(name, "./") {
+		name = name[2:]
+	}
+	return strings.TrimRight(name, "/")
 }
 
 func platformSupported(platform string, supported []string) bool {
