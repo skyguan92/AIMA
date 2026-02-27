@@ -47,6 +47,15 @@ spec:
       ports:
         - containerPort: {{ .Port }}
           name: http
+      {{- if .RuntimeClassName }}
+      env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: all
+        - name: LD_LIBRARY_PATH
+          value: /lib/x86_64-linux-gnu:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+      {{- end }}
       {{- if or .HasGPUResource .HasComputeResources }}
       resources:
         limits:
