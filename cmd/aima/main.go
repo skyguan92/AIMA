@@ -558,6 +558,58 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			}
 			return json.Marshal(engines)
 		},
+		GetEngineInfo: func(ctx context.Context, name string) (json.RawMessage, error) {
+			// Find matching catalog asset (by type, asset name, or image name)
+			var asset *knowledge.EngineAsset
+			nameLower := strings.ToLower(name)
+			for i := range cat.EngineAssets {
+				ea := &cat.EngineAssets[i]
+				if strings.ToLower(ea.Metadata.Type) == nameLower ||
+					strings.ToLower(ea.Metadata.Name) == nameLower ||
+					strings.Contains(strings.ToLower(ea.Image.Name), nameLower) {
+					asset = ea
+					break
+				}
+			}
+
+			// Find installed instances in DB (by type, image name, or ID)
+			allEngines, err := db.ListEngines(ctx)
+			if err != nil {
+				return nil, err
+			}
+			installed := make([]*state.Engine, 0)
+			for _, e := range allEngines {
+				if strings.ToLower(e.Type) == nameLower ||
+					strings.Contains(strings.ToLower(e.Image), nameLower) ||
+					strings.HasPrefix(e.ID, name) {
+					installed = append(installed, e)
+				}
+			}
+
+			if asset == nil && len(installed) == 0 {
+				return nil, fmt.Errorf("engine %q not found in catalog or database", name)
+			}
+
+			// If found only in DB, try to find the catalog asset by type
+			if asset == nil && len(installed) > 0 {
+				typeLower := strings.ToLower(installed[0].Type)
+				for i := range cat.EngineAssets {
+					if strings.ToLower(cat.EngineAssets[i].Metadata.Type) == typeLower {
+						asset = &cat.EngineAssets[i]
+						break
+					}
+				}
+			}
+
+			result := struct {
+				Asset     *knowledge.EngineAsset `json:"asset"`
+				Installed []*state.Engine        `json:"installed"`
+			}{
+				Asset:     asset,
+				Installed: installed,
+			}
+			return json.Marshal(result)
+		},
 		PullEngine: func(ctx context.Context, name string) error {
 			for _, ea := range cat.EngineAssets {
 				if ea.Metadata.Type == name || ea.Image.Name == name {
