@@ -23,10 +23,11 @@ type ToolDeps struct {
 	RemoveModel func(ctx context.Context, name string, deleteFiles bool) error
 
 	// Engine management
-	ScanEngines  func(ctx context.Context, runtime string) (json.RawMessage, error) // runtime: "auto" | "container" | "native"
-	ListEngines  func(ctx context.Context) (json.RawMessage, error)
-	PullEngine   func(ctx context.Context, name string) error
-	ImportEngine func(ctx context.Context, path string) error
+	ScanEngines    func(ctx context.Context, runtime string) (json.RawMessage, error) // runtime: "auto" | "container" | "native"
+	ListEngines    func(ctx context.Context) (json.RawMessage, error)
+	GetEngineInfo  func(ctx context.Context, name string) (json.RawMessage, error)
+	PullEngine     func(ctx context.Context, name string) error
+	ImportEngine   func(ctx context.Context, path string) error
 
 	// Deployment (runtime package)
 	DeployApply  func(ctx context.Context, engine, model, slot string) (json.RawMessage, error)
@@ -316,10 +317,34 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 		},
 	})
 
+	// engine.info
+	s.RegisterTool(&Tool{
+		Name:        "engine.info",
+		Description: "Get full information about an engine: live availability from DB plus complete knowledge from catalog (hardware requirements, startup config, API, features, constraints)",
+		InputSchema: schema(`"name":{"type":"string","description":"Engine type (e.g. llamacpp, vllm, sglang), image name, or engine ID"}`, "name"),
+		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
+			if deps.GetEngineInfo == nil {
+				return ErrorResult("engine.info not implemented"), nil
+			}
+			var p struct{ Name string `json:"name"` }
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, fmt.Errorf("parse params: %w", err)
+			}
+			if p.Name == "" {
+				return ErrorResult("name is required"), nil
+			}
+			data, err := deps.GetEngineInfo(ctx, p.Name)
+			if err != nil {
+				return nil, fmt.Errorf("engine info %s: %w", p.Name, err)
+			}
+			return TextResult(string(data)), nil
+		},
+	})
+
 	// engine.list
 	s.RegisterTool(&Tool{
 		Name:        "engine.list",
-		Description: "List all known engine assets from the knowledge base",
+		Description: "List engines scanned and registered in the local database",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ListEngines == nil {

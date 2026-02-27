@@ -15,6 +15,7 @@ func newEngineCmd(app *App) *cobra.Command {
 	cmd.AddCommand(
 		newEngineScanCmd(app),
 		newEngineListCmd(app),
+		newEngineInfoCmd(app),
 		newEnginePullCmd(app),
 		newEngineImportCmd(app),
 		newEngineRemoveCmd(app),
@@ -49,6 +50,26 @@ func newEngineScanCmd(app *App) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&runtime, "runtime", "auto", "Runtime filter: auto, container, or native")
 	return cmd
+}
+
+func newEngineInfoCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "info <name>",
+		Short: "Get full information about an engine (catalog knowledge + live availability)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			name := args[0]
+
+			data, err := app.ToolDeps.GetEngineInfo(ctx, name)
+			if err != nil {
+				return fmt.Errorf("engine info %s: %w", name, err)
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), formatJSON(data))
+			return nil
+		},
+	}
 }
 
 func newEngineListCmd(app *App) *cobra.Command {
