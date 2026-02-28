@@ -57,9 +57,9 @@ func TestNewRootCmd(t *testing.T) {
 
 	// Verify all expected subcommands are registered
 	expected := []string{
-		"init",
+		"init", "hal",
 		"deploy", "undeploy", "status",
-		"model", "engine", "knowledge",
+		"model", "engine", "knowledge", "catalog",
 		"ask", "agent", "serve", "discover",
 	}
 	cmds := make(map[string]bool)
@@ -213,6 +213,60 @@ func TestKnowledgeListCmd(t *testing.T) {
 
 	if buf.Len() == 0 {
 		t.Error("knowledge list output is empty")
+	}
+}
+
+func TestHalSubcommands(t *testing.T) {
+	app := testApp(t)
+	root := NewRootCmd(app)
+
+	var halCmd *cobra.Command
+	for _, c := range root.Commands() {
+		if c.Name() == "hal" {
+			halCmd = c
+			break
+		}
+	}
+	if halCmd == nil {
+		t.Fatal("hal command not found")
+	}
+
+	expected := []string{"detect", "metrics"}
+	subs := make(map[string]bool)
+	for _, c := range halCmd.Commands() {
+		subs[c.Name()] = true
+	}
+	for _, name := range expected {
+		if !subs[name] {
+			t.Errorf("hal missing subcommand %q", name)
+		}
+	}
+}
+
+func TestCatalogSubcommands(t *testing.T) {
+	app := testApp(t)
+	root := NewRootCmd(app)
+
+	var catalogCmd *cobra.Command
+	for _, c := range root.Commands() {
+		if c.Name() == "catalog" {
+			catalogCmd = c
+			break
+		}
+	}
+	if catalogCmd == nil {
+		t.Fatal("catalog command not found")
+	}
+
+	expected := []string{"status", "override"}
+	subs := make(map[string]bool)
+	for _, c := range catalogCmd.Commands() {
+		subs[c.Name()] = true
+	}
+	for _, name := range expected {
+		if !subs[name] {
+			t.Errorf("catalog missing subcommand %q", name)
+		}
 	}
 }
 
