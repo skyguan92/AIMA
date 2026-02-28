@@ -57,6 +57,25 @@ variants:
         32768:  [4.727,  28.4, 6931]
         65536:  [11.954, 26.9, 5482]
         131072: [34.015, 24.2, 3853]   # 128K full context verified
+      vision:                            # measured: chunked_prefill=true, gmu=0.9
+        tokens_per_image_1024: 1025      # 每张 1024x1024 ≈ 1025 tokens
+        max_single_resolution: 3424      # 3424x3424 OK, 3456x3456 OOM
+        max_images_1024: 255             # 255 × 1024x1024 = 261906 tokens
+        # resolution: [ttft_s, prompt_tokens]
+        single_image_scaling:
+          64:    [0.21,  85]
+          256:   [0.21,  85]
+          512:   [0.36,  350]
+          1024:  [0.66,  4117]
+          2048:  [9.78,  4117]
+          3072:  [9.30,  9237]
+          3424:  [10.80, 11467]
+        multi_image_1024:                # N × 1024x1024
+          1:   [0.40,  350]
+          8:   [0.96,  8233]
+          32:  [15.90, 32882]
+          128: [59.60, 131477]
+          255: [157.20, 261906]          # 逼近 262K context limit
 
   # --- amd395 (RDNA3.5, 62GB unified, Docker) ---
   # AWQ 4-bit 权重 ~24GB, 62GB unified 可容纳
