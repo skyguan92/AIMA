@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -14,6 +15,34 @@ func newCatalogCmd(app *App) *cobra.Command {
 	}
 
 	cmd.AddCommand(newCatalogStatusCmd(app))
+	cmd.AddCommand(newCatalogOverrideCmd(app))
+	return cmd
+}
+
+func newCatalogOverrideCmd(app *App) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "override <kind> <name> <yaml-file>",
+		Short: "Write a YAML asset to the overlay catalog (takes effect on next restart)",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if app.ToolDeps.CatalogOverride == nil {
+				return fmt.Errorf("catalog.override not available")
+			}
+			kind, name, yamlFile := args[0], args[1], args[2]
+			content, err := os.ReadFile(yamlFile)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", yamlFile, err)
+			}
+			data, err := app.ToolDeps.CatalogOverride(cmd.Context(), kind, name, string(content))
+			if err != nil {
+				return err
+			}
+			var pretty json.RawMessage = data
+			out, _ := json.MarshalIndent(pretty, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(out))
+			return nil
+		},
+	}
 	return cmd
 }
 
