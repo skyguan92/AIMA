@@ -472,7 +472,32 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if len(sources) == 0 {
 				return fmt.Errorf("no download source for model %q with format %q", name, requiredFormat)
 			}
-			return model.DownloadFromSource(ctx, sources, destPath)
+			if err := model.DownloadFromSource(ctx, sources, destPath); err != nil {
+				return err
+			}
+			// Auto-register in database so `model list` and `deploy` can find it immediately.
+			modelsDir := filepath.Join(dataDir, "models")
+			info, err := model.Import(ctx, destPath, modelsDir)
+			if err != nil {
+				slog.Warn("model downloaded but scan/register failed", "model", name, "err", err)
+				return nil // download succeeded; registration failure is non-fatal
+			}
+			return db.UpsertScannedModel(ctx, &state.Model{
+				ID:             info.ID,
+				Name:           info.Name,
+				Type:           info.Type,
+				Path:           info.Path,
+				Format:         info.Format,
+				SizeBytes:      info.SizeBytes,
+				DetectedArch:   info.DetectedArch,
+				DetectedParams: info.DetectedParams,
+				ModelClass:     info.ModelClass,
+				TotalParams:    info.TotalParams,
+				ActiveParams:   info.ActiveParams,
+				Quantization:   info.Quantization,
+				QuantSrc:       info.QuantSrc,
+				Status:         "registered",
+			})
 		},
 		ImportModel: func(ctx context.Context, path string) (json.RawMessage, error) {
 			destDir := filepath.Join(dataDir, "models")
@@ -601,36 +626,55 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if name == "" {
 				name = "llamacpp"
 			}
+			hwInfo := buildHardwareInfo(ctx, rt.Name())
 			nameLower := strings.ToLower(name)
-			for _, ea := range cat.EngineAssets {
+
+			// Select best engine asset: exact gpu_arch match first, then wildcard "*"
+			var matched, wildcard *knowledge.EngineAsset
+			for i := range cat.EngineAssets {
+				ea := &cat.EngineAssets[i]
 				if strings.ToLower(ea.Metadata.Type) != nameLower && strings.ToLower(ea.Metadata.Name) != nameLower {
 					continue
 				}
-				// Native binary path: prefer if platform is supported
-				platform := goruntime.GOOS + "/" + goruntime.GOARCH
-				if ea.Source != nil && ea.Source.Supports(platform) {
-					distPlatform := goruntime.GOOS + "-" + goruntime.GOARCH
-					distDir := filepath.Join(dataDir, "dist", distPlatform)
-					mgr := engine.NewBinaryManager(distDir)
-					return mgr.Download(ctx, toEngineBinarySource(ea.Source))
+				if ea.Hardware.GPUArch == hwInfo.GPUArch {
+					matched = ea
+					break
 				}
-				// Container image path
-				if ea.Image.Name != "" {
-					// Skip network pull if the image is already available locally
-					if engine.ImageExists(ctx, ea.Image.Name, ea.Image.Tag, &execRunner{}) {
-						slog.Info("engine image already available locally", "image", ea.Image.Name+":"+ea.Image.Tag)
-						return nil
-					}
-					return engine.Pull(ctx, engine.PullOptions{
-						Image:      ea.Image.Name,
-						Tag:        ea.Image.Tag,
-						Registries: ea.Image.Registries,
-						Runner:     &execRunner{},
-					})
+				if ea.Hardware.GPUArch == "*" && wildcard == nil {
+					wildcard = ea
 				}
-				return fmt.Errorf("engine %q has no download source for platform %s/%s", name, goruntime.GOOS, goruntime.GOARCH)
 			}
-			return fmt.Errorf("engine %q not found in catalog", name)
+			if matched == nil {
+				matched = wildcard
+			}
+			if matched == nil {
+				return fmt.Errorf("engine %q not found in catalog", name)
+			}
+			ea := matched
+
+			// Native binary path: prefer if platform is supported
+			platform := goruntime.GOOS + "/" + goruntime.GOARCH
+			if ea.Source != nil && ea.Source.Supports(platform) {
+				distPlatform := goruntime.GOOS + "-" + goruntime.GOARCH
+				distDir := filepath.Join(dataDir, "dist", distPlatform)
+				mgr := engine.NewBinaryManager(distDir)
+				return mgr.Download(ctx, toEngineBinarySource(ea.Source))
+			}
+			// Container image path
+			if ea.Image.Name != "" {
+				// Skip network pull if the image is already available locally
+				if engine.ImageExists(ctx, ea.Image.Name, ea.Image.Tag, &execRunner{}) {
+					slog.Info("engine image already available locally", "image", ea.Image.Name+":"+ea.Image.Tag)
+					return nil
+				}
+				return engine.Pull(ctx, engine.PullOptions{
+					Image:      ea.Image.Name,
+					Tag:        ea.Image.Tag,
+					Registries: ea.Image.Registries,
+					Runner:     &execRunner{},
+				})
+			}
+			return fmt.Errorf("engine %q has no download source for platform %s/%s", name, goruntime.GOOS, goruntime.GOARCH)
 		},
 		ImportEngine: func(ctx context.Context, path string) error {
 			absPath, err := filepath.Abs(path)
@@ -672,10 +716,14 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if modelPath == "" {
 				modelPath = filepath.Join(dataDir, "models", modelName)
 			}
-			// If modelPath is a directory, find the model file inside it.
-			if fi, err := os.Stat(modelPath); err == nil && fi.IsDir() {
-				if f := findModelFileInDir(modelPath, resolved.Engine); f != "" {
-					modelPath = f
+			// Native binary engines require a single model file path; container engines
+			// take the directory. Use the presence of Source (native binary download) to
+			// distinguish — not the engine type name.
+			if resolved.Source != nil {
+				if fi, err := os.Stat(modelPath); err == nil && fi.IsDir() {
+					if f := findModelFileInDir(modelPath); f != "" {
+						modelPath = f
+					}
 				}
 			}
 
@@ -741,14 +789,35 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			return json.Marshal(result)
 		},
 		DeployDelete: func(ctx context.Context, name string) error {
+			// Try exact pod name first, then fall back to searching by model label.
+			// Pod names are "<model>-<engine>" (e.g. qwen3-8b-vllm), but users
+			// often pass just the model name (e.g. qwen3-8b).
+			deleted := name
 			err := rt.Delete(ctx, name)
+			if err != nil {
+				// Exact name failed — search deployments for this model name.
+				if deployments, listErr := rt.List(ctx); listErr == nil {
+					for _, d := range deployments {
+						if d.Labels["aima.dev/model"] == name || d.Name == name {
+							if delErr := rt.Delete(ctx, d.Name); delErr == nil {
+								deleted = d.Name
+								err = nil
+								break
+							}
+						}
+					}
+				}
+			}
 			if err != nil && nativeRt != nil && nativeRt != rt {
 				err = nativeRt.Delete(ctx, name)
+				if err == nil {
+					deleted = name
+				}
 			}
 			if err != nil {
-				return err
+				return fmt.Errorf("deployment %q not found", name)
 			}
-			proxyServer.RemoveBackend(name)
+			proxyServer.RemoveBackend(deleted)
 			return nil
 		},
 		DeployStatus: func(ctx context.Context, name string) (json.RawMessage, error) {
@@ -964,22 +1033,20 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 	}
 }
 
-// findModelFileInDir returns the first model file found inside dir for the given engine.
-// For llamacpp, prefers .gguf files. For other engines, returns empty (use dir as-is).
-func findModelFileInDir(dir, engineType string) string {
+// findModelFileInDir returns the first model file found inside dir.
+// Only called for native binary engines (where the engine YAML has a source: field);
+// container engines receive the directory path directly.
+func findModelFileInDir(dir string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
 	}
-	var ext string
-	switch engineType {
-	case "llamacpp":
-		ext = ".gguf"
-	default:
-		return "" // container engines take the directory
-	}
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ext) {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".gguf", ".ggml", ".bin", ".safetensors":
 			return filepath.Join(dir, e.Name())
 		}
 	}
