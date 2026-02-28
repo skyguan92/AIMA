@@ -35,6 +35,7 @@ func NewRootCmd(app *App) *cobra.Command {
 
 	root.AddCommand(
 		newInitCmd(app),
+		newHalCmd(app),
 		newDeployCmd(app),
 		newUndeployCmd(app),
 		newStatusCmd(app),

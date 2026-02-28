@@ -463,7 +463,7 @@ func LoadCatalogLenient(fsys fs.FS) (*Catalog, []string) {
 				continue
 			}
 			if err := cat.parseAsset(data, path); err != nil {
-				warnings = append(warnings, fmt.Sprintf("%v", err))
+				warnings = append(warnings, fmt.Sprintf("parse %s: %v", path, err))
 				continue
 			}
 		}

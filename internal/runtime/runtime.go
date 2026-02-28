@@ -32,6 +32,7 @@ type DeployRequest struct {
 	Labels       map[string]string
 	BinarySource *engine.BinarySource // native: where to download the engine binary if missing
 	Warmup       *WarmupConfig  // post-healthcheck warmup (send dummy inference request)
+	CPUArch      string         // "arm64", "amd64" — for platform-specific paths in Pod spec
 }
 
 // DeploymentStatus is the unified status across runtimes.
