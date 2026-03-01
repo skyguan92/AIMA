@@ -313,7 +313,7 @@ func catalogModelNames(cat *knowledge.Catalog) string {
 // destructiveTools lists MCP tools that the Agent must not call directly.
 // These are blocked at the adapter level; users can still invoke them via CLI.
 var destructiveTools = map[string]bool{
-	"model.remove": true, "engine.remove": true, "deploy.delete": true,
+	"model.remove": true, "engine.remove": true, "deploy.delete": true, "agent.install": true,
 }
 
 // mcpToolAdapter bridges mcp.Server to agent.ToolExecutor interface.
