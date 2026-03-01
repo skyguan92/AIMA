@@ -118,7 +118,7 @@ func run() error {
 
 	// 9. Create agent (L3a Go Agent)
 	toolAdapter := &mcpToolAdapter{server: mcpServer, db: db}
-	llmClient := buildLLMClient()
+	llmClient := buildLLMClient(ctx, db)
 	goAgent := agent.NewAgent(llmClient, toolAdapter)
 	dispatcher := agent.NewDispatcher(goAgent, zeroClawMgr)
 
@@ -142,6 +142,21 @@ func run() error {
 			"zeroclaw_available": zeroClawMgr.Available(),
 			"zeroclaw_healthy":   zeroClawMgr.Health(),
 		})
+	}
+	// Override SetConfig to hot-swap LLM client on llm.* changes
+	deps.SetConfig = func(ctx context.Context, key, value string) error {
+		if err := db.SetConfig(ctx, key, value); err != nil {
+			return err
+		}
+		switch key {
+		case "llm.endpoint":
+			llmClient.SetEndpoint(value)
+		case "llm.model":
+			llmClient.SetModel(value)
+		case "llm.api_key":
+			llmClient.SetAPIKey(value)
+		}
+		return nil
 	}
 
 	// 9c. Wire rollback tools
@@ -199,6 +214,9 @@ func run() error {
 
 	// 9d. Register all tools (after all deps are fully wired)
 	mcp.RegisterAllTools(mcpServer, deps)
+
+	// 9e. Wire REST /config endpoint to proxy server
+	proxyServer.SetConfigStore(deps.GetConfig, deps.SetConfig)
 
 	// 10. Build App and run CLI
 	app := &cli.App{
@@ -329,6 +347,15 @@ func (a *mcpToolAdapter) ExecuteTool(ctx context.Context, name string, arguments
 		msg := fmt.Sprintf("BLOCKED: %s is a destructive operation and cannot be called by the Agent. Ask the user to run it via CLI instead.", name)
 		a.audit(ctx, name, string(arguments), "BLOCKED")
 		return &agent.ToolResult{Content: msg, IsError: true}, nil
+	}
+	// Block system.config set (write) but allow get (read)
+	if name == "system.config" {
+		var p struct{ Value *string `json:"value"` }
+		if json.Unmarshal(arguments, &p) == nil && p.Value != nil {
+			msg := "BLOCKED: system.config set is a destructive operation and cannot be called by the Agent. Ask the user to run `aima config set` via CLI instead."
+			a.audit(ctx, name, string(arguments), "BLOCKED")
+			return &agent.ToolResult{Content: msg, IsError: true}, nil
+		}
 	}
 
 	result, err := a.server.ExecuteTool(ctx, name, arguments)
@@ -499,16 +526,25 @@ func buildNativeRuntime(dataDir string) runtime.Runtime {
 
 // buildLLMClient creates an OpenAI-compatible LLM client for the Go Agent.
 // Endpoint defaults to localhost proxy; model auto-discovered from /v1/models.
-func buildLLMClient() agent.LLMClient {
+func buildLLMClient(ctx context.Context, db *state.DB) *agent.OpenAIClient {
+	// Precedence: env var > SQLite > default
 	endpoint := os.Getenv("AIMA_LLM_ENDPOINT")
 	if endpoint == "" {
-		endpoint = fmt.Sprintf("http://localhost:%d/v1", proxy.DefaultPort)
+		if v, err := db.GetConfig(ctx, "llm.endpoint"); err == nil && v != "" {
+			endpoint = v
+		} else {
+			endpoint = fmt.Sprintf("http://localhost:%d/v1", proxy.DefaultPort)
+		}
 	}
 	var opts []agent.OpenAIOption
 	if m := os.Getenv("AIMA_LLM_MODEL"); m != "" {
 		opts = append(opts, agent.WithModel(m))
+	} else if m, err := db.GetConfig(ctx, "llm.model"); err == nil && m != "" {
+		opts = append(opts, agent.WithModel(m))
 	}
 	if k := os.Getenv("AIMA_API_KEY"); k != "" {
+		opts = append(opts, agent.WithAPIKey(k))
+	} else if k, err := db.GetConfig(ctx, "llm.api_key"); err == nil && k != "" {
 		opts = append(opts, agent.WithAPIKey(k))
 	}
 	return agent.NewOpenAIClient(endpoint, opts...)

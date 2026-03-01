@@ -31,11 +31,13 @@ type Backend struct {
 
 // Server is the HTTP inference proxy.
 type Server struct {
-	addr   string
-	apiKey string
-	routes map[string]*Backend
-	mu     sync.RWMutex
-	server *http.Server
+	addr      string
+	apiKey    string
+	routes    map[string]*Backend
+	mu        sync.RWMutex
+	server    *http.Server
+	getConfig func(ctx context.Context, key string) (string, error)
+	setConfig func(ctx context.Context, key, value string) error
 }
 
 // Option configures Server.
@@ -61,6 +63,17 @@ func (s *Server) SetAPIKey(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.apiKey = key
+}
+
+// SetConfigStore wires the get/set config functions for the REST /config endpoint.
+func (s *Server) SetConfigStore(
+	get func(ctx context.Context, key string) (string, error),
+	set func(ctx context.Context, key, value string) error,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getConfig = get
+	s.setConfig = set
 }
 
 func NewServer(opts ...Option) *Server {
@@ -144,6 +157,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/v1/chat/completions", s.handleInference)
 	mux.HandleFunc("/v1/completions", s.handleInference)
 	mux.HandleFunc("/v1/embeddings", s.handleInference)
+	mux.HandleFunc("/config", s.handleConfig)
 
 	var h http.Handler = mux
 	s.mu.RLock()
@@ -213,6 +227,63 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		"object": "list",
 		"data":   data,
 	})
+}
+
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	getFn, setFn := s.getConfig, s.setConfig
+	s.mu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if getFn == nil || setFn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintln(w, `{"error":"config store not available"}`)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintln(w, `{"error":"missing ?key= parameter"}`)
+			return
+		}
+		value, err := getFn(r.Context(), key)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"key": key, "value": value})
+
+	case http.MethodPut:
+		var req struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1024*1024)).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON"})
+			return
+		}
+		if req.Key == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintln(w, `{"error":"missing key field"}`)
+			return
+		}
+		if err := setFn(r.Context(), req.Key, req.Value); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"key": req.Key, "value": req.Value, "status": "ok"})
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		fmt.Fprintln(w, `{"error":"method not allowed, use GET or PUT"}`)
+	}
 }
 
 func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
