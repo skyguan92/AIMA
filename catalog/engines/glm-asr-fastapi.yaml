@@ -1,29 +1,26 @@
 kind: engine_asset
 metadata:
-  name: qwen-tts-fastapi
-  type: qwen-tts-fastapi
+  name: glm-asr-fastapi
+  type: glm-asr-fastapi
   version: "1.0"
 image:
-  # gb10 本地构建的 ARM64 CPU-only TTS 镜像 (FastAPI + qwen-tts)
-  # 已有 /v1/audio/speech (OpenAI compat) + /v1/tts + /health 端点
-  name: qujing-qwen3-tts-real
+  # gb10 本地构建的 ARM64 CPU-only ASR 镜像 (FastAPI + GLM-ASR-Nano)
+  # OpenAI 兼容 /v1/audio/transcriptions 端点
+  name: qujing-glm-asr-nano
   tag: "latest"
-  size_approx_mb: 2500
+  size_approx_mb: 3000
   platforms: [linux/arm64]
 patterns:
-  - "^qwen-tts-fastapi$"
-  - "qwen3-tts"
-  - "qwen-tts"
-  - "tts-fastapi"
+  - "^glm-asr-fastapi$"
+  - "glm-asr"
+  - "asr-nano"
 hardware:
   gpu_arch: "*"
   vram_min_mib: 0
 startup:
-  command: ["python", "main.py", "--model", "{{.ModelPath}}", "--port", "8002", "--device", "cpu"]
-  init_commands:
-    - "rm -rf /model && ln -s /models /model"
+  command: ["python", "main.py", "--model", "{{.ModelPath}}", "--port", "8003", "--device", "cpu"]
   default_args:
-    port: 8002
+    port: 8003
   health_check:
     path: /health
     timeout_s: 120
@@ -35,8 +32,8 @@ api:
 amplifier:
   features:
     - cpu_inference
-    - openai_compatible_tts
-  performance_gain: "CPU-only TTS, RTF ~0.87"
+    - openai_compatible_asr
+  performance_gain: "CPU-only ASR, low-latency transcription"
   resource_expansion:
     cpu_offload: false
     ssd_offload: false
