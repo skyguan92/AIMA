@@ -360,6 +360,9 @@ func run() error {
 		case "llm.user_agent":
 			llmClient.SetUserAgent(value)
 			slog.Info("LLM User-Agent hot-swapped via system.config", "user_agent", value)
+		case "llm.extra_params":
+			llmClient.SetExtraParams(parseExtraParams(value))
+			slog.Info("LLM extra params hot-swapped via system.config")
 		}
 		return nil
 	}
@@ -955,8 +958,27 @@ func buildLLMClient(ctx context.Context, db *state.DB) *agent.OpenAIClient {
 	} else if ua, err := db.GetConfig(ctx, "llm.user_agent"); err == nil && ua != "" {
 		opts = append(opts, agent.WithUserAgent(ua))
 	}
+	if ep := os.Getenv("AIMA_LLM_EXTRA_PARAMS"); ep != "" {
+		if p := parseExtraParams(ep); p != nil {
+			opts = append(opts, agent.WithExtraParams(p))
+		}
+	} else if ep, err := db.GetConfig(ctx, "llm.extra_params"); err == nil && ep != "" {
+		if p := parseExtraParams(ep); p != nil {
+			opts = append(opts, agent.WithExtraParams(p))
+		}
+	}
 	opts = append(opts, agent.WithDiscoverFunc(discoverFleetLLM))
 	return agent.NewOpenAIClient(endpoint, opts...)
+}
+
+// parseExtraParams parses a JSON string into a map for LLM extra parameters.
+func parseExtraParams(s string) map[string]any {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		slog.Warn("invalid llm.extra_params JSON, ignoring", "error", err)
+		return nil
+	}
+	return m
 }
 
 // discoverFleetLLM discovers LLM endpoints from fleet devices via mDNS.
