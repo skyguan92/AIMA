@@ -1394,7 +1394,7 @@ body {
                 <template x-if="(dep.phase === 'starting' || dep.startup_progress > 0) && !dep.ready">
                   <div style="margin-top:6px">
                     <div class="deploy-progress">
-                      <div class="deploy-progress-fill starting" :style="'width:' + Math.max(dep.startup_progress || 5, Math.min(dep.startup_progress || 5, 95)) + '%'"></div>
+                      <div class="deploy-progress-fill starting" :style="'width:' + Math.max(5, Math.min(dep.startup_progress || 5, 95)) + '%'"></div>
                     </div>
                     <div class="deploy-phase-text">
                       <span>
