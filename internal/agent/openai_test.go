@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -146,9 +147,9 @@ func TestOpenAIClient_ModelAutoDiscover(t *testing.T) {
 				},
 			})
 		case "/v1/chat/completions":
-			var req chatRequest
+			var req map[string]any
 			json.NewDecoder(r.Body).Decode(&req)
-			requestedModel = req.Model
+			requestedModel, _ = req["model"].(string)
 			json.NewEncoder(w).Encode(chatResponse{
 				Choices: []chatChoice{
 					{Message: chatMessage{Role: "assistant", Content: "ok"}},
@@ -173,12 +174,10 @@ func TestOpenAIClient_ModelAutoDiscover(t *testing.T) {
 }
 
 func TestOpenAIClient_ToolDefinitionsSent(t *testing.T) {
-	var receivedTools []chatTool
+	var reqBody map[string]json.RawMessage
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/chat/completions" {
-			var req chatRequest
-			json.NewDecoder(r.Body).Decode(&req)
-			receivedTools = req.Tools
+			json.NewDecoder(r.Body).Decode(&reqBody)
 			json.NewEncoder(w).Encode(chatResponse{
 				Choices: []chatChoice{
 					{Message: chatMessage{Role: "assistant", Content: "ok"}},
@@ -199,6 +198,10 @@ func TestOpenAIClient_ToolDefinitionsSent(t *testing.T) {
 	}, tools)
 	if err != nil {
 		t.Fatalf("ChatCompletion: %v", err)
+	}
+	var receivedTools []chatTool
+	if err := json.Unmarshal(reqBody["tools"], &receivedTools); err != nil {
+		t.Fatalf("unmarshal tools: %v", err)
 	}
 	if len(receivedTools) != 1 {
 		t.Fatalf("tools sent = %d, want 1", len(receivedTools))
@@ -299,5 +302,107 @@ func TestOpenAIClient_FleetDiscovery_NoEndpoints(t *testing.T) {
 	_, err := client.resolveModel(context.Background())
 	if err == nil {
 		t.Fatal("expected error when discover returns no endpoints")
+	}
+}
+
+func TestOpenAIClient_ReasoningContentPreserved(t *testing.T) {
+	var reqBody map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&reqBody)
+		json.NewEncoder(w).Encode(chatResponse{
+			Choices: []chatChoice{
+				{Message: chatMessage{Role: "assistant", Content: "result", ReasoningContent: "thought about it"}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL+"/v1", WithModel("m"))
+	resp, err := client.ChatCompletion(context.Background(), []Message{
+		{Role: "user", Content: "test"},
+		{Role: "assistant", Content: "", ReasoningContent: "let me think"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+
+	// Verify reasoning_content was sent in request
+	var msgs []map[string]any
+	if err := json.Unmarshal(reqBody["messages"], &msgs); err != nil {
+		t.Fatalf("unmarshal messages: %v", err)
+	}
+	if len(msgs) < 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	rc, _ := msgs[1]["reasoning_content"].(string)
+	if rc != "let me think" {
+		t.Errorf("request reasoning_content = %q, want %q", rc, "let me think")
+	}
+
+	// Verify reasoning_content was parsed from response
+	if resp.ReasoningContent != "thought about it" {
+		t.Errorf("response ReasoningContent = %q, want %q", resp.ReasoningContent, "thought about it")
+	}
+}
+
+func TestOpenAIClient_ExtraParams(t *testing.T) {
+	var reqBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&reqBody)
+		json.NewEncoder(w).Encode(chatResponse{
+			Choices: []chatChoice{
+				{Message: chatMessage{Role: "assistant", Content: "ok"}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL+"/v1", WithModel("m"), WithExtraParams(map[string]any{
+		"temperature": 0.6,
+		"top_p":       0.95,
+	}))
+	_, err := client.ChatCompletion(context.Background(), []Message{
+		{Role: "user", Content: "test"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if temp, ok := reqBody["temperature"].(float64); !ok || temp != 0.6 {
+		t.Errorf("temperature = %v, want 0.6", reqBody["temperature"])
+	}
+	if topP, ok := reqBody["top_p"].(float64); !ok || topP != 0.95 {
+		t.Errorf("top_p = %v, want 0.95", reqBody["top_p"])
+	}
+	// model/messages must not be overridden by extra params
+	if reqBody["model"] != "m" {
+		t.Errorf("model = %v, want m", reqBody["model"])
+	}
+}
+
+func TestOpenAIClient_ContentAlwaysPresent(t *testing.T) {
+	var reqBody map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&reqBody)
+		json.NewEncoder(w).Encode(chatResponse{
+			Choices: []chatChoice{
+				{Message: chatMessage{Role: "assistant", Content: "ok"}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL+"/v1", WithModel("m"))
+	// Send assistant message with empty Content (should still serialize as "content":"")
+	_, err := client.ChatCompletion(context.Background(), []Message{
+		{Role: "assistant", Content: "", ToolCalls: []ToolCall{{ID: "c1", Name: "hw.detect", Arguments: "{}"}}},
+		{Role: "tool", Content: `{"gpu":"RTX 4060"}`, ToolCallID: "c1"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	// Verify "content" field is present even when empty
+	raw := string(reqBody["messages"])
+	if !strings.Contains(raw, `"content":""`) {
+		t.Errorf("expected empty content field to be present in JSON, got: %s", raw)
 	}
 }
