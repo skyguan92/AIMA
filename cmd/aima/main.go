@@ -1247,7 +1247,7 @@ func resolveDeployment(ctx context.Context, cat *knowledge.Catalog, db *state.DB
 // buildToolDeps wires all ToolDeps fields to real implementations.
 // nativeRt is always provided so DeployApply can use it when the engine recommends native runtime.
 func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store, rt runtime.Runtime, nativeRt runtime.Runtime, proxyServer *proxy.Server, k3sClient *k3s.Client, dataDir string, factoryDigests map[string]string) *mcp.ToolDeps {
-	scanEnginesImpl := func(ctx context.Context, runtimeFilter string) (json.RawMessage, error) {
+	scanEnginesCore := func(ctx context.Context, runtimeFilter string, autoImport bool) (json.RawMessage, error) {
 		assetPatterns := make(map[string][]string)
 		binaryAssets := make(map[string]string)
 		for _, ea := range cat.EngineAssets {
@@ -1267,6 +1267,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			DistDir:       distDir,
 			Platform:      platform,
 			BinaryAssets:  binaryAssets,
+			AutoImport:    autoImport,
 		})
 		if err != nil {
 			return nil, err
@@ -1486,7 +1487,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		},
 
 		// Engine management
-		ScanEngines: scanEnginesImpl,
+		ScanEngines: scanEnginesCore,
 		ListEngines: func(ctx context.Context) (json.RawMessage, error) {
 			engines, err := db.ListEngines(ctx)
 			if err != nil {
@@ -1577,7 +1578,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				return fmt.Errorf("import engine from %s: %w", path, err)
 			}
 			// Refresh DB: imported image only visible via runtime scan
-			_, _ = scanEnginesImpl(ctx, "auto")
+			_, _ = scanEnginesCore(ctx, "auto", false)
 			return nil
 		},
 		RemoveEngine: func(ctx context.Context, name string) error {
