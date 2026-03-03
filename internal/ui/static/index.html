@@ -228,6 +228,27 @@ body {
   gap: 6px;
 }
 
+/* Device identity in hardware panel */
+.device-identity {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.device-name {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.device-ip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
 /* Gauge bars */
 .gauge { margin-bottom: 8px; }
 .gauge-label {
@@ -297,7 +318,27 @@ body {
 }
 .fleet-device:last-child { border-bottom: none; }
 .fleet-device .name { font-family: var(--font-sans); font-weight: 500; }
-.fleet-device .meta { font-size: 11px; color: var(--text-tertiary); margin-left: auto; }
+.fleet-device .meta { font-size: 11px; color: var(--text-tertiary); }
+.fleet-device.clickable {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 8px;
+  margin: 0 -8px;
+  transition: background var(--duration-fast) var(--ease-smooth);
+}
+.fleet-device.clickable:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.fleet-link-hint {
+  font-size: 14px;
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-smooth);
+}
+.fleet-device.clickable:hover .fleet-link-hint {
+  opacity: 1;
+  color: var(--accent);
+}
 
 /* Agent info rows */
 .agent-info-row {
@@ -373,6 +414,7 @@ body {
 /* Chat messages - refined typography */
 .chat-messages {
   flex: 1;
+  min-height: 0;  /* Critical for flex child scrolling */
   overflow-y: auto;
   padding: 12px 12px;
   background: transparent;
@@ -381,7 +423,6 @@ body {
   line-height: 1.45;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
 }
 .chat-messages::-webkit-scrollbar { width: 4px; }
 .chat-messages::-webkit-scrollbar-track { background: transparent; }
@@ -419,9 +460,9 @@ body {
 .msg-error .msg-text { color: var(--error); }
 .msg-system .msg-text { color: var(--text-tertiary); font-style: italic; font-size: 12px; }
 
-/* Tool call display - Claude Code style */
+/* Tool call display - Claude Code style indicator lights */
 .msg-tool {
-  margin: 2px 0;
+  margin: 4px 0;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -430,61 +471,94 @@ body {
 .msg-tool-header {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 8px 3px 0;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
   background: rgba(255, 255, 255, 0.04);
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   transition: background var(--duration-fast) var(--ease-smooth);
 }
 .msg-tool-header:hover {
   background: rgba(255, 255, 255, 0.08);
 }
-.msg-tool-icon {
-  font-size: 11px;
-  opacity: 0.6;
+.msg-tool-indicator {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+.msg-tool-indicator.running {
+  background: rgba(10, 132, 255, 0.2);
+  color: var(--accent);
+  animation: indicatorPulse 1.2s ease-in-out infinite;
+}
+.msg-tool-indicator.running::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: indicatorDot 1.2s ease-in-out infinite;
+}
+.msg-tool-indicator.success {
+  background: rgba(48, 209, 88, 0.2);
+  color: var(--success);
+}
+.msg-tool-indicator.success::after {
+  content: '✓';
+}
+.msg-tool-indicator.error {
+  background: rgba(255, 69, 58, 0.2);
+  color: var(--error);
+}
+.msg-tool-indicator.error::after {
+  content: '✗';
+}
+@keyframes indicatorPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(0.95); }
+}
+@keyframes indicatorDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 .msg-tool-name {
   color: var(--text);
   font-weight: 500;
+  font-family: var(--font-mono);
 }
-.msg-tool-status {
-  margin-left: auto;
+.msg-tool-duration {
   font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-.msg-tool-status.running {
-  color: var(--accent);
-  background: rgba(10, 132, 255, 0.15);
-  animation: statusPulse 1.5s ease-in-out infinite;
-}
-.msg-tool-status.success {
-  color: var(--success);
-  background: rgba(48, 209, 88, 0.15);
-}
-.msg-tool-status.error {
-  color: var(--error);
-  background: rgba(255, 69, 58, 0.15);
+  color: var(--text-tertiary);
+  margin-left: 4px;
 }
 .msg-tool-expand {
   font-size: 10px;
   color: var(--text-tertiary);
   transition: transform var(--duration-fast) var(--ease-smooth);
+  margin-left: auto;
 }
 .msg-tool.expanded .msg-tool-expand {
   transform: rotate(90deg);
 }
 .msg-tool-content {
   display: none;
-  margin-top: 4px;
-  padding: 8px 10px;
-  background: rgba(0, 0, 0, 0.2);
-  border-radius: 6px;
+  margin-top: 6px;
+  margin-left: 22px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  border-left: 2px solid rgba(255, 255, 255, 0.1);
   font-size: 11px;
   color: var(--text-dim);
   overflow-x: auto;
+  max-width: 100%;
 }
 .msg-tool.expanded .msg-tool-content {
   display: block;
@@ -498,16 +572,21 @@ body {
   font-weight: 500;
 }
 .msg-tool-result {
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   padding-top: 6px;
   margin-top: 6px;
 }
 .msg-tool-result.success {
   color: var(--success);
-  opacity: 0.8;
+  opacity: 0.9;
 }
 .msg-tool-result.error {
   color: var(--error);
+}
+.msg-tool pre {
+  margin: 4px 0 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* Welcome/empty state */
@@ -968,12 +1047,72 @@ body {
   text-align: center;
 }
 
-/* Deploy progress */
-.deploy-progress { height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; margin-top: 4px; overflow: hidden; }
-.deploy-progress-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--cyan), var(--cyan-bright)); transition: width 0.5s ease; }
-.deploy-phase-text { font-size: 10px; color: var(--cyan); margin-top: 2px; display: flex; justify-content: space-between; }
-.deploy-error-lines { font-size: 10px; color: var(--red); white-space: pre-wrap; word-break: break-all; margin-top: 4px; max-height: 60px; overflow: hidden; font-family: var(--font-mono); }
-.deploy-eta { font-size: 10px; color: var(--text-dim); }
+/* Deploy progress - enhanced startup visualization */
+.deploy-progress {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+.deploy-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--cyan-bright, #409cff));
+  transition: width 0.3s ease;
+  position: relative;
+}
+.deploy-progress-fill.starting {
+  background: linear-gradient(90deg, var(--warning), var(--accent));
+  animation: progressPulse 1.5s ease-in-out infinite;
+}
+@keyframes progressPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.deploy-phase-text {
+  font-size: 10px;
+  color: var(--accent);
+  margin-top: 3px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.deploy-phase-icon {
+  margin-right: 4px;
+  animation: spin 1.5s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.deploy-eta {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+.deploy-error-lines {
+  font-size: 10px;
+  color: var(--error);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-top: 4px;
+  max-height: 60px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  background: rgba(255, 69, 58, 0.1);
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+/* Starting deployment highlight */
+.panel-list li.starting {
+  background: rgba(255, 159, 10, 0.08);
+  border-radius: 6px;
+  padding: 8px;
+  margin: -8px;
+  margin-bottom: 0;
+}
 </style>
 </head>
 <body>
@@ -1028,6 +1167,11 @@ body {
       <!-- Hardware Panel -->
       <div class="panel">
         <div class="panel-title">&#x25A0; <span x-text="t('hardware')"></span></div>
+        <!-- Device identity -->
+        <div class="device-identity">
+          <span class="device-name" x-text="hostname || selfIp || 'This Device'"></span>
+          <span class="device-ip" x-show="selfIp && selfIp !== 'localhost' && selfIp !== '127.0.0.1'" x-text="selfIp"></span>
+        </div>
         <template x-if="hw.gpu">
           <div>
             <div class="gauge">
@@ -1134,9 +1278,9 @@ body {
             <template x-if="msg.role === 'tool'">
               <div class="msg-tool" :class="msg.expanded ? 'expanded' : ''" @click="msg.expanded = !msg.expanded">
                 <div class="msg-tool-header">
-                  <span class="msg-tool-icon">◈</span>
+                  <span class="msg-tool-indicator" :class="msg.status || 'running'"></span>
                   <span class="msg-tool-name" x-text="msg.toolName || 'tool'"></span>
-                  <span class="msg-tool-status" :class="msg.status || 'running'" x-text="msg.status || 'running'"></span>
+                  <span class="msg-tool-duration" x-show="msg.duration" x-text="msg.duration"></span>
                   <span class="msg-tool-expand">▸</span>
                 </div>
                 <div class="msg-tool-content">
@@ -1220,12 +1364,15 @@ body {
           <div class="empty" x-text="t('no_fleet')"></div>
         </template>
         <template x-for="d in fleet" :key="d.id">
-          <div class="fleet-device">
+          <div class="fleet-device" :class="{ clickable: d.addr && d.online }" @click="openDeviceUI(d)">
             <span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span>
-            <div>
+            <div style="flex:1;min-width:0">
               <div class="name" x-text="d.name || d.id"></div>
               <div class="meta" x-text="d.meta || ''"></div>
             </div>
+            <template x-if="d.addr && d.online">
+              <span class="fleet-link-hint" title="Open Web UI">&#x2197;</span>
+            </template>
           </div>
         </template>
       </div>
@@ -1238,17 +1385,34 @@ body {
         </template>
         <ul class="panel-list">
           <template x-for="dep in deployments" :key="dep.name">
-            <li>
+            <li :class="{ starting: dep.startup_progress > 0 && dep.startup_progress < 100 }">
               <span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span>
               <div style="flex:1;overflow:hidden">
                 <div x-text="dep.name" style="text-overflow:ellipsis;overflow:hidden"></div>
                 <div style="font-size:10px;color:var(--text-dim)" x-text="dep.detail"></div>
-                <template x-if="dep.startup_progress > 0 && dep.startup_progress < 100">
-                  <div>
-                    <div class="deploy-progress"><div class="deploy-progress-fill" :style="'width:' + dep.startup_progress + '%'"></div></div>
-                    <div class="deploy-phase-text"><span x-text="dep.startup_message || dep.startup_phase"></span><span class="deploy-eta" x-text="dep.eta ? '~' + dep.eta : dep.startup_progress + '%'"></span></div>
+                <!-- Startup progress - show when starting or has progress -->
+                <template x-if="(dep.phase === 'starting' || dep.startup_progress > 0) && !dep.ready">
+                  <div style="margin-top:6px">
+                    <div class="deploy-progress">
+                      <div class="deploy-progress-fill starting" :style="'width:' + Math.max(dep.startup_progress || 5, Math.min(dep.startup_progress || 5, 95)) + '%'"></div>
+                    </div>
+                    <div class="deploy-phase-text">
+                      <span>
+                        <span class="deploy-phase-icon">◐</span>
+                        <span x-text="dep.startup_message || dep.startup_phase || 'Initializing...'"></span>
+                      </span>
+                      <span class="deploy-eta" x-text="dep.eta ? '~' + dep.eta : (dep.startup_progress || 5) + '%'"></span>
+                    </div>
                   </div>
                 </template>
+                <!-- Ready indicator -->
+                <template x-if="dep.phase === 'running' && dep.ready && dep.address">
+                  <div style="font-size:10px;color:var(--success);margin-top:2px;display:flex;align-items:center;gap:4px">
+                    <span>●</span>
+                    <span x-text="'Ready: ' + dep.address"></span>
+                  </div>
+                </template>
+                <!-- Error display -->
                 <template x-if="dep.phase === 'failed' && dep.error_lines">
                   <div class="deploy-error-lines" x-text="dep.error_lines"></div>
                 </template>
@@ -1257,36 +1421,6 @@ body {
           </template>
         </ul>
       </div>
-    </div>
-  </div>
-
-  <!-- Bottom Bar (desktop) -->
-  <div class="bottombar">
-    <template x-if="hw.gpu">
-      <div class="bottom-gauge">
-        <span class="bottom-gauge-label">GPU</span>
-        <div class="bottom-gauge-bar">
-          <div class="bottom-gauge-fill" :style="'width:' + hw.gpu.util + '%;background:linear-gradient(90deg,#22d3ee,#38bdf8);box-shadow:0 0 6px rgba(56,189,248,0.3)'"></div>
-        </div>
-        <span class="bottom-gauge-label" x-text="hw.gpu.util + '%'"></span>
-      </div>
-    </template>
-    <div class="bottom-gauge">
-      <span class="bottom-gauge-label">MEM</span>
-      <div class="bottom-gauge-bar">
-        <div class="bottom-gauge-fill" :style="'width:' + hw.mem.pct + '%;background:linear-gradient(90deg,#22d3ee,#38bdf8);box-shadow:0 0 6px rgba(56,189,248,0.3)'"></div>
-      </div>
-      <span class="bottom-gauge-label" x-text="hw.mem.used + '/' + hw.mem.total"></span>
-    </div>
-    <template x-if="hw.gpu && hw.gpu.temp">
-      <span class="bottom-temp" x-text="hw.gpu.temp + '\u00B0C'"></span>
-    </template>
-    <div class="bottom-gauge">
-      <span class="bottom-gauge-label">CPU</span>
-      <div class="bottom-gauge-bar">
-        <div class="bottom-gauge-fill" :style="'width:' + hw.cpu.pct + '%;background:linear-gradient(90deg,#22d3ee,#38bdf8);box-shadow:0 0 6px rgba(56,189,248,0.3)'"></div>
-      </div>
-      <span class="bottom-gauge-label" x-text="hw.cpu.pct + '%'"></span>
     </div>
   </div>
 
@@ -1813,6 +1947,8 @@ function aimaApp() {
       cpu: { pct: 0 },
       mem: { pct: 0, used: '0', total: '0' }
     },
+    hostname: '',
+    selfIp: '',
     engines: [],
     models: [],
     deployments: [],
@@ -1910,6 +2046,16 @@ function aimaApp() {
       if (data._err) return;
       this.systemOnline = true;
 
+      // Capture hostname from backend
+      if (data.hostname) {
+        this.hostname = data.hostname;
+      }
+      // Get IP from browser's location (what user used to access this device)
+      if (!this.selfIp) {
+        const h = window.location.host || '';
+        this.selfIp = h.split(':')[0];  // strip port
+      }
+
       const hw = data.hardware;
       const met = data.metrics;
 
@@ -1994,6 +2140,7 @@ function aimaApp() {
           name: d.name || 'unknown',
           phase: d.phase || 'unknown',
           ready: d.ready || false,
+          address: d.address || '',
           detail: [d.runtime, d.ready ? d.address : d.phase].filter(Boolean).join(' '),
           startup_phase: d.startup_phase || '',
           startup_progress: d.startup_progress || 0,
@@ -2022,8 +2169,16 @@ function aimaApp() {
         id: d.id || d.name || 'unknown',
         name: d.name || d.id || 'unknown',
         online: d.online !== false,
-        meta: (d.models && d.models.length > 0) ? d.models.join(', ') : (d.addr_v4 || '')
+        meta: (d.models && d.models.length > 0) ? d.models.join(', ') : (d.addr_v4 || ''),
+        addr: d.addr_v4 || '',
+        port: d.port || 6188
       }));
+    },
+
+    openDeviceUI(device) {
+      if (!device.addr) return;
+      const url = `http://${device.addr}:${device.port}/ui/`;
+      window.open(url, '_blank');
     },
 
     // Combined agent status + LLM config polling
@@ -2081,23 +2236,27 @@ function aimaApp() {
 
       // Show a tool call for the agent.ask being executed
       const toolIndex = this.messages.length;
+      const startTime = Date.now();
       this.messages.push({
         role: 'tool',
         toolName: 'agent.ask',
         args: { query: text },
         status: 'running',
-        expanded: false
+        expanded: false,
+        startTime: startTime
       });
       this.scrollChat();
 
       const data = await this.callTool('agent.ask', params);
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
 
       if (data._err) {
         // Update tool status using splice for reactivity
         this.messages.splice(toolIndex, 1, {
           ...this.messages[toolIndex],
           status: 'error',
-          result: data._err
+          result: data._err,
+          duration: duration
         });
         this._agentConfirmed = false;
         this.agentAvailable = false;
@@ -2113,7 +2272,8 @@ function aimaApp() {
       this.messages.splice(toolIndex, 1, {
         ...this.messages[toolIndex],
         status: 'success',
-        result: data
+        result: data,
+        duration: duration
       });
 
       // If response contains tool_calls, display them

@@ -47,6 +47,14 @@ type ToolResult struct {
 	IsError bool   `json:"is_error"`
 }
 
+// ToolCallInfo records a single tool call for UI display.
+type ToolCallInfo struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Result    string          `json:"result,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
+}
+
 // ToolDefinition is a serializable tool description.
 type ToolDefinition struct {
 	Name        string          `json:"name"`
@@ -100,10 +108,10 @@ func (a *Agent) Available() bool {
 }
 
 // Ask processes a user query through the agent loop and returns the final text response.
-// If sessionID is empty, a new session is created. Returns (result, sessionID, error).
-func (a *Agent) Ask(ctx context.Context, sessionID, query string) (string, string, error) {
+// If sessionID is empty, a new session is created. Returns (result, sessionID, toolCalls, error).
+func (a *Agent) Ask(ctx context.Context, sessionID, query string) (string, string, []ToolCallInfo, error) {
 	if a.llm == nil {
-		return "", "", fmt.Errorf("no LLM backend configured: deploy a model and run 'aima serve', or set AIMA_LLM_ENDPOINT")
+		return "", "", nil, fmt.Errorf("no LLM backend configured: deploy a model and run 'aima serve', or set AIMA_LLM_ENDPOINT")
 	}
 
 	// Session management: load or create
@@ -122,17 +130,18 @@ func (a *Agent) Ask(ctx context.Context, sessionID, query string) (string, strin
 	messages = append(messages, Message{Role: "user", Content: query})
 
 	tools := a.tools.ListTools()
+	var allToolCalls []ToolCallInfo
 
 	for turn := 0; turn < a.maxTurns; turn++ {
 		select {
 		case <-ctx.Done():
-			return "", "", ctx.Err()
+			return "", "", allToolCalls, ctx.Err()
 		default:
 		}
 
 		resp, err := a.llm.ChatCompletion(ctx, messages, tools)
 		if err != nil {
-			return "", "", fmt.Errorf("chat completion (turn %d): %w", turn, err)
+			return "", "", allToolCalls, fmt.Errorf("chat completion (turn %d): %w", turn, err)
 		}
 
 		// If no tool calls, return the text response
@@ -141,7 +150,7 @@ func (a *Agent) Ask(ctx context.Context, sessionID, query string) (string, strin
 			if a.sessions != nil {
 				a.sessions.Save(sessionID, messages)
 			}
-			return resp.Content, sessionID, nil
+			return resp.Content, sessionID, allToolCalls, nil
 		}
 
 		// Append assistant message with tool calls
@@ -156,29 +165,40 @@ func (a *Agent) Ask(ctx context.Context, sessionID, query string) (string, strin
 		for _, tc := range resp.ToolCalls {
 			slog.Debug("executing tool", "name", tc.Name, "id", tc.ID)
 
+			callInfo := ToolCallInfo{
+				Name:      tc.Name,
+				Arguments: json.RawMessage(tc.Arguments),
+			}
+
 			result, err := a.tools.ExecuteTool(ctx, tc.Name, json.RawMessage(tc.Arguments))
 			if err != nil {
+				callInfo.Result = err.Error()
+				callInfo.IsError = true
 				messages = append(messages, Message{
 					Role:       "tool",
 					ToolCallID: tc.ID,
 					Content:    fmt.Sprintf("error: %v", err),
 				})
+				allToolCalls = append(allToolCalls, callInfo)
 				continue
 			}
 
 			content := result.Content
 			if result.IsError {
+				callInfo.IsError = true
 				content = "error: " + content
 			}
+			callInfo.Result = content
 			messages = append(messages, Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
 				Content:    content,
 			})
+			allToolCalls = append(allToolCalls, callInfo)
 		}
 	}
 
-	return "", "", fmt.Errorf("agent exceeded maximum turns (%d)", a.maxTurns)
+	return "", "", allToolCalls, fmt.Errorf("agent exceeded maximum turns (%d)", a.maxTurns)
 }
 
 func (a *Agent) buildSystemPrompt() string {

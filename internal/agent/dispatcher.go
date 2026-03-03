@@ -35,8 +35,8 @@ func NewDispatcher(goAgent *Agent, zeroclaw ZeroClawClient) *Dispatcher {
 }
 
 // Ask routes the query to the appropriate agent based on options and heuristics.
-// Returns (result, sessionID, error). sessionID is always returned for L3a sessions.
-func (d *Dispatcher) Ask(ctx context.Context, query string, opts DispatchOption) (string, string, error) {
+// Returns (result, sessionID, toolCalls, error). sessionID is always returned for L3a sessions.
+func (d *Dispatcher) Ask(ctx context.Context, query string, opts DispatchOption) (string, string, []ToolCallInfo, error) {
 	// Force local → L3a
 	if opts.ForceLocal {
 		return d.goAgent.Ask(ctx, opts.SessionID, query)
@@ -45,21 +45,21 @@ func (d *Dispatcher) Ask(ctx context.Context, query string, opts DispatchOption)
 	// Force deep → L3b (no session fallback)
 	if opts.ForceDeep {
 		if !d.zeroClawAvailable() {
-			return "", "", fmt.Errorf("ZeroClaw (L3b) is not available")
+			return "", "", nil, fmt.Errorf("ZeroClaw (L3b) is not available")
 		}
 		if opts.SessionID != "" {
 			r, err := d.zeroclaw.AskWithSession(ctx, opts.SessionID, query)
-			return r, opts.SessionID, err
+			return r, opts.SessionID, nil, err
 		}
 		r, err := d.zeroclaw.Ask(ctx, query)
-		return r, "", err
+		return r, "", nil, err
 	}
 
 	// Session ID without force-deep → try L3b, fall back to L3a
 	if opts.SessionID != "" {
 		if d.zeroClawAvailable() {
 			r, err := d.zeroclaw.AskWithSession(ctx, opts.SessionID, query)
-			return r, opts.SessionID, err
+			return r, opts.SessionID, nil, err
 		}
 		// Graceful degradation: L3b unavailable → use L3a session
 		return d.goAgent.Ask(ctx, opts.SessionID, query)
@@ -68,7 +68,7 @@ func (d *Dispatcher) Ask(ctx context.Context, query string, opts DispatchOption)
 	// Auto-route: if ZeroClaw available and query looks complex, use L3b
 	if d.zeroClawAvailable() && isComplexQuery(query) {
 		r, err := d.zeroclaw.Ask(ctx, query)
-		return r, "", err
+		return r, "", nil, err
 	}
 
 	// Default: L3a
