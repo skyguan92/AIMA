@@ -25,12 +25,13 @@ type DiscoverFunc func(ctx context.Context, apiKey string) []FleetEndpoint
 
 // OpenAIClient implements LLMClient using the OpenAI-compatible chat completions API.
 type OpenAIClient struct {
-	baseURL    string
-	model      string
-	apiKey     string
-	userAgent  string
-	httpClient *http.Client
-	discoverFn DiscoverFunc
+	baseURL     string
+	model       string
+	apiKey      string
+	userAgent   string
+	extraParams map[string]any
+	httpClient  *http.Client
+	discoverFn  DiscoverFunc
 
 	mu            sync.RWMutex
 	cachedModel   string
@@ -63,6 +64,12 @@ func WithHTTPClient(hc *http.Client) OpenAIOption {
 // WithDiscoverFunc sets a fleet discovery function for LLM endpoint fallback.
 func WithDiscoverFunc(fn DiscoverFunc) OpenAIOption {
 	return func(c *OpenAIClient) { c.discoverFn = fn }
+}
+
+// WithExtraParams sets provider-specific parameters merged into every request body.
+// Example: {"temperature": 0.6} or {"extra_body": {"thinking": {"type": "enabled"}}}.
+func WithExtraParams(params map[string]any) OpenAIOption {
+	return func(c *OpenAIClient) { c.extraParams = params }
 }
 
 // NewOpenAIClient creates an OpenAI-compatible LLM client.
@@ -108,6 +115,13 @@ func (c *OpenAIClient) SetUserAgent(ua string) {
 	c.userAgent = ua
 }
 
+// SetExtraParams updates provider-specific extra parameters at runtime.
+func (c *OpenAIClient) SetExtraParams(params map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.extraParams = params
+}
+
 // ChatCompletion sends a chat completion request with optional tool definitions.
 func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
 	// Snapshot mutable fields under read lock (don't hold during I/O)
@@ -115,6 +129,7 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 	baseURL := c.baseURL
 	apiKey := c.apiKey
 	userAgent := c.userAgent
+	extraParams := c.extraParams
 	c.mu.RUnlock()
 
 	model, err := c.resolveModel(ctx)
@@ -122,18 +137,16 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 		return nil, err
 	}
 
-	req := chatRequest{
-		Model:    model,
-		Messages: make([]chatMessage, len(messages)),
-	}
+	wireMessages := make([]chatMessage, len(messages))
 	for i, m := range messages {
-		req.Messages[i] = chatMessage{
-			Role:       m.Role,
-			Content:    m.Content,
-			ToolCallID: m.ToolCallID,
+		wireMessages[i] = chatMessage{
+			Role:             m.Role,
+			Content:          m.Content,
+			ReasoningContent: m.ReasoningContent,
+			ToolCallID:       m.ToolCallID,
 		}
 		for _, tc := range m.ToolCalls {
-			req.Messages[i].ToolCalls = append(req.Messages[i].ToolCalls, chatToolCall{
+			wireMessages[i].ToolCalls = append(wireMessages[i].ToolCalls, chatToolCall{
 				ID:   tc.ID,
 				Type: "function",
 				Function: chatFunction{
@@ -142,6 +155,12 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 				},
 			})
 		}
+	}
+
+	// Build request body as map so extraParams can inject arbitrary top-level fields.
+	reqBody := map[string]any{
+		"model":    model,
+		"messages": wireMessages,
 	}
 
 	// Some LLM providers (e.g. Kimi) reject dots in function names.
@@ -161,15 +180,23 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 				},
 			}
 		}
-		req.Tools = apiTools
+		reqBody["tools"] = apiTools
 	}
 
-	body, err := json.Marshal(req)
+	// Merge extra params (temperature, top_p, thinking, etc.) — provider-agnostic.
+	for k, v := range extraParams {
+		if k != "model" && k != "messages" && k != "tools" {
+			reqBody[k] = v
+		}
+	}
+
+	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/chat/completions", bytes.NewReader(body))
+	url := baseURL + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -192,7 +219,7 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("chat completions: HTTP %d: %s", httpResp.StatusCode, respBody)
+		return nil, fmt.Errorf("chat completions (POST %s, model=%s): HTTP %d: %s", url, model, httpResp.StatusCode, respBody)
 	}
 
 	var chatResp chatResponse
@@ -354,15 +381,9 @@ func (c *OpenAIClient) Available(ctx context.Context) bool {
 
 // --- JSON wire types ---
 
-type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Tools    []chatTool    `json:"tools,omitempty"`
-}
-
 type chatMessage struct {
 	Role             string         `json:"role"`
-	Content          string         `json:"content,omitempty"`
+	Content          string         `json:"content"`
 	ReasoningContent string         `json:"reasoning_content,omitempty"`
 	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
