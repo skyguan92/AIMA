@@ -79,7 +79,7 @@ func TestAgent_SimpleQuery(t *testing.T) {
 	}
 
 	agent := NewAgent(llm, tools)
-	result, _, err := agent.Ask(context.Background(), "", "Hi")
+	result, _, _, err := agent.Ask(context.Background(), "", "Hi")
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestAgent_SingleToolCall(t *testing.T) {
 	}
 
 	agent := NewAgent(llm, tools)
-	result, _, err := agent.Ask(context.Background(), "", "What GPU do I have?")
+	result, _, _, err := agent.Ask(context.Background(), "", "What GPU do I have?")
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestAgent_MultiTurnToolCalling(t *testing.T) {
 	}
 
 	agent := NewAgent(llm, tools)
-	result, _, err := agent.Ask(context.Background(), "", "Deploy the best model")
+	result, _, _, err := agent.Ask(context.Background(), "", "Deploy the best model")
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestAgent_MaxTurnsExceeded(t *testing.T) {
 	}
 
 	agent := NewAgent(llm, tools, WithMaxTurns(3))
-	_, _, err := agent.Ask(context.Background(), "", "test")
+	_, _, _, err := agent.Ask(context.Background(), "", "test")
 	if err == nil {
 		t.Fatal("expected error for max turns exceeded")
 	}
@@ -209,7 +209,7 @@ func TestAgent_ContextCancellation(t *testing.T) {
 	tools := &mockTools{}
 
 	agent := NewAgent(llm, tools)
-	_, _, err := agent.Ask(ctx, "", "test")
+	_, _, _, err := agent.Ask(ctx, "", "test")
 	if err == nil {
 		t.Fatal("expected context cancellation error")
 	}
@@ -230,7 +230,7 @@ func TestAgent_ToolExecutionError(t *testing.T) {
 	}
 
 	agent := NewAgent(llm, tools)
-	result, _, err := agent.Ask(context.Background(), "", "do something")
+	result, _, _, err := agent.Ask(context.Background(), "", "do something")
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestAgent_ToolResultIsError(t *testing.T) {
 	}
 
 	agent := NewAgent(llm, tools)
-	result, _, err := agent.Ask(context.Background(), "", "delete everything")
+	result, _, _, err := agent.Ask(context.Background(), "", "delete everything")
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestDispatcher_ForceLocal(t *testing.T) {
 	zc := &mockZeroClaw{available: true, response: "from L3b"}
 	d := NewDispatcher(goAgent, zc)
 
-	result, _, err := d.Ask(context.Background(), "optimize everything", DispatchOption{ForceLocal: true})
+	result, _, _, err := d.Ask(context.Background(), "optimize everything", DispatchOption{ForceLocal: true})
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestDispatcher_ForceDeep(t *testing.T) {
 	zc := &mockZeroClaw{available: true, response: "from L3b"}
 	d := NewDispatcher(goAgent, zc)
 
-	result, _, err := d.Ask(context.Background(), "simple query", DispatchOption{ForceDeep: true})
+	result, _, _, err := d.Ask(context.Background(), "simple query", DispatchOption{ForceDeep: true})
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestDispatcher_ForceDeepUnavailable(t *testing.T) {
 	zc := &mockZeroClaw{available: false}
 	d := NewDispatcher(goAgent, zc)
 
-	_, _, err := d.Ask(context.Background(), "test", DispatchOption{ForceDeep: true})
+	_, _, _, err := d.Ask(context.Background(), "test", DispatchOption{ForceDeep: true})
 	if err == nil {
 		t.Fatal("expected error when forcing deep with unavailable ZeroClaw")
 	}
@@ -413,7 +413,7 @@ func TestDispatcher_SessionRouting(t *testing.T) {
 	}
 	d := NewDispatcher(goAgent, zc)
 
-	result, sid, err := d.Ask(context.Background(), "continue", DispatchOption{SessionID: "sess-1"})
+	result, sid, _, err := d.Ask(context.Background(), "continue", DispatchOption{SessionID: "sess-1"})
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestDispatcher_SessionFallbackToL3a(t *testing.T) {
 	zc := &mockZeroClaw{available: false}
 	d := NewDispatcher(goAgent, zc)
 
-	result, sid, err := d.Ask(context.Background(), "continue", DispatchOption{SessionID: "my-session"})
+	result, sid, _, err := d.Ask(context.Background(), "continue", DispatchOption{SessionID: "my-session"})
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestDispatcher_ComplexQueryRouting(t *testing.T) {
 			zc := &mockZeroClaw{available: tt.zcAvailable, response: "from L3b"}
 			d := NewDispatcher(goAgent, zc)
 
-			result, _, err := d.Ask(context.Background(), tt.query, DispatchOption{})
+			result, _, _, err := d.Ask(context.Background(), tt.query, DispatchOption{})
 			if err != nil {
 				t.Fatalf("Ask: %v", err)
 			}
@@ -502,7 +502,7 @@ func TestDispatcher_NilZeroClaw(t *testing.T) {
 	d := NewDispatcher(goAgent, nil)
 
 	// Should fall back to L3a even with complex query
-	result, _, err := d.Ask(context.Background(), "optimize everything", DispatchOption{})
+	result, _, _, err := d.Ask(context.Background(), "optimize everything", DispatchOption{})
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestDispatcher_NilZeroClaw_ForceDeep(t *testing.T) {
 
 	d := NewDispatcher(goAgent, nil)
 
-	_, _, err := d.Ask(context.Background(), "test", DispatchOption{ForceDeep: true})
+	_, _, _, err := d.Ask(context.Background(), "test", DispatchOption{ForceDeep: true})
 	if err == nil {
 		t.Fatal("expected error when forcing deep with nil ZeroClaw")
 	}
@@ -557,7 +557,7 @@ func TestAgent_NilLLM(t *testing.T) {
 	tools := &mockTools{tools: []ToolDefinition{}}
 	agent := NewAgent(nil, tools)
 
-	_, _, err := agent.Ask(context.Background(), "", "test")
+	_, _, _, err := agent.Ask(context.Background(), "", "test")
 	if err == nil {
 		t.Fatal("expected error with nil LLM, not panic")
 	}
@@ -586,7 +586,7 @@ func TestDispatcher_NoLLM_ReturnsError(t *testing.T) {
 	goAgent := NewAgent(nil, tools)
 	d := NewDispatcher(goAgent, nil)
 
-	_, _, err := d.Ask(context.Background(), "test", DispatchOption{})
+	_, _, _, err := d.Ask(context.Background(), "test", DispatchOption{})
 	if err == nil {
 		t.Fatal("expected error when agent has no LLM")
 	}
@@ -600,7 +600,7 @@ func TestDispatcher_ForceLocal_NoLLM(t *testing.T) {
 	goAgent := NewAgent(nil, tools)
 	d := NewDispatcher(goAgent, nil)
 
-	_, _, err := d.Ask(context.Background(), "test", DispatchOption{ForceLocal: true})
+	_, _, _, err := d.Ask(context.Background(), "test", DispatchOption{ForceLocal: true})
 	if err == nil {
 		t.Fatal("expected error when forcing local with no LLM")
 	}
@@ -616,7 +616,7 @@ func TestSession_NewSessionReturnsID(t *testing.T) {
 	store := NewSessionStore()
 	agent := NewAgent(llm, tools, WithSessions(store))
 
-	_, sid, err := agent.Ask(context.Background(), "", "Hi")
+	_, sid, _, err := agent.Ask(context.Background(), "", "Hi")
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -637,13 +637,13 @@ func TestSession_ContinuationIncludesHistory(t *testing.T) {
 	agent := NewAgent(llm, tools, WithSessions(store))
 
 	// First turn
-	_, sid, err := agent.Ask(context.Background(), "", "Download a model")
+	_, sid, _, err := agent.Ask(context.Background(), "", "Download a model")
 	if err != nil {
 		t.Fatalf("Ask turn 1: %v", err)
 	}
 
 	// Second turn with same session
-	_, sid2, err := agent.Ask(context.Background(), sid, "Qwen3 7B")
+	_, sid2, _, err := agent.Ask(context.Background(), sid, "Qwen3 7B")
 	if err != nil {
 		t.Fatalf("Ask turn 2: %v", err)
 	}
@@ -704,7 +704,7 @@ func TestSession_MissedIDTreatedAsNew(t *testing.T) {
 	agent := NewAgent(llm, tools, WithSessions(store))
 
 	// Use a non-existent session ID — should start fresh
-	_, sid, err := agent.Ask(context.Background(), "nonexistent-session", "Hello")
+	_, sid, _, err := agent.Ask(context.Background(), "nonexistent-session", "Hello")
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -764,7 +764,7 @@ func TestAgent_NoSessionStore_StillWorks(t *testing.T) {
 
 	// Agent without WithSessions — backward compatible
 	agent := NewAgent(llm, tools)
-	result, sid, err := agent.Ask(context.Background(), "", "Hi")
+	result, sid, _, err := agent.Ask(context.Background(), "", "Hi")
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}

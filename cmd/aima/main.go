@@ -160,11 +160,11 @@ func run() error {
 		if skipPerms {
 			ctx = context.WithValue(ctx, ctxKeySkipPerms, true)
 		}
-		result, sid, err := dispatcher.Ask(ctx, query, agent.DispatchOption{ForceLocal: forceLocal, ForceDeep: forceDeep, SessionID: sessionID})
+		result, sid, toolCalls, err := dispatcher.Ask(ctx, query, agent.DispatchOption{ForceLocal: forceLocal, ForceDeep: forceDeep, SessionID: sessionID})
 		if err != nil {
 			return nil, "", err
 		}
-		data, err := json.Marshal(map[string]string{"result": result})
+		data, err := json.Marshal(map[string]any{"result": result, "session_id": sid, "tool_calls": toolCalls})
 		return data, sid, err
 	}
 	deps.DeployApprove = func(ctx context.Context, id int64) (json.RawMessage, error) {
@@ -2255,6 +2255,12 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if m, err := hal.CollectMetrics(ctx); err == nil {
 				if b, e := json.Marshal(m); e == nil {
 					status["metrics"] = b
+				}
+			}
+			// Add hostname and primary IP for device identification
+			if hostname, err := os.Hostname(); err == nil {
+				if b, e := json.Marshal(hostname); e == nil {
+					status["hostname"] = b
 				}
 			}
 			return json.Marshal(status)
