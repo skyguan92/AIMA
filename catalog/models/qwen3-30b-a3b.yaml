@@ -21,6 +21,14 @@ storage:
     - type: modelscope
       repo: Qwen/Qwen3-30B-A3B
       format: safetensors
+    - type: huggingface
+      repo: Qwen/Qwen3-30B-A3B-GPTQ-Int4
+      format: safetensors
+      quantization: gptq
+    - type: modelscope
+      repo: Qwen/Qwen3-30B-A3B-GPTQ-Int4
+      format: safetensors
+      quantization: gptq
     - type: local_path
       path: ""
 variants:
@@ -48,6 +56,28 @@ variants:
   # BF16: 58GiB 权重 + 5GiB PyTorch overhead > 64GiB VRAM → OOM
   # CPU offload 无效: unified memory 下 CPU/GPU 共享物理内存池
   # 此设备需要 llamacpp + GGUF 量化 (走下方 universal variant)
+
+  # --- Moore Threads MUSA (M1000, 62GB unified, GPTQ-Int4) ---
+  # GPTQ-Int4 权重 ~16GB, M1000 unified memory 62GB
+  # tp=1 only, enforce-eager required, GPTQ-only quantization
+  # gpu_memory_utilization 0.70 on 62GB ≈ 43GB → 16GB 权重 + KV cache 充裕
+  - name: qwen3-30b-a3b-musa-vllm-gptq
+    hardware:
+      gpu_arch: MUSA
+      vram_min_mib: 16384
+      unified_memory: true
+    engine: vllm
+    format: safetensors
+    default_config:
+      gpu_memory_utilization: 0.70
+      max_model_len: 16384
+      max_num_seqs: 1
+      enforce_eager: true
+      quantization: gptq
+      dtype: auto
+    expected_performance:
+      tokens_per_second: [5, 15]
+      latency_first_token_ms: [200, 1000]
 
   # --- 所有设备通用 (llamacpp + GGUF) ---
   # MoE Q4_K_M = 18.6GB → linux-1 (24GB/GPU ✓), amd395 (128GB unified ✓)

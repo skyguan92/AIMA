@@ -78,6 +78,27 @@ variants:
       vram_mib: 16000
       notes: "vLLM 0.9.2 DCU, FP16, single BW150 64GB, untested estimate."
 
+  # --- Moore Threads MUSA (M1000, 62GB unified) ---
+  # FP16 weights ~16GB, M1000 unified memory 62GB, tp=1 only
+  # GPTQ only for production; FP16/safetensors for dev/test
+  # gpu_memory_utilization 0.70 on 62GB ≈ 43GB → 充裕
+  - name: qwen3-8b-musa-vllm-fp16
+    hardware:
+      gpu_arch: MUSA
+      vram_min_mib: 6144
+      unified_memory: true
+    engine: vllm
+    format: safetensors
+    default_config:
+      gpu_memory_utilization: 0.70
+      max_model_len: 16384
+      max_num_seqs: 1
+      enforce_eager: true
+      dtype: auto
+    expected_performance:
+      tokens_per_second: [5, 20]
+      latency_first_token_ms: [100, 500]
+
   # --- 所有设备通用 (llamacpp + GGUF) ---
   # Q4_K_M = 5.03GB → RTX 4060 (8GB) ✓, M4 (16GB) ✓
   # Q8_0 = 8.71GB → RTX 4060 需部分 CPU offload

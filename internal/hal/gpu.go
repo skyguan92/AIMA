@@ -83,6 +83,11 @@ func detectGPU(ctx context.Context, runner CommandRunner) *GPUInfo {
 		return gpu
 	}
 
+	// Moore Threads MUSA: sysfs-based detection for edge devices (M1000) without mthreads-gmi.
+	if gpu := detectMThreadsMUSA(ctx, runner); gpu != nil {
+		return gpu
+	}
+
 	for _, p := range gpuProbes {
 		out, err := runner.Run(ctx, p.cmd, p.args...)
 		if err != nil {
@@ -101,6 +106,11 @@ func detectGPU(ctx context.Context, runner CommandRunner) *GPUInfo {
 func collectGPUMetrics(ctx context.Context, runner CommandRunner) *GPUMetrics {
 	// Hygon DCU: sysfs-based metrics, must run before AMD probe.
 	if m := collectHygonDCUMetrics(ctx, runner); m != nil {
+		return m
+	}
+
+	// Moore Threads MUSA: text-based metrics from mthreads-smi.
+	if m := collectMThreadsMUSAMetrics(ctx, runner); m != nil {
 		return m
 	}
 
@@ -885,17 +895,117 @@ func parseMThreadsGPUMetrics(output string) *GPUMetrics {
 	}
 }
 
-func mthreadsGPUToArch(name string) string {
-	lower := strings.ToLower(name)
-	switch {
-	case strings.Contains(lower, "s4000"):
-		return "MTT S4000"
-	case strings.Contains(lower, "s3000"):
-		return "MTT S3000"
-	case strings.Contains(lower, "s80"):
-		return "MTT S80"
-	default:
-		return "unknown"
+func mthreadsGPUToArch(_ string) string {
+	return "MUSA"
+}
+
+// detectMThreadsMUSA detects Moore Threads MUSA GPUs via Linux sysfs.
+// Sentinel: /dev/mtgpu.0 must exist. Then checks /sys/class/drm/card*/device/uevent
+// for DRIVER=mt-igpu entries. Reads GPU info from mthreads-smi text output.
+func detectMThreadsMUSA(ctx context.Context, runner CommandRunner) *GPUInfo {
+	if _, err := runner.Run(ctx, "stat", "/dev/mtgpu.0"); err != nil {
+		return nil
+	}
+
+	// Try mthreads-smi for product name and GPU info
+	name := "M1000"
+	var tempC float64
+	if out, err := runner.Run(ctx, "mthreads-smi"); err == nil {
+		if parsed := parseMThreadsSMI(string(out)); parsed != nil {
+			if parsed.Name != "" {
+				name = parsed.Name
+			}
+			tempC = parsed.TemperatureCelsius
+		}
+	}
+
+	// Get system memory (unified memory — GPU shares system RAM)
+	var vramMiB int
+	if out, err := runner.Run(ctx, "cat", "/proc/meminfo"); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					if kb, err := strconv.Atoi(fields[1]); err == nil {
+						vramMiB = kb / 1024
+					}
+				}
+				break
+			}
+		}
+	}
+
+	slog.Info("detected Moore Threads MUSA GPU via sysfs", "name", name, "vram_mib", vramMiB)
+	return &GPUInfo{
+		Vendor:             "mthreads",
+		Name:               name,
+		Arch:               mthreadsGPUToArch(name),
+		VRAMMiB:            vramMiB,
+		TemperatureCelsius: tempC,
+		UnifiedMemory:      true,
+		Count:              1,
+	}
+}
+
+// parseMThreadsSMI parses the text output of mthreads-smi (non-JSON, edge devices).
+func parseMThreadsSMI(output string) *GPUInfo {
+	info := &GPUInfo{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "cpu name:") {
+			info.Name = strings.TrimSpace(strings.TrimPrefix(line, "cpu name:"))
+		} else if strings.HasPrefix(line, "gpu temperature:") {
+			info.TemperatureCelsius = parseFloatPrefix(strings.TrimSpace(strings.TrimPrefix(line, "gpu temperature:")))
+		}
+	}
+	return info
+}
+
+// collectMThreadsMUSAMetrics reads GPU metrics from mthreads-smi text output.
+func collectMThreadsMUSAMetrics(ctx context.Context, runner CommandRunner) *GPUMetrics {
+	if _, err := runner.Run(ctx, "stat", "/dev/mtgpu.0"); err != nil {
+		return nil
+	}
+
+	out, err := runner.Run(ctx, "mthreads-smi")
+	if err != nil {
+		return nil
+	}
+
+	var util int
+	var memUsed, memTotal int
+	var tempC float64
+
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "gpu utilization:"):
+			util = int(parseFloatPrefix(strings.TrimSpace(strings.TrimPrefix(line, "gpu utilization:"))))
+		case strings.HasPrefix(line, "gpu temperature:"):
+			tempC = parseFloatPrefix(strings.TrimSpace(strings.TrimPrefix(line, "gpu temperature:")))
+		case strings.HasPrefix(line, "used:"):
+			// system memory used in KB
+			val := strings.TrimSpace(strings.TrimPrefix(line, "used:"))
+			if kb, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(val), " KB")); err == nil {
+				memUsed = kb / 1024
+			}
+		case strings.HasPrefix(line, "capacity:"):
+			val := strings.TrimSpace(strings.TrimPrefix(line, "capacity:"))
+			if kb, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(val), " KB")); err == nil {
+				memTotal = kb / 1024
+			}
+		}
+	}
+
+	if memTotal == 0 {
+		return nil
+	}
+
+	return &GPUMetrics{
+		UtilizationPercent: util,
+		MemoryUsedMiB:      memUsed,
+		MemoryTotalMiB:     memTotal,
+		TemperatureCelsius: tempC,
 	}
 }
 

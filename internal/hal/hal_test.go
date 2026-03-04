@@ -786,14 +786,14 @@ func TestParseMThreadsGPU(t *testing.T) {
 			name:     "MTT S4000",
 			output:   `{"gpus": [{"product_name": "MTT S4000", "memory_total": "32768 MiB", "temperature": "45 C", "power_draw": "150.0 W"}]}`,
 			wantName: "MTT S4000",
-			wantArch: "MTT S4000",
+			wantArch: "MUSA",
 			wantVRAM: 32768,
 		},
 		{
 			name:     "MTT S80",
 			output:   `{"gpus": [{"product_name": "MTT S80", "memory_total": "16384 MiB"}]}`,
 			wantName: "MTT S80",
-			wantArch: "MTT S80",
+			wantArch: "MUSA",
 			wantVRAM: 16384,
 		},
 		{

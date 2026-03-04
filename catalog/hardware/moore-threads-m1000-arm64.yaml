@@ -1,0 +1,34 @@
+kind: hardware_profile
+metadata:
+  name: moore-threads-m1000-arm64
+  description: "Moore Threads M1000 MUSA GPU, aarch64, unified memory ~62GB"
+hardware:
+  gpu:
+    arch: MUSA
+    vram_mib: 63488
+    compute_id: ""
+    compute_units: 0
+    resource_name: ""
+  cpu:
+    arch: aarch64
+    cores: 12
+    freq_ghz: 2.65
+  ram:
+    total_mib: 63528
+    bandwidth_gbps: 50
+  unified_memory: true
+constraints:
+  tdp_watts: 100
+  power_modes: [100]
+  cooling: active
+partition:
+  gpu_tools: [engine_params]
+  cpu_tools: [cgroups]
+container:
+  devices:
+    - /dev/mtgpu.0
+    - /dev/dri
+  env:
+    ENABLE_MUSA_MMA: "1"
+    TRITON_CACHE_DIR: "/tmp/triton"
+    LD_LIBRARY_PATH: "/usr/local/musa/lib"
