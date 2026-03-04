@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -162,29 +161,8 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 		command[i] = strings.ReplaceAll(c, "{{.ModelPath}}", "/models")
 	}
 
-	// Append config values as CLI flags (same logic as native runtime).
-	// Config keys use underscore (e.g. "tp") → "--tp", "mem_fraction_static" → "--mem-fraction-static".
-	// "port" is excluded since it is handled by the engine command or --publish.
-	if len(req.Config) > 0 {
-		keys := make([]string, 0, len(req.Config))
-		for k := range req.Config {
-			if k != "port" {
-				keys = append(keys, k)
-			}
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			flag := "--" + strings.ReplaceAll(k, "_", "-")
-			switch v := req.Config[k].(type) {
-			case bool:
-				if v {
-					command = append(command, flag)
-				}
-			default:
-				command = append(command, flag, fmt.Sprintf("%v", v))
-			}
-		}
-	}
+	// Append config values as CLI flags
+	command = append(command, configToFlags(req.Config)...)
 
 	// Image
 	image := req.Image

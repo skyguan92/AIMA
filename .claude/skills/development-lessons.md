@@ -139,3 +139,23 @@ Pattern: SQLite persistence + in-memory RWMutex hot-swap + REST endpoint for upd
 
 ### resolveDeployment parameter bloat (Tech Debt)
 13 parameters → candidate for `type deployContext struct {}`. Rule: mark as tech debt, refactor at 3+ call sites.
+
+### Variadic params for optional behavior extension
+When a function needs to support new optional behavior without breaking callers:
+```go
+// BEFORE: caller must inject variant logic externally (violates INV-5)
+synth := cat.BuildSyntheticModelAsset(name, type, family, params, format)
+// + 16 lines of variant injection in CLI layer
+
+// AFTER: variadic param keeps backward-compat, logic stays in knowledge package
+synth := cat.BuildSyntheticModelAsset(name, type, family, params, format, engineType)
+```
+Rule: If you're adding logic to CLI that should be in a library, check if a variadic param can absorb it.
+
+### Boolean config flag conversion
+Docker/native runtimes convert config map to CLI flags. Boolean values need special handling:
+```go
+// WRONG: --enable-chunked-prefill true (not a valid flag format)
+// RIGHT: --enable-chunked-prefill (flag present = true, absent = false)
+```
+Pattern: `if v == "true" { args = append(args, "--"+k) }` — skip `false` values entirely.

@@ -64,6 +64,14 @@ LLM gmu=0.78 (TP=2) + ASR gmu=0.14 + TTS CUDA (no health probes)
 | NVIDIA (legacy) | `--gpus all` | nvidia-container-toolkit distro package |
 | AMD/ROCm | `--device /dev/kfd --device /dev/dri` | Correct render group GID (NOT lxd!) |
 | Hygon DCU | `--device /dev/kfd --device /dev/dri` | DTK SDK container env |
+| Ascend 910B | `--runtime ascend --device /dev/davinci*` | Ascend Docker runtime + CANN toolkit |
+
+### Ascend 910B specific
+- Network: `--network host` required (NPU uses host-level networking)
+- Shared memory: `--shm-size 500g` (large shared memory for NPU collective ops)
+- Init: `--init` (proper PID 1 signal handling for Ascend processes)
+- Privileged: `true` (access to /dev/davinci* devices)
+- Init command: `source /usr/local/Ascend/ascend-toolkit/set_env.sh` (needs `bash -c`, not `sh -c`)
 
 **AMD GID trap**: Ubuntu render group = GID 109, but `lxd` = GID 110. Wrong GID → "no ROCm-capable device detected".
 
@@ -131,6 +139,7 @@ curl -s http://<endpoint>/v1/chat/completions \
 | gb10 | Qwen3.5-35B-A3B | SGLang | +speculative decode | 45.5 (+52%) |
 | linux-1 | Qwen3.5-35B-A3B | vLLM | BF16, TP=2 | 174.0 |
 | linux-1 | Qwen3.5-122B | KTransformers | gpu_experts=30 | 22.8 |
+| hygon | Qwen3-8B | vLLM | FP16, single BW150 | 62.0 |
 | amd395 | qwen3-0.6B | llamacpp | Vulkan GGUF | 194.0 |
 | mac-m4 | qwen3-0.6B | llamacpp | Metal GGUF | 120.0 |
 

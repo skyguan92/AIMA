@@ -2,17 +2,22 @@ kind: engine_asset
 metadata:
   name: vllm-spark
   type: vllm-spark
-  version: "main"
+  version: "0.14.1"
   supported_formats: [safetensors]
 image:
-  # spark-vllm-docker: community build for DGX Spark / GB10
-  # Built from vLLM main + FlashInfer + Transformers 5 (glm4_moe_lite support)
-  # Source: https://github.com/eugr/spark-vllm-docker
-  name: vllm-spark-tf5
-  tag: "latest"
+  # scitrera/dgx-spark-vllm: community build for DGX Spark / GB10
+  # vLLM 0.14.1 + FlashInfer + Transformers 5 (glm4_moe_lite support)
+  # Source: https://github.com/scitrera/dgx-spark-vllm
+  name: scitrera/dgx-spark-vllm
+  tag: "0.14.1-t5"
   size_approx_mb: 25000
   platforms: [linux/arm64]
-  registries: []
+  registries:
+    - docker.io/scitrera/dgx-spark-vllm
+  source:
+    mirror:
+      docker.io:
+        - docker.1ms.run/scitrera/dgx-spark-vllm
 patterns:
   - "^vllm-spark"
   - "vllm-spark"

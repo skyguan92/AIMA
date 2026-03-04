@@ -2,6 +2,9 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/jguan/aima/internal/engine"
 	"github.com/jguan/aima/internal/knowledge"
@@ -81,4 +84,34 @@ type WarmupConfig struct {
 	Prompt    string
 	MaxTokens int
 	TimeoutS  int
+}
+
+// configToFlags converts a Config map into CLI flags.
+// Keys are underscore-separated (e.g. "mem_fraction_static") → "--mem-fraction-static".
+// "port" is excluded (handled separately by each runtime).
+// Bool true → flag only (no value); bool false → omitted.
+func configToFlags(config map[string]any) []string {
+	if len(config) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(config))
+	for k := range config {
+		if k != "port" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var flags []string
+	for _, k := range keys {
+		flag := "--" + strings.ReplaceAll(k, "_", "-")
+		switch v := config[k].(type) {
+		case bool:
+			if v {
+				flags = append(flags, flag)
+			}
+		default:
+			flags = append(flags, flag, fmt.Sprintf("%v", v))
+		}
+	}
+	return flags
 }

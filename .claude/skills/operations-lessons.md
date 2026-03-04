@@ -91,6 +91,25 @@ docker save <image> | sudo k3s ctr images import -
 - `aima engine scan` with `--auto-import` automates this
 - Only triggered during `aima init --k3s` (not default Docker tier)
 - containerd adds `docker.io/` prefix; Docker doesn't — causes reference format mismatch in engine scan
+- **Requires root**: `k3s ctr` needs root; non-root → pipe deadlock (docker save writes to dead pipe)
+- **Fix (commit a0432c2)**: `os.Getuid() != 0` check → skip import, print sudo fix command
+
+### Pipe deadlock: sender blocks on dead receiver
+**Bug**: `docker save | k3s ctr import` — receiver dies (no root), sender blocks writing forever.
+Sequential `fromCmd.Wait()` then `toCmd.Wait()` — `fromCmd.Wait()` never returns because pipe buffer is full and receiver is dead.
+
+**Fix**: Concurrent wait with receiver-first error detection:
+```go
+toErr := make(chan error, 1)
+go func() { toErr <- toCmd.Wait() }()
+fromErr := fromCmd.Wait()
+tErr := <-toErr
+if tErr != nil {
+    _ = fromCmd.Process.Kill()
+    return fmt.Errorf("%s: %w", to[0], tErr)
+}
+```
+**Lesson**: In shell pipes, always wait for receiver concurrently with sender. Receiver death should kill the sender, not leave it blocking.
 
 ### Engine scan pattern merge bug
 ```go
