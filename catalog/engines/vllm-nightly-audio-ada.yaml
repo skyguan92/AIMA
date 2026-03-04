@@ -37,14 +37,38 @@ startup:
     timeout_s: 60
   log_patterns:
     phases:
-      - name: loading_weights
-        pattern: "Loading model weights"
-        progress: 40
-      - name: cuda_graphs
-        pattern: "Capturing CUDA graph.*?(\\d+)%"
+      - name: model_init
+        pattern: "Starting to load model"
+        progress: 5
+      - name: loading_shards
+        pattern: "Loading safetensors checkpoint shards:\\s+(\\d+)%"
         progress_regex_group: 1
-        progress_base: 40
-        progress_range: 50
+        progress_base: 5
+        progress_range: 35
+      - name: weights_loaded
+        pattern: "Loading weights took|Loading model weights"
+        progress: 40
+      - name: torch_compile
+        pattern: "torch\\.compile takes"
+        progress: 50
+      - name: cuda_piecewise
+        pattern: "Capturing CUDA graphs \\(mixed.*?(\\d+)%"
+        progress_regex_group: 1
+        progress_base: 50
+        progress_range: 5
+      - name: cuda_full
+        pattern: "Capturing CUDA graphs \\(decode.*?(\\d+)%"
+        progress_regex_group: 1
+        progress_base: 55
+        progress_range: 35
+      - name: cuda_graphs
+        pattern: "Capturing CUDA graph[^s].*?(\\d+)%"
+        progress_regex_group: 1
+        progress_base: 50
+        progress_range: 40
+      - name: graph_done
+        pattern: "Graph capturing finished"
+        progress: 92
       - name: ready
         pattern: "Application startup complete|Uvicorn running"
         progress: 100

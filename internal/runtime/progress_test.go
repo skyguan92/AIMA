@@ -10,8 +10,14 @@ import (
 func TestDetectStartupProgress(t *testing.T) {
 	vllmPatterns := &knowledge.StartupLogPatterns{
 		Phases: []knowledge.StartupPhasePattern{
-			{Name: "loading_weights", Pattern: "Loading model weights", Progress: 40},
-			{Name: "cuda_graphs", Pattern: `Capturing CUDA graph.*?(\d+)%`, ProgressRegexGroup: 1, ProgressBase: 40, ProgressRange: 50},
+			{Name: "model_init", Pattern: "Starting to load model", Progress: 5},
+			{Name: "loading_shards", Pattern: `Loading safetensors checkpoint shards:\s+(\d+)%`, ProgressRegexGroup: 1, ProgressBase: 5, ProgressRange: 35},
+			{Name: "weights_loaded", Pattern: "Loading weights took|Loading model weights", Progress: 40},
+			{Name: "torch_compile", Pattern: `torch\.compile takes`, Progress: 50},
+			{Name: "cuda_piecewise", Pattern: `Capturing CUDA graphs \(mixed.*?(\d+)%`, ProgressRegexGroup: 1, ProgressBase: 50, ProgressRange: 5},
+			{Name: "cuda_full", Pattern: `Capturing CUDA graphs \(decode.*?(\d+)%`, ProgressRegexGroup: 1, ProgressBase: 55, ProgressRange: 35},
+			{Name: "cuda_graphs", Pattern: `Capturing CUDA graph[^s].*?(\d+)%`, ProgressRegexGroup: 1, ProgressBase: 50, ProgressRange: 40},
+			{Name: "graph_done", Pattern: "Graph capturing finished", Progress: 92},
 			{Name: "ready", Pattern: "Application startup complete|Uvicorn running", Progress: 100},
 		},
 		Errors: []knowledge.StartupErrorPattern{
@@ -20,9 +26,9 @@ func TestDetectStartupProgress(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		logText  string
-		patterns *knowledge.StartupLogPatterns
+		name         string
+		logText      string
+		patterns     *knowledge.StartupLogPatterns
 		wantPhase    string
 		wantProgress int
 	}{
@@ -35,38 +41,87 @@ func TestDetectStartupProgress(t *testing.T) {
 		},
 		{
 			name:         "no match",
-			logText:      "INFO: Starting server...\nINFO: Initializing",
+			logText:      "INFO: server config loaded\nINFO: Initializing",
 			patterns:     vllmPatterns,
 			wantPhase:    "",
 			wantProgress: 0,
 		},
 		{
-			name:         "loading weights only",
+			name:         "model init",
+			logText:      "INFO: Starting to load model /models...",
+			patterns:     vllmPatterns,
+			wantPhase:    "model_init",
+			wantProgress: 5,
+		},
+		{
+			name:         "safetensors shards 43%",
+			logText:      "Starting to load model /models...\nLoading safetensors checkpoint shards:  43% Completed | 6/14",
+			patterns:     vllmPatterns,
+			wantPhase:    "loading_shards",
+			wantProgress: 20, // 5 + (43 * 35 / 100) = 5 + 15
+		},
+		{
+			name:         "safetensors shards 100%",
+			logText:      "Starting to load model\nLoading safetensors checkpoint shards: 100% Completed | 14/14",
+			patterns:     vllmPatterns,
+			wantPhase:    "loading_shards",
+			wantProgress: 40, // 5 + (100 * 35 / 100) = 40
+		},
+		{
+			name:         "weights loaded (legacy format)",
 			logText:      "INFO: Loading model weights took 5.2s",
 			patterns:     vllmPatterns,
-			wantPhase:    "loading_weights",
+			wantPhase:    "weights_loaded",
 			wantProgress: 40,
 		},
 		{
-			name:         "cuda graphs partial",
-			logText:      "Loading model weights\nCapturing CUDA graph for batch size 1: 30%",
+			name:         "torch compile done",
+			logText:      "Loading weights took 78s\ntorch.compile takes 25.49 s in total",
 			patterns:     vllmPatterns,
-			wantPhase:    "cuda_graphs",
-			wantProgress: 55, // 40 + (30 * 50 / 100)
+			wantPhase:    "torch_compile",
+			wantProgress: 50,
 		},
 		{
-			name:         "cuda graphs 100%",
-			logText:      "Loading model weights\nCapturing CUDA graph: 100%",
+			name:         "cuda piecewise 50%",
+			logText:      "Loading weights took 78s\ntorch.compile takes 25s\nCapturing CUDA graphs (mixed prefill-decode, PIECEWISE): 50%|...",
 			patterns:     vllmPatterns,
-			wantPhase:    "cuda_graphs",
-			wantProgress: 90, // 40 + (100 * 50 / 100)
+			wantPhase:    "cuda_piecewise",
+			wantProgress: 52, // 50 + (50 * 5 / 100)
+		},
+		{
+			name:         "cuda full 50%",
+			logText:      "torch.compile takes 25s\nCapturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%\nCapturing CUDA graphs (decode, FULL): 50%|...",
+			patterns:     vllmPatterns,
+			wantPhase:    "cuda_full",
+			wantProgress: 72, // 55 + (50 * 35 / 100) = 72; piecewise=55, torch=50 → highest is 72
+		},
+		{
+			name:         "cuda full 100%",
+			logText:      "torch.compile takes 25s\nCapturing CUDA graphs (decode, FULL): 100%",
+			patterns:     vllmPatterns,
+			wantPhase:    "cuda_full",
+			wantProgress: 90, // 55 + (100 * 35 / 100)
+		},
+		{
+			name:         "graph done",
+			logText:      "Capturing CUDA graphs (decode, FULL): 100%\nGraph capturing finished in 57 secs",
+			patterns:     vllmPatterns,
+			wantPhase:    "graph_done",
+			wantProgress: 92,
 		},
 		{
 			name:         "ready",
-			logText:      "Loading model weights\nCapturing CUDA graph: 100%\nApplication startup complete",
+			logText:      "Graph capturing finished in 57 secs\nApplication startup complete",
 			patterns:     vllmPatterns,
 			wantPhase:    "ready",
 			wantProgress: 100,
+		},
+		{
+			name:         "old vllm cuda graph format",
+			logText:      "Loading model weights\nCapturing CUDA graph for batch size 1: 30%\nCapturing CUDA graph: 80%",
+			patterns:     vllmPatterns,
+			wantPhase:    "cuda_graphs",
+			wantProgress: 82, // 50 + (80 * 40 / 100) = 82
 		},
 		{
 			name:    "sglang server starting",
@@ -94,11 +149,11 @@ func TestDetectStartupProgress(t *testing.T) {
 			wantProgress: 100,
 		},
 		{
-			name:         "multiple cuda graph updates takes last",
-			logText:      "Loading model weights\nCapturing CUDA graph: 10%\nCapturing CUDA graph: 50%\nCapturing CUDA graph: 80%",
+			name:         "no backward jump: piecewise done then full starts",
+			logText:      "torch.compile takes 25s\nCapturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%\nCapturing CUDA graphs (decode, FULL): 2%",
 			patterns:     vllmPatterns,
-			wantPhase:    "cuda_graphs",
-			wantProgress: 80, // 40 + (80 * 50 / 100)
+			wantPhase:    "cuda_piecewise",
+			wantProgress: 55, // piecewise=55, full=55+(2*35/100)=55, torch=50 → highest=55
 		},
 	}
 

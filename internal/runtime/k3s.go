@@ -257,7 +257,7 @@ func (r *K3SRuntime) enrichStartupProgress(ctx context.Context, pod *k3s.PodStat
 	ds.StartupMessage = formatPhaseName(phase)
 
 	if containerRunning && asset != nil && asset.Startup.LogPatterns != nil {
-		logs, err := r.client.Logs(ctx, pod.Name, k3s.LogOptions{TailLines: 50})
+		logs, err := r.client.Logs(ctx, pod.Name, k3s.LogOptions{TailLines: 100})
 		if err == nil && logs != "" {
 			sp := DetectStartupProgress(logs, asset.Startup.LogPatterns)
 			if sp.Progress > ds.StartupProgress {

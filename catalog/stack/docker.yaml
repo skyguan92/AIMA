@@ -26,9 +26,14 @@ source:
     linux/amd64:
       - "https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/static/stable/x86_64/docker-27.5.1.tgz"
       - "https://mirrors.aliyun.com/docker-ce/linux/static/stable/x86_64/docker-27.5.1.tgz"
+      - "https://ghfast.top/https://github.com/Approaching-AI/AIMA/releases/download/v0.1.0-images/docker-27.5.1-amd64.tgz"
     linux/arm64:
       - "https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/static/stable/aarch64/docker-27.5.1.tgz"
       - "https://mirrors.aliyun.com/docker-ce/linux/static/stable/aarch64/docker-27.5.1.tgz"
+      - "https://ghfast.top/https://github.com/Approaching-AI/AIMA/releases/download/v0.1.0-images/docker-27.5.1-arm64.tgz"
+  sha256:
+    linux/amd64: "4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640"
+    linux/arm64: "e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817"
 
 install:
   method: archive

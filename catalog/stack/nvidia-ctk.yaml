@@ -25,11 +25,14 @@ source:
     linux/amd64:
       - "https://ghfast.top/https://github.com/NVIDIA/nvidia-container-toolkit/releases/download/v1.17.5/nvidia-container-toolkit_1.17.5_deb_amd64.tar.gz"
       - "https://cf.ghproxy.cc/https://github.com/NVIDIA/nvidia-container-toolkit/releases/download/v1.17.5/nvidia-container-toolkit_1.17.5_deb_amd64.tar.gz"
-      - "https://gh-proxy.com/https://github.com/NVIDIA/nvidia-container-toolkit/releases/download/v1.17.5/nvidia-container-toolkit_1.17.5_deb_amd64.tar.gz"
+      - "https://ghfast.top/https://github.com/Approaching-AI/AIMA/releases/download/v0.1.0-images/nvidia-container-toolkit-1.17.5-deb-amd64.tar.gz"
     linux/arm64:
       - "https://ghfast.top/https://github.com/NVIDIA/nvidia-container-toolkit/releases/download/v1.17.5/nvidia-container-toolkit_1.17.5_deb_arm64.tar.gz"
       - "https://cf.ghproxy.cc/https://github.com/NVIDIA/nvidia-container-toolkit/releases/download/v1.17.5/nvidia-container-toolkit_1.17.5_deb_arm64.tar.gz"
-      - "https://gh-proxy.com/https://github.com/NVIDIA/nvidia-container-toolkit/releases/download/v1.17.5/nvidia-container-toolkit_1.17.5_deb_arm64.tar.gz"
+      - "https://ghfast.top/https://github.com/Approaching-AI/AIMA/releases/download/v0.1.0-images/nvidia-container-toolkit-1.17.5-deb-arm64.tar.gz"
+  sha256:
+    linux/amd64: "f1c2b0c8771ddd453eeb1bf570bcbe172ee43778c4638a3f5e9d34893568b917"
+    linux/arm64: "838462ec03c5ede2c2154943ddd18e0d5d8487c77c890d01c1d18678361f4fe0"
 
 install:
   method: archive

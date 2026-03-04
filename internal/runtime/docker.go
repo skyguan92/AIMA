@@ -375,7 +375,7 @@ func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *Deployment
 		ds.EstimatedTotalS = asset.TimeConstraints.ColdStartS[1]
 	}
 
-	tailLines := 50
+	tailLines := 100
 	if ds.Phase == "failed" {
 		tailLines = 5
 	}

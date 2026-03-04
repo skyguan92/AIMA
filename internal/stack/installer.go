@@ -13,8 +13,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -998,6 +1000,34 @@ func (inst *Installer) findK3sBinary() string {
 	return ""
 }
 
+var semverRe = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// versionSatisfied checks if the command output satisfies the ready_condition.
+// If ready_condition looks like a semver (e.g. "27.5.1"), it extracts a version
+// from output and checks >=. Otherwise, it falls back to substring match.
+func versionSatisfied(output, condition string) bool {
+	condMatch := semverRe.FindStringSubmatch(condition)
+	if condMatch == nil {
+		// Not a version string (e.g. "Ready", "Running") — substring match
+		return strings.Contains(output, condition)
+	}
+	outMatch := semverRe.FindStringSubmatch(output)
+	if outMatch == nil {
+		return strings.Contains(output, condition)
+	}
+	for i := 1; i <= 3; i++ {
+		o, _ := strconv.Atoi(outMatch[i])
+		c, _ := strconv.Atoi(condMatch[i])
+		if o > c {
+			return true
+		}
+		if o < c {
+			return false
+		}
+	}
+	return true // equal
+}
+
 func (inst *Installer) verify(ctx context.Context, comp knowledge.StackComponent) error {
 	if comp.Verify.Command == "" {
 		return nil
@@ -1022,7 +1052,7 @@ func (inst *Installer) verify(ctx context.Context, comp knowledge.StackComponent
 
 	for time.Now().Before(deadline) {
 		out, err := inst.runner.Run(ctx, binary, parts[1:]...)
-		if err == nil && strings.Contains(string(out), comp.Verify.ReadyCondition) {
+		if err == nil && versionSatisfied(string(out), comp.Verify.ReadyCondition) {
 			slog.Info("stack component verified", "name", comp.Metadata.Name)
 			return nil
 		}
@@ -1097,7 +1127,7 @@ func (inst *Installer) checkComponent(ctx context.Context, comp knowledge.StackC
 	}
 
 	status.Installed = true
-	if strings.Contains(string(out), comp.Verify.ReadyCondition) {
+	if versionSatisfied(string(out), comp.Verify.ReadyCondition) {
 		status.Ready = true
 		status.Message = "ready"
 	} else {

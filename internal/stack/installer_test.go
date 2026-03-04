@@ -1023,6 +1023,82 @@ func TestDownloadItemsParallel(t *testing.T) {
 	}
 }
 
+func TestVersionSatisfied(t *testing.T) {
+	tests := []struct {
+		name      string
+		output    string
+		condition string
+		want      bool
+	}{
+		// Substring fallback for non-version conditions
+		{"substring Ready", "node1   Ready   control-plane", "Ready", true},
+		{"substring Running", "hami-device Running", "Running", true},
+		{"substring miss", "Error: connection refused", "Ready", false},
+
+		// Exact version match
+		{"exact match", "27.5.1", "27.5.1", true},
+		{"exact with text", "NVIDIA Container Toolkit CLI version 1.17.5", "1.17.5", true},
+
+		// Newer version satisfies (>=)
+		{"newer major", "28.5.1", "27.5.1", true},
+		{"newer minor", "27.6.0", "27.5.1", true},
+		{"newer patch", "27.5.2", "27.5.1", true},
+		{"newer ctk", "NVIDIA Container Toolkit CLI version 1.18.2", "1.17.5", true},
+
+		// Older version fails
+		{"older major", "26.0.0", "27.5.1", false},
+		{"older minor", "27.4.9", "27.5.1", false},
+		{"older patch", "27.5.0", "27.5.1", false},
+
+		// No version in output — falls back to substring
+		{"no version in output", "docker is running", "27.5.1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := versionSatisfied(tt.output, tt.condition); got != tt.want {
+				t.Errorf("versionSatisfied(%q, %q) = %v, want %v", tt.output, tt.condition, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInitSkipsNewerVersion(t *testing.T) {
+	runner := &mockRunner{
+		results: map[string]runResult{
+			// Docker reports 28.5.1 but YAML expects 27.5.1 — should still be Ready
+			"docker version": {output: []byte("28.5.1")},
+		},
+	}
+
+	inst := NewInstaller(runner, t.TempDir())
+
+	components := []knowledge.StackComponent{
+		{
+			Metadata: knowledge.StackMetadata{Name: "docker", Version: "27.5.1"},
+			Install:  knowledge.StackInstall{Method: "archive"},
+			Source:   knowledge.StackSource{Platforms: []string{runtime.GOOS + "/" + runtime.GOARCH}},
+			Verify: knowledge.StackVerify{
+				Command:        "docker version --format {{.Server.Version}}",
+				ReadyCondition: "27.5.1",
+				TimeoutS:       5,
+			},
+		},
+	}
+
+	result, err := inst.Init(context.Background(), components, "")
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if !result.AllReady {
+		t.Error("expected AllReady=true when newer version installed")
+	}
+	if !result.Components[0].Ready {
+		t.Errorf("expected Ready=true, got message=%q", result.Components[0].Message)
+	}
+}
+
 func TestCollectEnv(t *testing.T) {
 	comp := knowledge.StackComponent{
 		Install: knowledge.StackInstall{
