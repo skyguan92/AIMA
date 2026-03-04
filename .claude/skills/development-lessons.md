@@ -159,3 +159,17 @@ Docker/native runtimes convert config map to CLI flags. Boolean values need spec
 // RIGHT: --enable-chunked-prefill (flag present = true, absent = false)
 ```
 Pattern: `if v == "true" { args = append(args, "--"+k) }` — skip `false` values entirely.
+
+### Docker ENTRYPOINT duplication (commit ce664cc)
+**Bug**: YAML `command: ["vllm", "serve", "{{.ModelPath}}"]` + image ENTRYPOINT `["vllm", "serve"]` → Docker concatenates both → `vllm serve vllm serve /models`.
+**Fix**: When YAML defines a command, use `--entrypoint command[0]` to override image ENTRYPOINT, then pass `command[1:]...` as CMD. Matches K3S `command:` semantics where YAML command replaces ENTRYPOINT entirely.
+```go
+// With init commands: --entrypoint bash image -c "init && exec main"
+// With command:       --entrypoint cmd[0] image cmd[1:]...
+// No command:         image (use image default)
+```
+
+### Template substitution in configToFlags output
+**Bug**: `configToFlags()` outputs raw strings — `{{.ModelName}}` and `{{.ModelPath}}` not expanded in Docker/Native runtimes (K3S podgen.go did expand them).
+**Fix**: Apply `strings.ReplaceAll` for `{{.ModelName}}` and `{{.ModelPath}}` on configToFlags output in both `docker.go` and `native.go`, after the `configToFlags()` call.
+**Lesson**: When template variables appear in YAML config values, every runtime that consumes those values must expand them. Trace the full code path from YAML → runtime CLI args.

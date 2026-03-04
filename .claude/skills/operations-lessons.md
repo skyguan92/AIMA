@@ -111,6 +111,12 @@ if tErr != nil {
 ```
 **Lesson**: In shell pipes, always wait for receiver concurrently with sender. Receiver death should kill the sender, not leave it blocking.
 
+### Docker-only deployment: proxy sync discovers Docker containers
+**Scenario**: K3S removed, Docker is the only runtime. `aima-serve` started when K3S was available → sync loop uses K3S → `"list pods: exit status 1"` every 5s → proxy `/v1/models` returns empty.
+**Root cause**: Runtime selection happens at startup (`selectDefaultRuntime`: K3S > Docker > Native). Old binary started with K3S available → chose K3S runtime. After K3S removal, the running process still tries K3S.
+**Fix**: Update binary + restart `aima-serve`. New binary detects `K3SAvailable=false, DockerAvailable=true` → selects Docker runtime → sync loop uses `docker ps --filter label=aima.dev/engine` → discovers containers correctly.
+**Lesson**: After removing K3S from a machine, always restart `aima-serve` to re-evaluate runtime selection.
+
 ### Engine scan pattern merge bug
 ```go
 // WRONG: overwrites previous patterns for same type

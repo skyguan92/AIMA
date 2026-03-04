@@ -39,6 +39,8 @@ resolveModel():
 2. **导出函数**: `queryRemoteModels` 是 unexported，跨包调用需要大写导出。
 3. **自发现过滤**: `proxy.IsLocalIP(addr)` 过滤本机 mDNS 广播，避免自己连自己。
 4. **已部署 systemd unit 不会自动获取新默认值**: 需要重新 `aima init`。
+5. **永远不要硬编码 `llm.model`**: 本地部署的模型会变（今天 qwen3.5-35b，明天可能 qwen3-8b）。`llm.model` 留空 → `resolveModel()` 自动从 `localhost:6188/v1/models` 取第一个可用模型（30s 缓存）。`llm.endpoint` 同理，默认 `localhost:{DefaultPort}/v1`，不需要手动设置。
+6. **Docker-only 部署的 proxy 发现**: K3S 移除后 `aima-serve` 需要重启。新 binary 检测到 `DockerAvailable=true, K3SAvailable=false` → 选择 Docker runtime → sync loop 通过 `docker ps --filter label=aima.dev/engine` 发现容器 → proxy 自动注册后端模型。
 
 ## 测试要点
 
