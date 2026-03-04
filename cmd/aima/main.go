@@ -683,11 +683,15 @@ func (a *mcpToolAdapter) ExecuteTool(ctx context.Context, name string, arguments
 								planText = "remote dry-run unavailable: " + drErr.Error()
 							}
 							id := a.storePending(name, arguments)
-							msg := fmt.Sprintf("NEEDS_APPROVAL (id=%d): remote %s on device requires user approval (%s).\n\n"+
-								"Deployment plan:\n%s\n\nPresent this plan to the user. If they approve, call deploy.approve with id=%d.",
+							msg := fmt.Sprintf("NEEDS_APPROVAL\n"+
+								"Approval ID: %d\n"+
+								"Tool: %s\n"+
+								"Reason: %s\n\n"+
+								"Deployment plan:\n%s\n\n"+
+								"Present this plan to the user. When the user approves, call deploy.approve with id=%d.",
 								id, innerTool, reason, planText, id)
 							a.audit(ctx, name, string(arguments), fmt.Sprintf("NEEDS_APPROVAL id=%d", id))
-							return &agent.ToolResult{Content: msg, IsError: true}, nil
+							return &agent.ToolResult{Content: msg, IsError: false}, nil
 						}
 					}
 				}
@@ -708,12 +712,15 @@ func (a *mcpToolAdapter) ExecuteTool(ctx context.Context, name string, arguments
 
 		id := a.storePending(name, arguments)
 
-		msg := fmt.Sprintf("NEEDS_APPROVAL (id=%d): %s requires user approval (%s).\n\n"+
+		msg := fmt.Sprintf("NEEDS_APPROVAL\n"+
+			"Approval ID: %d\n"+
+			"Tool: %s\n"+
+			"Reason: %s\n\n"+
 			"Deployment plan:\n%s\n\n"+
-			"Present this plan to the user. If they approve, call deploy.approve with id=%d.",
+			"Present this plan to the user. When the user approves, call deploy.approve with id=%d.",
 			id, name, reason, planText, id)
 		a.audit(ctx, name, string(arguments), fmt.Sprintf("NEEDS_APPROVAL id=%d", id))
-		return &agent.ToolResult{Content: msg, IsError: true}, nil
+		return &agent.ToolResult{Content: msg, IsError: false}, nil
 	}
 
 	result, err := a.server.ExecuteTool(ctx, name, arguments)
