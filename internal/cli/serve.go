@@ -43,6 +43,14 @@ func newServeCmd(app *App) *cobra.Command {
 			// Apply listen address from flag
 			app.Proxy.SetAddr(addr)
 
+			// If no API key from flag/env, try persistent config (SQLite)
+			if apiKey == "" && app.ToolDeps != nil && app.ToolDeps.GetConfig != nil {
+				if stored, err := app.ToolDeps.GetConfig(ctx, "api_key"); err == nil && stored != "" {
+					apiKey = stored
+					slog.Info("loaded API key from persistent config")
+				}
+			}
+
 			if err := validateServeSecurity(addr, mcpAddr, mcpMod, apiKey, allowInsecure); err != nil {
 				return err
 			}

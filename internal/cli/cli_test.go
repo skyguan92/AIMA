@@ -327,13 +327,15 @@ func TestParseConfigOverrides(t *testing.T) {
 		{"t is string not bool", []string{"dtype=t"}, map[string]any{"dtype": "t"}},
 		{"f is string not bool", []string{"dtype=f"}, map[string]any{"dtype": "f"}},
 		{"empty value", []string{"key="}, map[string]any{"key": ""}},
-		{"no equals", []string{"invalid"}, map[string]any{}},
 		{"multiple", []string{"gpu_memory_utilization=0.8", "max_model_len=4096", "dtype=auto"},
 			map[string]any{"gpu_memory_utilization": 0.8, "max_model_len": 4096, "dtype": "auto"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseConfigOverrides(tt.pairs)
+			got, err := parseConfigOverrides(tt.pairs)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if tt.want == nil {
 				if got != nil {
 					t.Errorf("got %v, want nil", got)
@@ -356,6 +358,13 @@ func TestParseConfigOverrides(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("no equals returns error", func(t *testing.T) {
+		_, err := parseConfigOverrides([]string{"invalid"})
+		if err == nil {
+			t.Fatal("expected error for malformed entry, got nil")
+		}
+	})
 }
 
 func TestAgentStatusCmd(t *testing.T) {

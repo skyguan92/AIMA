@@ -274,7 +274,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "model.import",
 		Description: "Import a model from a local file path and register it in the database. Use when a model file exists on disk but is not yet registered. Do not use for downloading from remote sources (use model.pull).",
-		InputSchema: schema(`"path":{"type":"string","description":"Absolute path to model file on disk, e.g. '/data/models/qwen3-0.6b.gguf'"}`, "path"),
+		InputSchema: schema(`"path":{"type":"string","description":"Absolute path to a model file (e.g. '/data/models/qwen3-0.6b.gguf') or directory containing model files"}`, "path"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ImportModel == nil {
 				return ErrorResult("model.import not implemented"), nil
@@ -953,7 +953,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.search_configs",
 		Description: "Search tested Configuration records (Hardware x Engine x Model combos) in the database with multi-dimensional filtering and sorting. Returns configurations with benchmark results and performance metrics. Use when comparing proven setups or finding the best config for specific hardware. Do not use for searching YAML catalog assets (use knowledge.list) or agent exploration notes (use knowledge.search).",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"hardware":{"type":"string","description":"Hardware profile ID or GPU architecture"},"model":{"type":"string","description":"Model ID or model family"},"engine":{"type":"string","description":"Engine type"},"engine_features":{"type":"array","items":{"type":"string"},"description":"Required engine features"},"constraints":{"type":"object","properties":{"ttft_ms_p95_max":{"type":"number"},"throughput_tps_min":{"type":"number"},"vram_mib_max":{"type":"integer"},"power_watts_max":{"type":"number"}}},"concurrency":{"type":"integer"},"status":{"type":"string","enum":["experiment","candidate","production"]},"sort_by":{"type":"string","enum":["throughput","latency","vram","power","created"]},"sort_order":{"type":"string","enum":["asc","desc"]},"limit":{"type":"integer"}}}`),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"hardware":{"type":"string","description":"Hardware profile ID or GPU architecture"},"model":{"type":"string","description":"Model ID or model family"},"engine":{"type":"string","description":"Engine type"},"engine_features":{"type":"array","items":{"type":"string"},"description":"Required engine features"},"constraints":{"type":"object","properties":{"ttft_ms_p95_max":{"type":"number"},"throughput_tps_min":{"type":"number"},"vram_mib_max":{"type":"integer"},"power_watts_max":{"type":"number"}}},"concurrency":{"type":"integer"},"status":{"type":"string","enum":["golden","experiment","archived"]},"sort_by":{"type":"string","enum":["throughput","latency","vram","power","created"]},"sort_order":{"type":"string","enum":["asc","desc"]},"limit":{"type":"integer"}}}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SearchConfigs == nil {
 				return ErrorResult("knowledge.search_configs not implemented"), nil

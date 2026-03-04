@@ -13,8 +13,13 @@ func Import(ctx context.Context, tarPath string, runner CommandRunner) error {
 		return fmt.Errorf("import image from %s: %w", tarPath, err)
 	}
 
-	// Try ctr (K3S containerd namespace)
+	// Try ctr (system containerd)
 	if _, err := runner.Run(ctx, "ctr", "-n", "k8s.io", "images", "import", tarPath); err == nil {
+		return nil
+	}
+
+	// Try k3s ctr (K3S bundled containerd)
+	if _, err := runner.Run(ctx, "k3s", "ctr", "-n", "k8s.io", "images", "import", tarPath); err == nil {
 		return nil
 	}
 
@@ -23,5 +28,5 @@ func Import(ctx context.Context, tarPath string, runner CommandRunner) error {
 		return nil
 	}
 
-	return fmt.Errorf("import image from %s: neither ctr nor docker succeeded", tarPath)
+	return fmt.Errorf("import image from %s: none of ctr, k3s ctr, or docker succeeded", tarPath)
 }

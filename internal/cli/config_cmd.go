@@ -28,7 +28,7 @@ func newConfigGetCmd(app *App) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !mcp.IsValidConfigKey(args[0]) {
-				return fmt.Errorf("unknown config key %q; supported keys: api_key, llm.endpoint, llm.model, llm.api_key, llm.user_agent", args[0])
+				return fmt.Errorf("unknown config key %q; supported keys: api_key, llm.endpoint, llm.model, llm.api_key, llm.user_agent, llm.extra_params", args[0])
 			}
 			value, err := app.ToolDeps.GetConfig(cmd.Context(), args[0])
 			if err != nil {
@@ -50,7 +50,7 @@ func newConfigSetCmd(app *App) *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !mcp.IsValidConfigKey(args[0]) {
-				return fmt.Errorf("unknown config key %q; supported keys: api_key, llm.endpoint, llm.model, llm.api_key, llm.user_agent", args[0])
+				return fmt.Errorf("unknown config key %q; supported keys: api_key, llm.endpoint, llm.model, llm.api_key, llm.user_agent, llm.extra_params", args[0])
 			}
 			if err := app.ToolDeps.SetConfig(cmd.Context(), args[0], args[1]); err != nil {
 				return fmt.Errorf("set config %s: %w", args[0], err)

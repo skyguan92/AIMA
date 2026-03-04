@@ -26,8 +26,14 @@ func Import(ctx context.Context, srcPath, destDir string) (*ModelInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("import model from %s: %w", srcPath, err)
 	}
+
+	// If source is a file (e.g. a .gguf), use its parent directory
 	if !srcInfo.IsDir() {
-		return nil, fmt.Errorf("import model from %s: not a directory", srcPath)
+		ext := strings.ToLower(filepath.Ext(srcAbs))
+		if ext != ".gguf" && ext != ".safetensors" {
+			return nil, fmt.Errorf("import model from %s: unsupported file type %q (expected .gguf or .safetensors)", srcPath, ext)
+		}
+		srcAbs = filepath.Dir(srcAbs)
 	}
 
 	// Validate it looks like a model

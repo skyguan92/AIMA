@@ -55,13 +55,9 @@ func isLightweightInvocation() bool {
 		case "version":
 			return true
 		}
-		// Stop at first non-flag arg (the subcommand)
-		if !strings.HasPrefix(a, "-") {
-			return false
-		}
 	}
 	// No subcommand at all → root help
-	return true
+	return len(os.Args) <= 1
 }
 
 func run() error {
@@ -1275,8 +1271,13 @@ func resolveDeployment(ctx context.Context, cat *knowledge.Catalog, db *state.DB
 		return nil, err
 	}
 
-	// L2: query golden config using canonical name and merge as middle layer (L0 < L2 < L1)
-	goldenConfig := queryGoldenOverrides(ctx, kStore, hwInfo.GPUArch, engineType, canonicalName)
+	// L2: query golden config using canonical name and resolved engine (not the possibly-empty
+	// user input) to prevent cross-engine injection (e.g. vLLM golden params leaking to llama.cpp).
+	goldenEngine := engineType
+	if goldenEngine == "" {
+		goldenEngine = resolved.Engine
+	}
+	goldenConfig := queryGoldenOverrides(ctx, kStore, hwInfo.GPUArch, goldenEngine, canonicalName)
 	if len(goldenConfig) > 0 {
 		for k, v := range goldenConfig {
 			if !userKeys[k] {
@@ -1962,11 +1963,11 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		// Knowledge
 		ResolveConfig: func(ctx context.Context, modelName, engineType string, overrides map[string]any) (json.RawMessage, error) {
 			hwInfo := buildHardwareInfo(ctx, rt.Name())
-			resolved, _, err := resolveWithFallback(ctx, cat, db, hwInfo, modelName, engineType, overrides, dataDir)
+			rd, err := resolveDeployment(ctx, cat, db, kStore, hwInfo, modelName, engineType, "", overrides, dataDir)
 			if err != nil {
 				return nil, err
 			}
-			return json.Marshal(resolved)
+			return json.Marshal(rd.Resolved)
 		},
 		SearchKnowledge: func(ctx context.Context, filter map[string]string) (json.RawMessage, error) {
 			nf := state.NoteFilter{

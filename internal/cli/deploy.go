@@ -25,7 +25,10 @@ func newDeployCmd(app *App) *cobra.Command {
 			ctx := cmd.Context()
 			modelName := args[0]
 
-			configMap := parseConfigOverrides(configOverrides)
+			configMap, err := parseConfigOverrides(configOverrides)
+			if err != nil {
+				return err
+			}
 
 			if dryRun {
 				data, err := app.ToolDeps.DeployDryRun(ctx, engineType, modelName, slot, configMap)
@@ -165,19 +168,19 @@ func formatJSON(data json.RawMessage) string {
 }
 
 // parseConfigOverrides converts ["key=value", ...] to map[string]any with type inference.
-func parseConfigOverrides(pairs []string) map[string]any {
+func parseConfigOverrides(pairs []string) (map[string]any, error) {
 	if len(pairs) == 0 {
-		return nil
+		return nil, nil
 	}
 	m := make(map[string]any, len(pairs))
 	for _, pair := range pairs {
 		k, v, ok := strings.Cut(pair, "=")
 		if !ok {
-			continue
+			return nil, fmt.Errorf("malformed --config entry %q: expected key=value format", pair)
 		}
 		m[k] = parseValue(v)
 	}
-	return m
+	return m, nil
 }
 
 // parseValue tries to convert a string to the most specific type.
