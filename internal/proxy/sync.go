@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -27,7 +28,7 @@ func SyncBackends(s *Server, deployments []*DeploymentInfo) {
 		if model == "" {
 			model = d.Name
 		}
-		active[model] = true
+		active[strings.ToLower(model)] = true
 
 		if d.Ready && d.Address != "" {
 			s.RegisterBackend(model, &Backend{
@@ -42,7 +43,7 @@ func SyncBackends(s *Server, deployments []*DeploymentInfo) {
 		// Deployment exists but not ready: preserve existing route metadata
 		// (address/basePath/remote), but mark it not ready.
 		existing := s.ListBackends()
-		if b, ok := existing[model]; ok {
+		if b, ok := existing[strings.ToLower(model)]; ok {
 			engineType := d.Labels["aima.dev/engine"]
 			if engineType == "" {
 				engineType = b.EngineType
@@ -66,7 +67,7 @@ func SyncBackends(s *Server, deployments []*DeploymentInfo) {
 
 	// Remove local backends that no longer have a deployment (skip remote backends)
 	for name, b := range s.ListBackends() {
-		if !active[name] && !b.Remote {
+		if !active[strings.ToLower(name)] && !b.Remote {
 			slog.Info("sync: removing stale backend", "model", name)
 			s.RemoveBackend(name)
 		}

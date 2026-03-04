@@ -137,7 +137,7 @@ func findEngineAsset(assets []knowledge.EngineAsset, name string) *knowledge.Eng
 		return nil
 	}
 	for i := range assets {
-		if assets[i].Metadata.Name == name {
+		if strings.EqualFold(assets[i].Metadata.Name, name) {
 			return &assets[i]
 		}
 	}

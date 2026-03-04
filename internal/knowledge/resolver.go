@@ -179,7 +179,7 @@ func (c *Catalog) findEngine(engineType string, hw HardwareInfo) (*EngineAsset, 
 	var wildcard *EngineAsset
 	for i := range c.EngineAssets {
 		ea := &c.EngineAssets[i]
-		if ea.Metadata.Type != engineType {
+		if !strings.EqualFold(ea.Metadata.Type, engineType) {
 			continue
 		}
 
@@ -361,7 +361,7 @@ func (c *Catalog) findModelVariant(modelName, engineType string, hw HardwareInfo
 		var exactMatch, wildcardMatch *ModelVariant
 		for j := range ma.Variants {
 			v := &ma.Variants[j]
-			if v.Engine != engineType {
+			if !strings.EqualFold(v.Engine, engineType) {
 				continue
 			}
 			// VRAM filter: skip variants requiring more VRAM than available
@@ -396,7 +396,7 @@ func (c *Catalog) findModelVariant(modelName, engineType string, hw HardwareInfo
 func (c *Catalog) findPartitionByName(hw HardwareInfo, name string) *PartitionStrategy {
 	if name != "" {
 		for i := range c.PartitionStrategies {
-			if c.PartitionStrategies[i].Metadata.Name == name {
+			if strings.EqualFold(c.PartitionStrategies[i].Metadata.Name, name) {
 				return &c.PartitionStrategies[i]
 			}
 		}
@@ -447,7 +447,7 @@ func pickSlot(ps *PartitionStrategy, overrides map[string]any) *PartitionSlot {
 	}
 
 	for _, sd := range ps.Slots {
-		if sd.Name == slotName {
+		if strings.EqualFold(sd.Name, slotName) {
 			return &PartitionSlot{
 				Name:            sd.Name,
 				GPUCount:        sd.GPU.Count,
@@ -461,7 +461,7 @@ func pickSlot(ps *PartitionStrategy, overrides map[string]any) *PartitionSlot {
 
 	// Slot name not found; return the first non-system slot
 	for _, sd := range ps.Slots {
-		if sd.Name != "system_reserved" {
+		if !strings.EqualFold(sd.Name, "system_reserved") {
 			return &PartitionSlot{
 				Name:            sd.Name,
 				GPUCount:        sd.GPU.Count,

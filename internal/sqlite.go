@@ -871,15 +871,9 @@ func (d *DB) UpdateModelStatus(ctx context.Context, id, status string) error {
 }
 
 // FindModelByName searches for a model by name with prioritized matching:
-// 1. Exact name  2. Case-insensitive  3. Substring match
+// 1. Case-insensitive exact  2. Substring match
 func (d *DB) FindModelByName(ctx context.Context, name string) (*Model, error) {
 	queries := []string{
-		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
-		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
-		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),
-		        COALESCE(quantization,''), COALESCE(quant_src,''),
-		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
-		 FROM models WHERE name = ? ORDER BY created_at DESC LIMIT 1`,
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
 		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),

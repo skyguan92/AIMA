@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -22,7 +23,7 @@ func SyncRemoteBackends(ctx context.Context, s *Server, services []DiscoveredSer
 	localModels := make(map[string]bool)
 	for name, b := range s.ListBackends() {
 		if !b.Remote {
-			localModels[name] = true
+			localModels[strings.ToLower(name)] = true
 		}
 	}
 
@@ -50,12 +51,12 @@ func SyncRemoteBackends(ctx context.Context, s *Server, services []DiscoveredSer
 		models := QueryRemoteModels(ctx, addr, svc.Port, apiKey)
 		for _, model := range models {
 			// Local always wins
-			if localModels[model] {
+			if localModels[strings.ToLower(model)] {
 				slog.Debug("remote: skipping model (local exists)", "model", model, "remote", addr)
 				continue
 			}
 
-			alive[model] = true
+			alive[strings.ToLower(model)] = true
 			address := fmt.Sprintf("%s:%d", addr, svc.Port)
 			s.RegisterBackend(model, &Backend{
 				ModelName:  model,
@@ -70,7 +71,7 @@ func SyncRemoteBackends(ctx context.Context, s *Server, services []DiscoveredSer
 
 	// Clean stale remote backends not seen this round
 	for name, b := range s.ListBackends() {
-		if b.Remote && !alive[name] {
+		if b.Remote && !alive[strings.ToLower(name)] {
 			slog.Info("remote: removing stale backend", "model", name)
 			s.RemoveBackend(name)
 		}

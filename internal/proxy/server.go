@@ -106,14 +106,14 @@ func NewServer(opts ...Option) *Server {
 func (s *Server) RegisterBackend(model string, backend *Backend) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.routes[model] = cloneBackend(backend)
+	s.routes[strings.ToLower(model)] = cloneBackend(backend)
 }
 
 // RemoveBackend removes a model route.
 func (s *Server) RemoveBackend(model string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.routes, model)
+	delete(s.routes, strings.ToLower(model))
 }
 
 // ListBackends returns a copy of all registered backends.
@@ -382,7 +382,7 @@ func (s *Server) resolveBackend(model string) *Backend {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if b, ok := s.routes[model]; ok {
+	if b, ok := s.routes[strings.ToLower(model)]; ok {
 		return cloneBackend(b)
 	}
 	return nil
