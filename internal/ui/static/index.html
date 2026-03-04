@@ -1593,6 +1593,9 @@ var I18N = {
     settings_saved: 'Settings saved successfully.',
     settings_error: 'Failed to save settings.',
     settings_cleared: 'Settings cleared.',
+    cli_help_header: 'CLI Mode — Available MCP Tools',
+    cli_help_usage: 'Usage: /cli <tool> [params]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
+    cli_unknown_tool: 'Unknown tool: ',
   },
   zh: {
     system_online: '\u7CFB\u7EDF\u5728\u7EBF',
@@ -1643,6 +1646,9 @@ var I18N = {
     settings_saved: '\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\u3002',
     settings_error: '\u4FDD\u5B58\u8BBE\u7F6E\u5931\u8D25\u3002',
     settings_cleared: '\u8BBE\u7F6E\u5DF2\u6E05\u9664\u3002',
+    cli_help_header: 'CLI \u6A21\u5F0F \u2014 \u53EF\u7528 MCP \u5DE5\u5177',
+    cli_help_usage: '\u7528\u6CD5: /cli <\u5DE5\u5177\u540D> [\u53C2\u6570]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
+    cli_unknown_tool: '\u672A\u77E5\u5DE5\u5177: ',
   },
   ja: {
     system_online: '\u30B7\u30B9\u30C6\u30E0\u30AA\u30F3\u30E9\u30A4\u30F3',
@@ -1693,6 +1699,9 @@ var I18N = {
     settings_saved: '\u8A2D\u5B9A\u3092\u4FDD\u5B58\u3057\u307E\u3057\u305F\u3002',
     settings_error: '\u8A2D\u5B9A\u306E\u4FDD\u5B58\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002',
     settings_cleared: '\u8A2D\u5B9A\u3092\u30AF\u30EA\u30A2\u3057\u307E\u3057\u305F\u3002',
+    cli_help_header: 'CLI\u30E2\u30FC\u30C9 \u2014 \u5229\u7528\u53EF\u80FD\u306AMCP\u30C4\u30FC\u30EB',
+    cli_help_usage: '\u4F7F\u3044\u65B9: /cli <\u30C4\u30FC\u30EB\u540D> [\u30D1\u30E9\u30E1\u30FC\u30BF]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
+    cli_unknown_tool: '\u4E0D\u660E\u306A\u30C4\u30FC\u30EB: ',
   },
   ko: {
     system_online: '\uC2DC\uC2A4\uD15C \uC628\uB77C\uC778',
@@ -1743,6 +1752,9 @@ var I18N = {
     settings_saved: '\uC124\uC815\uC774 \uC800\uC7A5\uB418\uC5C8\uC2B5\uB2C8\uB2E4.',
     settings_error: '\uC124\uC815 \uC800\uC7A5\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.',
     settings_cleared: '\uC124\uC815\uC774 \uCD08\uAE30\uD654\uB418\uC5C8\uC2B5\uB2C8\uB2E4.',
+    cli_help_header: 'CLI \uBAA8\uB4DC \u2014 \uC0AC\uC6A9 \uAC00\uB2A5\uD55C MCP \uB3C4\uAD6C',
+    cli_help_usage: '\uC0AC\uC6A9\uBC95: /cli <\uB3C4\uAD6C\uBA85> [\uB9E4\uAC1C\uBCC0\uC218]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
+    cli_unknown_tool: '\uC54C \uC218 \uC5C6\uB294 \uB3C4\uAD6C: ',
   },
   es: {
     system_online: 'Sistema en l\u00EDnea',
@@ -1793,6 +1805,9 @@ var I18N = {
     settings_saved: 'Configuraci\u00F3n guardada correctamente.',
     settings_error: 'Error al guardar la configuraci\u00F3n.',
     settings_cleared: 'Configuraci\u00F3n eliminada.',
+    cli_help_header: 'Modo CLI \u2014 Herramientas MCP disponibles',
+    cli_help_usage: 'Uso: /cli <herramienta> [par\u00E1metros]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
+    cli_unknown_tool: 'Herramienta desconocida: ',
   },
   fr: {
     system_online: 'Syst\u00E8me en ligne',
@@ -1843,6 +1858,9 @@ var I18N = {
     settings_saved: 'Param\u00E8tres enregistr\u00E9s avec succ\u00E8s.',
     settings_error: 'Erreur lors de l\'enregistrement des param\u00E8tres.',
     settings_cleared: 'Param\u00E8tres effac\u00E9s.',
+    cli_help_header: 'Mode CLI \u2014 Outils MCP disponibles',
+    cli_help_usage: 'Utilisation : /cli <outil> [param\u00E8tres]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
+    cli_unknown_tool: 'Outil inconnu : ',
   },
   de: {
     system_online: 'System online',
@@ -1893,6 +1911,9 @@ var I18N = {
     settings_saved: 'Einstellungen erfolgreich gespeichert.',
     settings_error: 'Fehler beim Speichern der Einstellungen.',
     settings_cleared: 'Einstellungen gel\u00F6scht.',
+    cli_help_header: 'CLI-Modus \u2014 Verf\u00FCgbare MCP-Tools',
+    cli_help_usage: 'Verwendung: /cli <Tool> [Parameter]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
+    cli_unknown_tool: 'Unbekanntes Tool: ',
   }
 };
 
@@ -2221,7 +2242,11 @@ function aimaApp() {
       this.thinking = true;
       this.scrollChat();
 
-      await this.sendAgent(text);
+      if (text.startsWith('/cli')) {
+        await this.sendCLI(text.slice(4).trim());
+      } else {
+        await this.sendAgent(text);
+      }
 
       this.thinking = false;
       this.scrollChat();
@@ -2443,6 +2468,132 @@ function aimaApp() {
       }
 
       this.messages.push({ role: 'error', text: this.t('agent_unavailable') });
+    },
+
+    // ── CLI Mode (/cli prefix) ──
+
+    async sendCLI(args) {
+      if (!args || args === 'help') {
+        await this._cliHelp();
+        return;
+      }
+
+      // Parse: first token = tool name, rest = params
+      const spaceIdx = args.indexOf(' ');
+      const toolName = spaceIdx === -1 ? args : args.slice(0, spaceIdx);
+      const paramStr = spaceIdx === -1 ? '' : args.slice(spaceIdx + 1).trim();
+      const params = this._parseCLIParams(paramStr);
+
+      const toolIndex = this.messages.length;
+      const startTime = Date.now();
+      this.messages.push({
+        role: 'tool',
+        toolName: toolName,
+        args: params,
+        status: 'running',
+        expanded: false,
+        startTime: startTime
+      });
+      this.scrollChat();
+
+      const data = await this.callTool(toolName, Object.keys(params).length > 0 ? params : undefined);
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
+
+      if (data._err) {
+        const isUnknown = data._err.includes('not found') || data._err.includes('unknown');
+        this.messages.splice(toolIndex, 1, {
+          ...this.messages[toolIndex],
+          status: 'error',
+          result: data._err,
+          duration: duration
+        });
+        this.messages.push({ role: 'error', text: isUnknown ? this.t('cli_unknown_tool') + toolName : 'Error: ' + data._err });
+      } else {
+        this.messages.splice(toolIndex, 1, {
+          ...this.messages[toolIndex],
+          status: 'success',
+          result: data,
+          duration: duration
+        });
+        this.messages.push({ role: 'ai', text: JSON.stringify(data, null, 2) });
+
+        // Refresh dashboard after state-changing tools
+        const ns = toolName.split('.')[0];
+        if (['deploy', 'model', 'engine', 'stack', 'system', 'catalog'].includes(ns)) {
+          this.pollSystemStatus();
+          this.pollEngines();
+          this.pollModels();
+          this.pollDeployments();
+        }
+      }
+      this.scrollChat();
+    },
+
+    _parseCLIParams(str) {
+      if (!str) return {};
+      const trimmed = str.trim();
+      // Try JSON first
+      if (trimmed.startsWith('{')) {
+        try { return JSON.parse(trimmed); } catch {}
+      }
+      // key=value parsing
+      const params = {};
+      const re = /(\w+)=("([^"]*)"|'([^']*)'|(\S+))/g;
+      let m;
+      while ((m = re.exec(trimmed)) !== null) {
+        const key = m[1];
+        const val = m[3] !== undefined ? m[3] : m[4] !== undefined ? m[4] : m[5];
+        // Auto-convert booleans and numbers
+        if (val === 'true') params[key] = true;
+        else if (val === 'false') params[key] = false;
+        else if (/^\d+$/.test(val)) params[key] = parseInt(val, 10);
+        else if (/^\d+\.\d+$/.test(val)) params[key] = parseFloat(val);
+        else params[key] = val;
+      }
+      return params;
+    },
+
+    _cliToolsCache: null,
+    _cliToolsCacheTime: 0,
+
+    async _cliHelp() {
+      const now = Date.now();
+      // 60s cache
+      if (!this._cliToolsCache || now - this._cliToolsCacheTime > 60000) {
+        const headers = {};
+        if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+        try {
+          const resp = await fetch('/api/v1/tools', { headers });
+          if (resp.ok) {
+            this._cliToolsCache = await resp.json();
+            this._cliToolsCacheTime = now;
+          }
+        } catch {}
+      }
+
+      let text = this.t('cli_help_header') + '\n' + this.t('cli_help_usage') + '\n\n';
+
+      if (this._cliToolsCache && Array.isArray(this._cliToolsCache)) {
+        // Group by namespace
+        const groups = {};
+        for (const tool of this._cliToolsCache) {
+          const name = tool.name || '';
+          const ns = name.split('.')[0] || 'other';
+          if (!groups[ns]) groups[ns] = [];
+          groups[ns].push({ name, desc: tool.description || '' });
+        }
+        for (const ns of Object.keys(groups).sort()) {
+          text += '[' + ns + ']\n';
+          for (const t of groups[ns]) {
+            const shortDesc = t.desc.length > 60 ? t.desc.slice(0, 57) + '...' : t.desc;
+            text += '  ' + t.name + (shortDesc ? '  - ' + shortDesc : '') + '\n';
+          }
+          text += '\n';
+        }
+      }
+
+      this.messages.push({ role: 'ai', text: text.trimEnd() });
+      this.scrollChat();
     },
 
     scrollChat() {
