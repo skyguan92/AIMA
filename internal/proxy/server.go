@@ -241,8 +241,20 @@ func WriteJSONError(w http.ResponseWriter, statusCode int, errType, message stri
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	backends := s.ListBackends()
+	ready := 0
+	for _, b := range backends {
+		if b.Ready {
+			ready++
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":       "ok",
+		"ready_models": ready,
+		"total_models": len(backends),
+		"can_infer":    ready > 0,
+	})
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

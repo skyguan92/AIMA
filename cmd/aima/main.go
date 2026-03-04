@@ -1988,7 +1988,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if err != nil {
 				// Primary runtime failed — still try to collect from other runtimes.
 				slog.Warn("deploy list: primary runtime failed", "runtime", rt.Name(), "error", err)
-				statuses = nil
+				statuses = make([]*runtime.DeploymentStatus, 0)
 			}
 			// Also include native deployments (when engine recommended native on a K3S machine).
 			if nativeRt != nil && nativeRt != rt {
@@ -2409,10 +2409,12 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				return nil, fmt.Errorf("detect hardware: %w", err)
 			}
 			// Non-fatal: K3S may not be running
-			if pods, err := rt.List(ctx); err == nil {
-				if b, e := json.Marshal(pods); e == nil {
-					status["deployments"] = b
-				}
+			pods, _ := rt.List(ctx)
+			if pods == nil {
+				pods = make([]*runtime.DeploymentStatus, 0)
+			}
+			if b, e := json.Marshal(pods); e == nil {
+				status["deployments"] = b
 			}
 			if nativeRt != nil && nativeRt != rt {
 				if nativePods, err := nativeRt.List(ctx); err == nil && len(nativePods) > 0 {

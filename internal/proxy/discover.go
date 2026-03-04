@@ -64,7 +64,7 @@ func discoverMDNS(ctx context.Context, timeout time.Duration) ([]DiscoveredServi
 		Port   int
 	}
 	seen := make(map[dedupKey]bool)
-	var services []DiscoveredService
+	services := make([]DiscoveredService, 0)
 	var firstErr error
 	for range ifaces {
 		r := <-ch

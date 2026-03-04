@@ -237,7 +237,7 @@ func (r *DockerRuntime) List(ctx context.Context) ([]*DeploymentStatus, error) {
 		return nil, fmt.Errorf("docker ps: %w\n%s", err, string(out))
 	}
 
-	var statuses []*DeploymentStatus
+	statuses := make([]*DeploymentStatus, 0)
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if line == "" {
 			continue

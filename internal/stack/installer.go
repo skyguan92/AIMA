@@ -259,7 +259,7 @@ type DownloadItem struct {
 // this avoids slow/failing downloads for airgap tars of already-running services.
 func (inst *Installer) Preflight(ctx context.Context, components []knowledge.StackComponent, hwProfile string) []DownloadItem {
 	platform := runtime.GOOS + "/" + runtime.GOARCH
-	var items []DownloadItem
+	items := make([]DownloadItem, 0)
 
 	for _, comp := range components {
 		if !platformSupported(comp.Source.Platforms) {

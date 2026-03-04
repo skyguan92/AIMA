@@ -84,6 +84,22 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 		return nil, err
 	}
 
+	// Format compatibility: reject early if model format is not supported by engine.
+	// This prevents dry-run from reporting fit=true for incompatible combos (e.g. AWQ on Ascend).
+	if variant != nil && variant.Format != "" && len(engine.Metadata.SupportedFormats) > 0 {
+		supported := false
+		for _, f := range engine.Metadata.SupportedFormats {
+			if strings.EqualFold(f, variant.Format) {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return nil, fmt.Errorf("model format %q not supported by engine %s (supported: %v)",
+				variant.Format, engine.Metadata.Name, engine.Metadata.SupportedFormats)
+		}
+	}
+
 	var partitionName string
 	if pn, ok := userOverrides["partition"]; ok {
 		partitionName = fmt.Sprint(pn)
@@ -656,7 +672,8 @@ func CheckFit(resolved *ResolvedConfig, hw HardwareInfo) *FitReport {
 				maxSafeGMU := float64(hw.GPUMemFreeMiB-safetyMiB) / float64(totalVRAM)
 				if maxSafeGMU < 0.1 {
 					r.Fit = false
-					r.Reason = fmt.Sprintf("GPU memory insufficient: %d MiB free, need > %d MiB", hw.GPUMemFreeMiB, safetyMiB)
+					r.Reason = fmt.Sprintf("GPU memory insufficient: only %.1f%% usable (need ≥10%%); %d MiB free / %d MiB total, %d MiB safety reserve",
+						maxSafeGMU*100, hw.GPUMemFreeMiB, totalVRAM, safetyMiB)
 					return r
 				}
 				if currentGMU > maxSafeGMU {

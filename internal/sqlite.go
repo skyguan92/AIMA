@@ -694,7 +694,7 @@ func (d *DB) ListSnapshots(ctx context.Context) ([]*RollbackSnapshot, error) {
 		return nil, fmt.Errorf("list snapshots: %w", err)
 	}
 	defer rows.Close()
-	var snapshots []*RollbackSnapshot
+	snapshots := make([]*RollbackSnapshot, 0)
 	for rows.Next() {
 		s := &RollbackSnapshot{}
 		if err := rows.Scan(&s.ID, &s.ToolName, &s.ResourceType, &s.ResourceName, &s.Snapshot, &s.CreatedAt); err != nil {
