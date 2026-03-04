@@ -42,6 +42,8 @@ variants:
       max_running_requests: 16
       attention_backend: triton
       context_length: 131072
+      reasoning_parser: qwen3
+      tool_call_parser: qwen3_coder
     expected_performance:
       tokens_per_second: [21, 23]
       vram_mib: 84232

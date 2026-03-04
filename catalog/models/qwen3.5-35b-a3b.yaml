@@ -42,6 +42,8 @@ variants:
       max_model_len: 131072
       dtype: bfloat16
       enable_chunked_prefill: false
+      enable_auto_tool_choice: true
+      tool_call_parser: qwen3_xml
     expected_performance:
       startup_time_s: 120
       cold_start_time_s: 300
@@ -146,6 +148,8 @@ variants:
       max_model_len: 4096
       dtype: bfloat16
       tensor_parallel_size: 2
+      enable_auto_tool_choice: true
+      tool_call_parser: qwen3_xml
     expected_performance:
       startup_time_s: 120
       cold_start_time_s: 300
@@ -178,6 +182,8 @@ variants:
       max_model_len: 32768
       dtype: float16
       tensor_parallel_size: 2
+      enable_auto_tool_choice: true
+      tool_call_parser: qwen3_xml
     expected_performance:
       startup_time_s: 120
       cold_start_time_s: 300

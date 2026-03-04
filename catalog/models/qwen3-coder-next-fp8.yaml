@@ -38,6 +38,8 @@ variants:
       max_model_len: 262144
       dtype: auto
       enable_chunked_prefill: true
+      enable_auto_tool_choice: true
+      tool_call_parser: qwen3_xml
     expected_performance:
       tokens_per_second: [0.2, 42.5]       # decode 42.5 tok/s @1K → 0.2 tok/s @262K
       latency_first_token_ms: [239, 141200] # TTFT 239ms @1K → 141.2s @262K
