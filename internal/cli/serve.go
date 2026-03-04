@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,10 +123,16 @@ func newServeCmd(app *App) *cobra.Command {
 					// Wrap with dynamic API key auth (reads from proxy on each request)
 					handler = apiKeyAuth(app.Proxy.APIKey, handler)
 					mux.Handle("/mcp", handler)
-					server := &http.Server{Addr: mcpAddr, Handler: mux}
+					server := &http.Server{
+						Addr:              mcpAddr,
+						Handler:           mux,
+						ReadHeaderTimeout: 10 * time.Second,
+					}
 					go func() {
 						<-ctx.Done()
-						server.Shutdown(context.Background())
+						shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer shutdownCancel()
+						server.Shutdown(shutdownCtx)
 					}()
 					errCh <- server.ListenAndServe()
 				}()
@@ -137,7 +142,9 @@ func newServeCmd(app *App) *cobra.Command {
 			select {
 			case <-ctx.Done():
 				slog.Info("shutting down")
-				app.Proxy.Shutdown(context.Background())
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer shutdownCancel()
+				app.Proxy.Shutdown(shutdownCtx)
 				return nil
 			case err := <-errCh:
 				if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -222,11 +229,9 @@ func apiKeyAuth(keyFn func() string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		if subtle.ConstantTimeCompare([]byte(auth), []byte("Bearer "+key)) != 1 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			fmt.Fprintln(w, `{"error":"unauthorized"}`)
+		if !proxy.CheckBearerAuth(r.Header.Get("Authorization"), key) {
+			slog.Warn("MCP unauthorized request", "remote_addr", r.RemoteAddr)
+			proxy.WriteJSONError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 			return
 		}
 		next.ServeHTTP(w, r)

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jguan/aima/internal/k3s"
 	"github.com/jguan/aima/internal/knowledge"
@@ -274,7 +275,9 @@ func (r *K3SRuntime) enrichStartupProgress(ctx context.Context, pod *k3s.PodStat
 
 // K3SAvailable checks whether K3S is accessible on this system.
 func K3SAvailable(ctx context.Context, client *k3s.Client) bool {
-	_, err := client.ListPods(ctx)
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := client.ListPods(probeCtx)
 	return err == nil
 }
 

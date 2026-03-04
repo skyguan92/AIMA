@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jguan/aima/internal/knowledge"
 )
@@ -26,7 +27,9 @@ func (r *DockerRuntime) Name() string { return "docker" }
 
 // DockerAvailable checks whether Docker is accessible on this system.
 func DockerAvailable(ctx context.Context) bool {
-	out, err := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}").CombinedOutput()
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(probeCtx, "docker", "version", "--format", "{{.Server.Version}}").CombinedOutput()
 	if err != nil {
 		return false
 	}

@@ -365,4 +365,11 @@ constraints:
 
 ---
 
-*最后更新：2026-03-04 (Huawei Ascend 910B NPU 双路解析 + enrichment)*
+### 防御性超时
+
+`execRunner.Run()` 为每个外部命令（nvidia-smi, rocm-smi, npu-smi 等）施加 10 秒超时，
+防止单个工具挂起阻塞整个检测流程。
+
+---
+
+*最后更新：2026-03-04 (检测命令 10s 防御性超时)*

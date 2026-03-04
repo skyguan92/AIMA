@@ -1088,6 +1088,27 @@ func pickRuntimeForDeployment(recommendation string, k3sRt, dockerRt, nativeRt, 
 	}
 }
 
+// listAllRuntimes aggregates deployment lists from all available runtimes.
+func listAllRuntimes(ctx context.Context, rts ...runtime.Runtime) []*runtime.DeploymentStatus {
+	var all []*runtime.DeploymentStatus
+	seen := make(map[string]bool)
+	for _, r := range rts {
+		if r == nil {
+			continue
+		}
+		// Deduplicate runtimes (e.g., nativeRt == rt).
+		name := fmt.Sprintf("%p", r)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if deps, err := r.List(ctx); err == nil {
+			all = append(all, deps...)
+		}
+	}
+	return all
+}
+
 func catalogSize(cat *knowledge.Catalog) int {
 	return len(cat.HardwareProfiles) + len(cat.EngineAssets) + len(cat.ModelAssets) + len(cat.PartitionStrategies) + len(cat.StackComponents)
 }
@@ -1892,8 +1913,39 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				}
 			}
 			if err != nil && nativeRt != nil && nativeRt != rt {
+				// Try exact name and model-label search on native runtime.
 				err = nativeRt.Delete(ctx, name)
-				if err == nil {
+				if err != nil {
+					if nativeDeps, nErr := nativeRt.List(ctx); nErr == nil {
+						for _, d := range nativeDeps {
+							if d.Labels["aima.dev/model"] == name {
+								if delErr := nativeRt.Delete(ctx, d.Name); delErr == nil {
+									deleted = d.Name
+									err = nil
+									break
+								}
+							}
+						}
+					}
+				} else {
+					deleted = name
+				}
+			}
+			if err != nil && dockerRt != nil && dockerRt != rt {
+				err = dockerRt.Delete(ctx, name)
+				if err != nil {
+					if dockerDeps, dErr := dockerRt.List(ctx); dErr == nil {
+						for _, d := range dockerDeps {
+							if d.Labels["aima.dev/model"] == name {
+								if delErr := dockerRt.Delete(ctx, d.Name); delErr == nil {
+									deleted = d.Name
+									err = nil
+									break
+								}
+							}
+						}
+					}
+				} else {
 					deleted = name
 				}
 			}
@@ -1912,15 +1964,17 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if err != nil && nativeRt != nil && nativeRt != rt {
 				s, err = nativeRt.Status(ctx, name)
 			}
+			if err != nil && dockerRt != nil && dockerRt != rt {
+				s, err = dockerRt.Status(ctx, name)
+			}
 			if err != nil {
-				// Exact pod name failed — search by model label.
-				if deployments, listErr := rt.List(ctx); listErr == nil {
-					for _, d := range deployments {
-						if d.Labels["aima.dev/model"] == name || d.Name == name {
-							s = d
-							err = nil
-							break
-						}
+				// Exact pod name failed — search by model label across all runtimes.
+				allDeps := listAllRuntimes(ctx, rt, nativeRt, dockerRt)
+				for _, d := range allDeps {
+					if d.Labels["aima.dev/model"] == name || d.Name == name {
+						s = d
+						err = nil
+						break
 					}
 				}
 			}
@@ -1932,12 +1986,21 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		DeployList: func(ctx context.Context) (json.RawMessage, error) {
 			statuses, err := rt.List(ctx)
 			if err != nil {
-				return nil, err
+				// Primary runtime failed — still try to collect from other runtimes.
+				slog.Warn("deploy list: primary runtime failed", "runtime", rt.Name(), "error", err)
+				statuses = nil
 			}
 			// Also include native deployments (when engine recommended native on a K3S machine).
 			if nativeRt != nil && nativeRt != rt {
-				nativeStatuses, _ := nativeRt.List(ctx)
-				statuses = append(statuses, nativeStatuses...)
+				if nativeStatuses, nErr := nativeRt.List(ctx); nErr == nil {
+					statuses = append(statuses, nativeStatuses...)
+				}
+			}
+			// Also include Docker deployments.
+			if dockerRt != nil && dockerRt != rt {
+				if dockerStatuses, dErr := dockerRt.List(ctx); dErr == nil {
+					statuses = append(statuses, dockerStatuses...)
+				}
 			}
 			return json.Marshal(statuses)
 		},
@@ -1946,14 +2009,24 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if err != nil && nativeRt != nil && nativeRt != rt {
 				logs, err = nativeRt.Logs(ctx, name, tailLines)
 			}
+			if err != nil && dockerRt != nil && dockerRt != rt {
+				logs, err = dockerRt.Logs(ctx, name, tailLines)
+			}
 			if err != nil {
-				// Exact pod name failed — search by model label to find actual pod name.
-				if deployments, listErr := rt.List(ctx); listErr == nil {
-					for _, d := range deployments {
-						if d.Labels["aima.dev/model"] == name || d.Name == name {
-							logs, err = rt.Logs(ctx, d.Name, tailLines)
-							break
+				// Exact pod name failed — search by model label across all runtimes.
+				allDeps := listAllRuntimes(ctx, rt, nativeRt, dockerRt)
+				for _, d := range allDeps {
+					if d.Labels["aima.dev/model"] == name || d.Name == name {
+						// Try each runtime for logs by actual deployment name.
+						for _, tryRt := range []runtime.Runtime{rt, nativeRt, dockerRt} {
+							if tryRt == nil {
+								continue
+							}
+							if l, e := tryRt.Logs(ctx, d.Name, tailLines); e == nil {
+								return l, nil
+							}
 						}
+						break
 					}
 				}
 			}
@@ -2258,7 +2331,15 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if len(parts) == 0 {
 				return nil, fmt.Errorf("empty command")
 			}
-			out, err := exec.CommandContext(ctx, parts[0], parts[1:]...).CombinedOutput()
+			// Enforce a 60-second timeout to prevent indefinite hangs.
+			execCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+			out, err := exec.CommandContext(execCtx, parts[0], parts[1:]...).CombinedOutput()
+			// Cap output to 1MB to prevent OOM on large outputs.
+			const maxOutput = 1 << 20
+			if len(out) > maxOutput {
+				out = append(out[:maxOutput], []byte("\n... (output truncated)")...)
+			}
 			if err != nil {
 				return json.Marshal(map[string]string{
 					"output": string(out),

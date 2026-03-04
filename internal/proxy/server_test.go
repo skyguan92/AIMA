@@ -450,8 +450,8 @@ func TestCORSHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Errorf("CORS Allow-Origin = %q, want '*'", w.Header().Get("Access-Control-Allow-Origin"))
+	if w.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Errorf("CORS Allow-Origin = %q, want 'http://localhost:3000'", w.Header().Get("Access-Control-Allow-Origin"))
 	}
 	if w.Header().Get("Access-Control-Allow-Methods") == "" {
 		t.Error("expected Access-Control-Allow-Methods header")

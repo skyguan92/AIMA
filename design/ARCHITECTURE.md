@@ -309,7 +309,12 @@ Server 端为每个 LAN 接口创建独立的 mdns.Server 实例，Client 端并
 - **Fleet 工具拦截**: `fleet.exec_tool` 在远程执行时屏蔽破坏性工具 (`model.remove`, `engine.remove`, `deploy.delete`, `agent.install`, `stack.init`, `agent.rollback`, `shell.exec`)，防止 Agent 通过远程 Fleet 调用绕过本地安全护栏。
 - **API Key 热更新**: `system.config set api_key <KEY>` 立即传播到 Proxy、MCP Server、Fleet Client 三条认证路径，无需重启。
 - **LLM Config 热更新**: `system.config set llm.endpoint/llm.model/llm.api_key` 立即热替换 OpenAIClient，无需重启。LLM 配置持久化在 SQLite，优先级: env var > SQLite > default。
-- **Timing-safe 比较**: 所有 Bearer token 校验使用 `crypto/subtle.ConstantTimeCompare`，防止侧信道攻击。
+- **Timing-safe 比较**: 所有 Bearer token 校验使用 `crypto/subtle.ConstantTimeCompare`，防止侧信道攻击。Scheme 大小写不敏感（RFC 7235）。
+- **CORS 限制**: 推理代理 CORS 仅允许 loopback Origin（localhost/127.0.0.1/[::1]），防止外部网页 CSRF 调用本地 API。
+- **MCP Slowloris 防护**: MCP HTTP 服务器设置 `ReadHeaderTimeout: 10s`，防止慢速连接耗尽资源。
+- **统一 JSON 错误格式**: Proxy 所有错误响应使用 OpenAI 兼容 JSON 格式（`WriteJSONError`），含 502 反向代理错误。
+- **shell.exec 安全边界**: 60 秒超时 + 1MB 输出上限，防止 Agent 调用导致进程挂起或 OOM。
+- **Native PID 安全**: Delete 操作通过 `/proc/PID/cmdline` 验证进程身份，防止 OS PID 复用导致误杀。
 - **Fleet Client 并发安全**: `fleet.Client.SetAPIKey()` 使用 `sync.RWMutex` 保护，支持运行时热更新。
 - **敏感值脱敏**: `system.config` 读写 `api_key` 和 `llm.api_key` 时响应中显示 `***`，不回显明文。CLI `aima config get/set` 同样脱敏。
 - **Fleet 自动发现**: Fleet MCP 工具自带 mDNS 发现能力，`fleet.list_devices` 每次调用都执行扫描，其余 fleet 工具在 registry 为空时自动触发发现。云端 Agent 通过 MCP 即可直接管理 LAN 设备，无需 CLI 或 `serve --discover`。
@@ -350,4 +355,4 @@ Agent 单次决策循环限制 ≤ 30 轮工具调用 (可配置)，防止无限
 
 ---
 
-*最后更新：2026-03-04 (Huawei Ascend 910B 适配, ContainerAccess 扩展字段)*
+*最后更新：2026-03-04 (安全加固: CORS/PID/Slowloris/ExecShell, HF 下载递归+分页, 跨 Runtime Fallback)*

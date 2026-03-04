@@ -199,14 +199,44 @@ func (s *Server) apiKeyMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		if subtle.ConstantTimeCompare([]byte(auth), []byte("Bearer "+key)) != 1 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			fmt.Fprintln(w, `{"error":"unauthorized"}`)
+		if !CheckBearerAuth(r.Header.Get("Authorization"), key) {
+			slog.Warn("unauthorized request", "remote_addr", r.RemoteAddr, "path", r.URL.Path)
+			WriteJSONError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// CheckBearerAuth validates a Bearer token from the Authorization header.
+// The scheme comparison is case-insensitive per RFC 7235; the token comparison
+// is constant-time to prevent timing attacks.
+func CheckBearerAuth(authHeader, expectedKey string) bool {
+	// Parse scheme and token, tolerating extra whitespace.
+	authHeader = strings.TrimSpace(authHeader)
+	if len(authHeader) < 7 {
+		return false
+	}
+	scheme := authHeader[:6]
+	if !strings.EqualFold(scheme, "bearer") {
+		return false
+	}
+	token := strings.TrimSpace(authHeader[6:])
+	if token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(expectedKey)) == 1
+}
+
+// WriteJSONError writes a consistent OpenAI-compatible JSON error response.
+func WriteJSONError(w http.ResponseWriter, statusCode int, errType, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{
+			"message": message,
+			"type":    errType,
+		},
 	})
 }
 
@@ -222,7 +252,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		models = append(models, map[string]any{
 			"model_name":  b.ModelName,
 			"engine_type": b.EngineType,
-			"address":     b.Address,
 			"ready":       b.Ready,
 			"remote":      b.Remote,
 		})
@@ -257,7 +286,7 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
 	// Read and buffer the body so we can parse model and still forward it (10MB limit)
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
 	if err != nil {
-		http.Error(w, `{"error":"failed to read request body"}`, http.StatusBadRequest)
+		WriteJSONError(w, http.StatusBadRequest, "invalid_request", "failed to read request body")
 		return
 	}
 	r.Body.Close()
@@ -266,7 +295,7 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, `{"error":"invalid JSON in request body"}`, http.StatusBadRequest)
+		WriteJSONError(w, http.StatusBadRequest, "invalid_request", "invalid JSON in request body")
 		return
 	}
 
@@ -318,6 +347,11 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
 			resp.Header.Set("X-Aima-Engine", backend.EngineType)
 			return nil
 		},
+		ErrorHandler: func(rw http.ResponseWriter, outReq *http.Request, err error) {
+			slog.Warn("proxy backend error", "backend", backend.Address, "error", err)
+			WriteJSONError(rw, http.StatusBadGateway, "backend_error",
+				fmt.Sprintf("backend %s unreachable: %v", backend.Address, err))
+		},
 	}
 
 	proxy.ServeHTTP(w, r)
@@ -368,12 +402,16 @@ func (s *Server) availableModels() string {
 	return strings.Join(models, ", ")
 }
 
-// corsMiddleware adds CORS headers for local development.
+// corsMiddleware adds CORS headers, restricted to loopback origins to prevent CSRF.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		origin := r.Header.Get("Origin")
+		if isLoopbackOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Vary", "Origin")
+		}
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -382,4 +420,21 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isLoopbackOrigin returns true if the origin is a localhost/127.0.0.1/[::1] address.
+func isLoopbackOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

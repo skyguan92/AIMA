@@ -100,21 +100,24 @@ func WithNativeEngineAssets(assets []knowledge.EngineAsset) NativeOption {
 func (r *NativeRuntime) Name() string { return "native" }
 
 func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
+	// Hold lock for the full existence check to prevent concurrent deploys of the same name.
 	r.mu.Lock()
 	if _, exists := r.processes[req.Name]; exists {
 		r.mu.Unlock()
 		return fmt.Errorf("deployment %q already exists", req.Name)
 	}
-	r.mu.Unlock()
-
 	// Check persisted metadata: if a deployment with this name is still alive, reject
 	if meta, err := r.loadMeta(req.Name); err == nil {
 		if portAlive(meta.Port) {
+			r.mu.Unlock()
 			return fmt.Errorf("deployment %q already running (PID %d, port %d)", req.Name, meta.PID, meta.Port)
 		}
 		// Stale metadata — clean up
 		r.removeMeta(req.Name)
 	}
+	// Reserve the name with a placeholder to prevent concurrent deploys while lock is released.
+	r.processes[req.Name] = nil
+	r.mu.Unlock()
 
 	if len(req.Command) == 0 {
 		return fmt.Errorf("deploy %s: empty command", req.Name)
@@ -196,6 +199,10 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	if err := cmd.Start(); err != nil {
 		cancel()
 		logFile.Close()
+		// Remove placeholder reservation on failure.
+		r.mu.Lock()
+		delete(r.processes, req.Name)
+		r.mu.Unlock()
 		return fmt.Errorf("start %s: %w", req.Name, err)
 	}
 
@@ -273,16 +280,22 @@ func (r *NativeRuntime) Delete(_ context.Context, name string) error {
 			}
 		}
 	} else {
-		// Recover from persisted metadata and kill by PID
+		// Recover from persisted metadata and kill by PID.
+		// Guard against PID reuse: validate the process identity before killing.
 		meta, err := r.loadMeta(name)
 		if err != nil {
 			return fmt.Errorf("deployment %q not found", name)
 		}
 		if meta.PID > 0 {
-			if p, err := os.FindProcess(meta.PID); err == nil {
-				if err := p.Kill(); err != nil {
-					slog.Warn("kill process", "name", name, "pid", meta.PID, "error", err)
+			if processMatchesMeta(meta) {
+				if p, err := os.FindProcess(meta.PID); err == nil {
+					if err := p.Kill(); err != nil {
+						slog.Warn("kill process", "name", name, "pid", meta.PID, "error", err)
+					}
 				}
+			} else {
+				slog.Warn("stale PID: process does not match deployment metadata, skipping kill",
+					"name", name, "pid", meta.PID)
 			}
 		}
 	}
@@ -557,6 +570,36 @@ func (r *NativeRuntime) loadAllMeta() []*deploymentMeta {
 	return metas
 }
 
+// processMatchesMeta validates that the process at the given PID still matches the
+// deployment metadata. This guards against PID reuse — if the OS recycled the PID
+// for a different process, we must not kill it.
+func processMatchesMeta(meta *deploymentMeta) bool {
+	if meta.PID <= 0 || len(meta.Command) == 0 {
+		return false
+	}
+	// On Linux, read /proc/<pid>/cmdline to verify the process identity.
+	if goruntime.GOOS == "linux" {
+		cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", meta.PID))
+		if err != nil {
+			return false // process doesn't exist
+		}
+		// /proc/PID/cmdline is NUL-separated; extract the first arg (binary name).
+		parts := strings.SplitN(string(cmdline), "\x00", 2)
+		if len(parts) == 0 || parts[0] == "" {
+			return false
+		}
+		procBin := filepath.Base(parts[0])
+		metaBin := filepath.Base(meta.Command[0])
+		return procBin == metaBin
+	}
+	// On non-Linux (macOS, Windows): fall back to port check as best-effort.
+	// If the port the deployment was using is still alive, assume the process is ours.
+	if meta.Port > 0 {
+		return portAlive(meta.Port)
+	}
+	return false
+}
+
 // portAlive checks if a TCP port is responding on localhost.
 func portAlive(port int) bool {
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
@@ -567,7 +610,10 @@ func portAlive(port int) bool {
 	return true
 }
 
-// readTail reads the last n lines from a file.
+// readTail reads the last n lines from a file by seeking from the end,
+// avoiding reading the entire file into memory for large log files.
+// For small files (< 256KB), uses a forward scan for reliability on Windows
+// where stat size may lag behind writes from child processes.
 func readTail(path string, n int) (string, error) {
 	if n <= 0 {
 		n = 100
@@ -579,22 +625,78 @@ func readTail(path string, n int) (string, error) {
 	}
 	defer f.Close()
 
-	// Read all lines and keep last n
-	var lines []string
+	stat, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat log: %w", err)
+	}
+	size := stat.Size()
+
+	// For small files or when stat reports size 0 (Windows edge case with
+	// unflushed child process writes), use a simple forward scan.
+	const seekThreshold = 256 * 1024 // 256KB
+	if size < seekThreshold {
+		return readTailForward(f, n)
+	}
+
+	// Large files: seek from end to avoid reading gigabytes of logs.
+	const initialChunk = 64 * 1024 // 64KB
+	chunkSize := int64(initialChunk)
+
+	for {
+		offset := size - chunkSize
+		if offset < 0 {
+			offset = 0
+			chunkSize = size
+		}
+
+		buf := make([]byte, chunkSize)
+		nRead, err := f.ReadAt(buf, offset)
+		if err != nil && err != io.EOF {
+			return "", fmt.Errorf("read log: %w", err)
+		}
+		buf = buf[:nRead]
+
+		// Count newlines from the end
+		lineCount := 0
+		cutPos := len(buf)
+		for i := len(buf) - 1; i >= 0; i-- {
+			if buf[i] == '\n' {
+				lineCount++
+				if lineCount > n {
+					cutPos = i + 1
+					break
+				}
+			}
+		}
+
+		if lineCount > n || offset == 0 {
+			result := strings.TrimRight(string(buf[cutPos:]), "\n\r")
+			return result, nil
+		}
+
+		// Need more data — double chunk size
+		chunkSize *= 2
+		if chunkSize > size {
+			chunkSize = size
+		}
+	}
+}
+
+// readTailForward reads an already-opened file line by line, keeping the last n lines.
+// Used for small files where the seek optimization isn't needed.
+func readTailForward(f *os.File, n int) (string, error) {
 	scanner := bufio.NewScanner(f)
-	// Increase buffer for potentially long log lines
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var lines []string
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil && err != io.EOF {
 		return "", fmt.Errorf("read log: %w", err)
 	}
-
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
-
 	return strings.Join(lines, "\n"), nil
 }
 

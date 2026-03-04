@@ -25,7 +25,7 @@
 | `model.scan` | `model.scan` | 扫描本地模型 |
 | `model.list` | `model.list` | 列出所有模型 |
 | `model.get` | `model.info` | 获取模型详情 |
-| `model.pull` | `model.pull` | 下载模型 |
+| `model.pull` | `model.pull` | 下载模型 (递归+分页+完整性校验+路径遍历防护) |
 | `model.import` | `model.import` | 导入模型 |
 | `model.delete` | `model.remove` | 删除模型 |
 
@@ -199,7 +199,23 @@ ALTER TABLE models ADD COLUMN quant_src TEXT DEFAULT '';
 - `internal/sqlite.go` - 数据库操作
 - `internal/cli/model.go` - CLI 命令处理
 - `internal/mcp/tools.go` - MCP 工具定义
+- `internal/model/downloader.go` - 模型下载器 (HuggingFace/ModelScope)
 
 ---
 
-*最后更新：2026-03-03 (GGUF 路径匹配修复)*
+## 下载安全
+
+### HuggingFace 仓库下载
+
+- **递归目录遍历**: 使用 BFS 队列递归获取仓库所有子目录中的文件
+- **分页支持**: 解析 HTTP `Link` 头中的 `rel="next"` 游标，处理大仓库的分页返回
+- **路径遍历防护**: API 返回的文件路径经 `isSubPath()` 校验，阻止 `../` 路径逃逸
+- **完整性校验**: 下载后比对 `Content-Length`（传输层）和 API 元数据的 `size`（存储层），双重验证
+
+### ModelScope 下载
+
+- **路径遍历防护**: 同 HuggingFace，所有 API 返回路径经 `isSubPath()` 校验
+
+---
+
+*最后更新：2026-03-04 (HF 递归+分页下载, 路径遍历防护, 完整性校验)*

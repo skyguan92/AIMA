@@ -112,7 +112,7 @@ func Download(ctx context.Context, opts DownloadOptions) error {
 		},
 	}
 
-	_, copyErr := io.Copy(f, reader)
+	written, copyErr := io.Copy(f, reader)
 	closeErr := f.Close()
 
 	if copyErr != nil {
@@ -120,6 +120,11 @@ func Download(ctx context.Context, opts DownloadOptions) error {
 	}
 	if closeErr != nil {
 		return fmt.Errorf("close partial file %s: %w", partialPath, closeErr)
+	}
+
+	// Verify byte count matches Content-Length to detect truncated downloads.
+	if resp.ContentLength >= 0 && written != resp.ContentLength {
+		return fmt.Errorf("download %s: incomplete transfer (%d of %d bytes)", opts.URL, written, resp.ContentLength)
 	}
 
 	// Rename .partial to final destination
@@ -210,40 +215,34 @@ type hfRepoFile struct {
 	Size int64  `json:"size"`
 }
 
-// downloadHFRepo lists all files in a HuggingFace repo and downloads them.
+// downloadHFRepo lists all files in a HuggingFace repo (with recursion and pagination)
+// and downloads them, verifying file sizes after download.
 func downloadHFRepo(ctx context.Context, endpoint, repo, destPath string) error {
-	// GET /api/models/{repo}/tree/main to list files
-	apiURL := fmt.Sprintf("%s/api/models/%s/tree/main", endpoint, repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return fmt.Errorf("create API request: %w", err)
-	}
-	resp, err := apiClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("list repo files: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("list repo files: HTTP %d", resp.StatusCode)
-	}
-
-	var files []hfRepoFile
-	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
-		return fmt.Errorf("parse file list: %w", err)
-	}
-
-	// Filter to downloadable files (skip directories, .gitattributes, etc.)
+	// Collect all files via paginated, recursive tree API calls.
 	var toDownload []hfRepoFile
 	var totalSize int64
-	for _, f := range files {
-		if f.Type != "file" {
-			continue
+
+	// Use a queue for recursive directory traversal.
+	queue := []string{""} // "" = root path
+	for len(queue) > 0 {
+		treePath := queue[0]
+		queue = queue[1:]
+
+		files, err := hfListTree(ctx, endpoint, repo, treePath)
+		if err != nil {
+			return err
 		}
-		if strings.HasPrefix(f.Path, ".") {
-			continue
+		for _, f := range files {
+			if f.Type == "directory" {
+				queue = append(queue, f.Path)
+				continue
+			}
+			if f.Type != "file" || strings.HasPrefix(filepath.Base(f.Path), ".") {
+				continue
+			}
+			toDownload = append(toDownload, f)
+			totalSize += f.Size
 		}
-		toDownload = append(toDownload, f)
-		totalSize += f.Size
 	}
 
 	slog.Info("repo file list retrieved",
@@ -254,6 +253,10 @@ func downloadHFRepo(ctx context.Context, endpoint, repo, destPath string) error 
 	// Download each file, skipping already completed ones
 	for i, f := range toDownload {
 		fileDest := filepath.Join(destPath, f.Path)
+		// Guard against path traversal from API-provided paths
+		if !isSubPath(destPath, fileDest) {
+			return fmt.Errorf("path traversal blocked: %s", f.Path)
+		}
 		// Skip if file already exists with correct size
 		if info, err := os.Stat(fileDest); err == nil && info.Size() == f.Size {
 			slog.Info("skipping already downloaded",
@@ -271,8 +274,81 @@ func downloadHFRepo(ctx context.Context, endpoint, repo, destPath string) error 
 		if err := Download(ctx, DownloadOptions{URL: fileURL, DestPath: fileDest}); err != nil {
 			return fmt.Errorf("download %s: %w", f.Path, err)
 		}
+		// Verify downloaded file size matches API metadata.
+		if f.Size > 0 {
+			if info, err := os.Stat(fileDest); err != nil || info.Size() != f.Size {
+				actualSize := int64(0)
+				if info != nil {
+					actualSize = info.Size()
+				}
+				return fmt.Errorf("size mismatch for %s: expected %d, got %d", f.Path, f.Size, actualSize)
+			}
+		}
 	}
 	return nil
+}
+
+// hfListTree fetches one page of the HuggingFace tree API for the given path,
+// following pagination cursors to return all entries.
+func hfListTree(ctx context.Context, endpoint, repo, treePath string) ([]hfRepoFile, error) {
+	var allFiles []hfRepoFile
+	apiURL := fmt.Sprintf("%s/api/models/%s/tree/main", endpoint, repo)
+	if treePath != "" {
+		apiURL += "/" + treePath
+	}
+
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create API request: %w", err)
+		}
+		resp, err := apiClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("list repo files: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("list repo files: HTTP %d", resp.StatusCode)
+		}
+
+		var files []hfRepoFile
+		if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("parse file list: %w", err)
+		}
+		resp.Body.Close()
+
+		allFiles = append(allFiles, files...)
+
+		// Follow pagination via Link header (HuggingFace uses cursor-based pagination).
+		nextURL := parseLinkNext(resp.Header.Get("Link"))
+		if nextURL == "" {
+			break
+		}
+		apiURL = nextURL
+	}
+	return allFiles, nil
+}
+
+// parseLinkNext extracts the "next" URL from an HTTP Link header.
+// Format: <https://...?cursor=...>; rel="next"
+func parseLinkNext(link string) string {
+	if link == "" {
+		return ""
+	}
+	for _, part := range strings.Split(link, ",") {
+		part = strings.TrimSpace(part)
+		if !strings.Contains(part, `rel="next"`) {
+			continue
+		}
+		start := strings.Index(part, "<")
+		end := strings.Index(part, ">")
+		if start >= 0 && end > start {
+			return part[start+1 : end]
+		}
+	}
+	return ""
 }
 
 // hfEndpoints returns HuggingFace endpoints to try in order.
@@ -342,6 +418,10 @@ func downloadModelScope(ctx context.Context, repo, destPath string) error {
 		}
 		idx++
 		fileDest := filepath.Join(destPath, f.Name)
+		// Guard against path traversal from API-provided paths
+		if !isSubPath(destPath, fileDest) {
+			return fmt.Errorf("path traversal blocked: %s", f.Name)
+		}
 		if info, err := os.Stat(fileDest); err == nil && info.Size() == f.Size {
 			slog.Info("skipping already downloaded",
 				"progress", fmt.Sprintf("[%d/%d]", idx, total),
@@ -360,5 +440,12 @@ func downloadModelScope(ctx context.Context, repo, destPath string) error {
 		}
 	}
 	return nil
+}
+
+// isSubPath returns true if child is under parent after cleaning both paths.
+func isSubPath(parent, child string) bool {
+	p := filepath.Clean(parent) + string(os.PathSeparator)
+	c := filepath.Clean(child)
+	return strings.HasPrefix(c, p) || c == filepath.Clean(parent)
 }
 

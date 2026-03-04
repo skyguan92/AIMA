@@ -7,13 +7,18 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // execRunner is a real CommandRunner that executes system commands.
 type execRunner struct{}
 
 func (r *execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).Output()
+	// Defensive per-command timeout: prevent a single hung tool (nvidia-smi, docker, etc.)
+	// from blocking the entire detection pass.
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return exec.CommandContext(cmdCtx, name, args...).Output()
 }
 
 // detectWithRunner performs hardware detection using a given CommandRunner.
