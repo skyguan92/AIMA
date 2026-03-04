@@ -149,8 +149,8 @@ func TestStatusEndpoint(t *testing.T) {
 
 func TestModelsEndpoint(t *testing.T) {
 	s := NewServer()
-	s.RegisterBackend("qwen3-8b", &Backend{ModelName: "qwen3-8b", Ready: true})
-	s.RegisterBackend("glm-4.7-flash", &Backend{ModelName: "glm-4.7-flash", Ready: true})
+	s.RegisterBackend("qwen3-8b", &Backend{ModelName: "qwen3-8b", Address: "10.0.0.1:8000", Ready: true})
+	s.RegisterBackend("glm-4.7-flash", &Backend{ModelName: "glm-4.7-flash", Address: "10.0.0.2:8000", Ready: true})
 
 	handler := s.handler()
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -185,6 +185,33 @@ func TestModelsEndpoint(t *testing.T) {
 		if m.OwnedBy != "aima" {
 			t.Errorf("owned_by = %q, want 'aima'", m.OwnedBy)
 		}
+	}
+}
+
+func TestModelsEndpoint_FiltersNotReady(t *testing.T) {
+	s := NewServer()
+	s.RegisterBackend("ready-model", &Backend{ModelName: "ready-model", Address: "10.0.0.1:8000", Ready: true})
+	s.RegisterBackend("not-ready", &Backend{ModelName: "not-ready", Ready: false})
+	s.RegisterBackend("no-address", &Backend{ModelName: "no-address", Ready: true}) // Ready but no Address
+
+	handler := s.handler()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected 1 ready model, got %d", len(resp.Data))
+	}
+	if resp.Data[0].ID != "ready-model" {
+		t.Errorf("model = %q, want ready-model", resp.Data[0].ID)
 	}
 }
 

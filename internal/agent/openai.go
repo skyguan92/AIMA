@@ -219,6 +219,13 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
+		// Invalidate cached model on 404/503 so the next call re-resolves
+		if httpResp.StatusCode == http.StatusNotFound || httpResp.StatusCode == http.StatusServiceUnavailable {
+			c.mu.Lock()
+			c.cachedModel = ""
+			c.modelCachedAt = time.Time{}
+			c.mu.Unlock()
+		}
 		return nil, fmt.Errorf("chat completions (POST %s, model=%s): HTTP %d: %s", url, model, httpResp.StatusCode, respBody)
 	}
 
