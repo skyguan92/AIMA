@@ -6,7 +6,8 @@ metadata:
   supported_formats: [safetensors]
 image:
   # scitrera/dgx-spark-vllm: community build for DGX Spark / GB10
-  # vLLM 0.14.1 + FlashInfer + Transformers 5 (glm4_moe_lite support)
+  # BLOCKED: all scitrera tags require CUDA 13.1 (PTX incompatible with Driver 580 / CUDA 13.0)
+  # Re-enable after GB10 upgrades to Driver 590+ (DGX OS r590)
   # Source: https://github.com/scitrera/dgx-spark-vllm
   name: scitrera/dgx-spark-vllm
   tag: "0.14.1-t5"
@@ -96,7 +97,7 @@ amplifier:
     - continuous_batching
     - flash_attention
     - flashinfer
-  performance_gain: "spark-vllm-docker: SM121 optimized, FlashInfer + Transformers 5, GLM/Qwen3 arch support"
+  performance_gain: "spark-vllm-docker: SM121 optimized, FlashInfer + FLASH_ATTN, prefill 2-3x faster than official nightly"
   resource_expansion:
     cpu_offload: false
     ssd_offload: false
