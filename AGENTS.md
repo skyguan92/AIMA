@@ -9,9 +9,9 @@ and exposes 57 MCP tools for AI Agents to operate everything. **This project is 
 Tech: Go (no CGO), K3S, HAMi, SQLite (modernc.org/sqlite), MCP (JSON-RPC 2.0), Cobra CLI, log/slog.
 Design docs: `design/ARCHITECTURE.md` (system architecture), `design/PRD.md`, `design/MRD.md`.
 
-## Git Flow
+## Git Flow & Version Management
 
-This project uses **Git Flow** branching model:
+This project uses **Git Flow** branching model. Current version: **v0.0.x** (pre-release).
 
 ```
 master ──●──── tag v0.0.1 ────────────────── tag v0.0.2 ──
@@ -29,6 +29,12 @@ develop ───●──●──●──●──feature──●──●�
 | `fix/<name>` | Bug fixes for develop. Branch from `develop`. | `develop` (via PR) |
 | `release/<ver>` | Release prep (version bump, final fixes). Branch from `develop`. | `master` + `develop` |
 | `hotfix/<ver>` | Urgent fix for production. Branch from `master`. | `master` + `develop` |
+
+### Version Numbering (SemVer)
+
+- **0.0.x** — Current phase: foundational features, API not stable
+- **0.1.0** — First feature-complete milestone (all core MCP tools working)
+- **1.0.0** — Production-ready, stable API contract
 
 ### Daily workflow
 
@@ -81,6 +87,13 @@ LDFLAGS="-X github.com/jguan/aima/internal/cli.Version=$VERSION \
 
 go build -ldflags "$LDFLAGS" -o build/aima ./cmd/aima
 ```
+
+### Rules for AI Agents
+
+- **Never commit directly to master.** Always branch from `develop`.
+- **Never force-push to master or develop.** These are protected branches.
+- **Feature branches merge to develop only.** Only release/hotfix branches touch master.
+- **Tag every master merge** with the version number.
 
 ## The Prime Directive: Less Code
 
