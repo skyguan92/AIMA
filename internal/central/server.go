@@ -143,16 +143,19 @@ type IngestPayload struct {
 }
 
 type IngestConfig struct {
-	ID            string         `json:"id"`
-	Hardware      string         `json:"hardware_id"`
-	EngineType    string         `json:"engine_id"`
-	EngineVersion string         `json:"engine_version"`
-	Model         string         `json:"model_id"`
+	ID            string          `json:"id"`
+	Hardware      string          `json:"hardware_id"`
+	EngineType    string          `json:"engine_id"`
+	EngineVersion string          `json:"engine_version"`
+	Model         string          `json:"model_id"`
 	Config        json.RawMessage `json:"config"`
-	ConfigHash    string         `json:"config_hash"`
-	Status        string         `json:"status"`
-	DerivedFrom   string         `json:"derived_from"`
-	CreatedAt     string         `json:"created_at"`
+	ConfigHash    string          `json:"config_hash"`
+	Status        string          `json:"status"`
+	DerivedFrom   string          `json:"derived_from"`
+	CreatedAt     string          `json:"created_at"`
+	Slot          string          `json:"slot"`
+	Source        string          `json:"source"`
+	DeviceID      string          `json:"device_id"`
 }
 
 type IngestBenchmark struct {
@@ -340,45 +343,60 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		configIDs = append(configIDs, id)
 	}
 
-	// Fetch benchmarks for synced configs
+	// Fetch benchmarks: for synced configs, plus any benchmarks added since last sync
 	var benchmarks []map[string]any
+	benchQuery := `SELECT id, config_id, concurrency, throughput_tps, ttft_ms_p50, ttft_ms_p95, ttft_ms_p99,
+		 tpot_ms_p50, tpot_ms_p95, total_tokens, duration_s, power_draw_watts, vram_used_mib, tested_at
+		 FROM benchmark_results WHERE 1=1`
+	var benchArgs []any
+
+	// Include benchmarks for synced configs OR benchmarks tested since last sync
+	var conditions []string
 	if len(configIDs) > 0 {
 		placeholders := strings.Repeat("?,", len(configIDs))
 		placeholders = placeholders[:len(placeholders)-1]
-		benchQuery := fmt.Sprintf(
-			`SELECT id, config_id, concurrency, throughput_tps, ttft_ms_p50, ttft_ms_p95, ttft_ms_p99,
-			 tpot_ms_p50, tpot_ms_p95, total_tokens, duration_s, power_draw_watts, vram_used_mib, tested_at
-			 FROM benchmark_results WHERE config_id IN (%s)`, placeholders)
-		benchArgs := make([]any, len(configIDs))
-		for i, id := range configIDs {
-			benchArgs[i] = id
+		conditions = append(conditions, fmt.Sprintf("config_id IN (%s)", placeholders))
+		for _, id := range configIDs {
+			benchArgs = append(benchArgs, id)
 		}
-		bRows, err := s.db.QueryContext(r.Context(), benchQuery, benchArgs...)
-		if err == nil {
-			defer bRows.Close()
-			for bRows.Next() {
-				var id, configID, testedAt string
-				var conc, totalTokens, vramUsed int
-				var tps, ttft50, ttft95, ttft99, tpot50, tpot95, dur, power float64
-				if err := bRows.Scan(&id, &configID, &conc, &tps, &ttft50, &ttft95, &ttft99,
-					&tpot50, &tpot95, &totalTokens, &dur, &power, &vramUsed, &testedAt); err != nil {
-					continue
-				}
-				benchmarks = append(benchmarks, map[string]any{
-					"id": id, "config_id": configID, "concurrency": conc,
-					"throughput_tps": tps, "ttft_ms_p50": ttft50, "ttft_ms_p95": ttft95,
-					"ttft_ms_p99": ttft99, "tpot_ms_p50": tpot50, "tpot_ms_p95": tpot95,
-					"total_tokens": totalTokens, "duration_s": dur,
-					"power_draw_watts": power, "vram_used_mib": vramUsed, "tested_at": testedAt,
-				})
+	}
+	if since != "" {
+		conditions = append(conditions, "tested_at > ?")
+		benchArgs = append(benchArgs, since)
+	}
+	if len(conditions) > 0 {
+		benchQuery += " AND (" + strings.Join(conditions, " OR ") + ")"
+	}
+	benchQuery += " ORDER BY tested_at ASC LIMIT 1000"
+
+	bRows, err := s.db.QueryContext(r.Context(), benchQuery, benchArgs...)
+	if err == nil {
+		defer bRows.Close()
+		for bRows.Next() {
+			var id, configID, testedAt string
+			var conc, totalTokens, vramUsed int
+			var tps, ttft50, ttft95, ttft99, tpot50, tpot95, dur, power float64
+			if err := bRows.Scan(&id, &configID, &conc, &tps, &ttft50, &ttft95, &ttft99,
+				&tpot50, &tpot95, &totalTokens, &dur, &power, &vramUsed, &testedAt); err != nil {
+				continue
 			}
+			benchmarks = append(benchmarks, map[string]any{
+				"id": id, "config_id": configID, "concurrency": conc,
+				"throughput_tps": tps, "ttft_ms_p50": ttft50, "ttft_ms_p95": ttft95,
+				"ttft_ms_p99": ttft99, "tpot_ms_p50": tpot50, "tpot_ms_p95": tpot95,
+				"total_tokens": totalTokens, "duration_s": dur,
+				"power_draw_watts": power, "vram_used_mib": vramUsed, "tested_at": testedAt,
+			})
 		}
 	}
 
+	// Return in the standard import envelope format so edge can import directly
 	writeJSON(w, map[string]any{
 		"schema_version": 1,
-		"configurations": configs,
-		"benchmarks":     benchmarks,
+		"data": map[string]any{
+			"configurations":   configs,
+			"benchmark_results": benchmarks,
+		},
 	})
 }
 

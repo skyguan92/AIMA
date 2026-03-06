@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -779,6 +780,7 @@ func run() error {
 	}
 
 	// 9k. Knowledge sync (K6)
+	syncHTTPClient := &http.Client{Timeout: 30 * time.Second}
 	deps.SyncPush = func(ctx context.Context) (json.RawMessage, error) {
 		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
 		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
@@ -790,8 +792,39 @@ func run() error {
 		if err != nil {
 			return nil, fmt.Errorf("export failed: %w", err)
 		}
-		// POST to central
-		req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"/api/v1/ingest", strings.NewReader(string(exportData)))
+		// Transform export envelope to central's IngestPayload format.
+		// Export: {data: {configurations, benchmark_results, knowledge_notes}}
+		// Ingest: {configurations, benchmarks, device_id, gpu_arch}
+		var exportEnvelope struct {
+			Data struct {
+				Configurations  []json.RawMessage `json:"configurations"`
+				BenchmarkResults []json.RawMessage `json:"benchmark_results"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(exportData, &exportEnvelope); err != nil {
+			return nil, fmt.Errorf("parse export data: %w", err)
+		}
+
+		hwInfo, _ := hal.Detect(ctx)
+		deviceID, _ := deps.GetConfig(ctx, "device.id")
+		gpuArch := ""
+		if hwInfo != nil && hwInfo.GPU != nil {
+			gpuArch = hwInfo.GPU.Arch
+		}
+
+		ingestPayload, err := json.Marshal(map[string]any{
+			"schema_version": 1,
+			"device_id":      deviceID,
+			"gpu_arch":       gpuArch,
+			"configurations": exportEnvelope.Data.Configurations,
+			"benchmarks":     exportEnvelope.Data.BenchmarkResults,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal ingest payload: %w", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"/api/v1/ingest",
+			strings.NewReader(string(ingestPayload)))
 		if err != nil {
 			return nil, err
 		}
@@ -799,16 +832,21 @@ func run() error {
 		if apiKey != "" {
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
-		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		resp, err := syncHTTPClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("push to central: %w", err)
 		}
 		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("central returned %d", resp.StatusCode)
+			return nil, fmt.Errorf("central returned %d: %s", resp.StatusCode, string(body))
 		}
 		_ = db.SetSyncTimestamp(ctx, "push")
-		return json.Marshal(map[string]string{"status": "pushed", "endpoint": endpoint})
+		return json.Marshal(map[string]any{
+			"status":   "pushed",
+			"endpoint": endpoint,
+			"result":   json.RawMessage(body),
+		})
 	}
 	deps.SyncPull = func(ctx context.Context) (json.RawMessage, error) {
 		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
@@ -817,18 +855,18 @@ func run() error {
 			return nil, fmt.Errorf("central.endpoint not configured — use system.config set central.endpoint <url>")
 		}
 		since, _ := db.GetSyncTimestamp(ctx, "pull")
-		url := endpoint + "/api/v1/sync"
+		syncURL := endpoint + "/api/v1/sync"
 		if since != "" {
-			url += "?since=" + since
+			syncURL += "?since=" + since
 		}
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", syncURL, nil)
 		if err != nil {
 			return nil, err
 		}
 		if apiKey != "" {
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
-		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		resp, err := syncHTTPClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("pull from central: %w", err)
 		}
@@ -836,12 +874,32 @@ func run() error {
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("central returned %d", resp.StatusCode)
 		}
-		// Import the response
-		var body json.RawMessage
-		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-			return nil, fmt.Errorf("decode central response: %w", err)
+
+		// Central sync returns the standard import envelope format:
+		// {schema_version, data: {configurations, benchmark_results}}
+		// Import it directly (write to temp file since ImportKnowledge is file-based).
+		syncData, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read central response: %w", err)
 		}
-		result, err := deps.ImportKnowledge(ctx, body)
+
+		tmpFile, err := os.CreateTemp("", "aima-sync-*.json")
+		if err != nil {
+			return nil, fmt.Errorf("create temp file: %w", err)
+		}
+		tmpPath := tmpFile.Name()
+		defer os.Remove(tmpPath)
+		if _, err := tmpFile.Write(syncData); err != nil {
+			tmpFile.Close()
+			return nil, fmt.Errorf("write temp file: %w", err)
+		}
+		tmpFile.Close()
+
+		importParams, _ := json.Marshal(map[string]any{
+			"input_path": tmpPath,
+			"conflict":   "skip",
+		})
+		result, err := deps.ImportKnowledge(ctx, importParams)
 		if err != nil {
 			return nil, fmt.Errorf("import pulled knowledge: %w", err)
 		}
@@ -1450,11 +1508,22 @@ func (a *podQuerierAdapter) ListPodsByLabel(ctx context.Context, namespace, labe
 	return details, nil
 }
 
-// detectHWProfile returns the hardware profile string (e.g. "Blackwell-arm64") or "" if detection fails.
-func detectHWProfile(ctx context.Context) string {
+// detectHWProfile returns the hardware profile name (e.g. "nvidia-rtx4090-x86") or "" if detection fails.
+// Uses catalog matching for precise identification; falls back to "Arch-CPUArch" if no catalog.
+func detectHWProfile(ctx context.Context, cat *knowledge.Catalog) string {
 	hw, err := hal.Detect(ctx)
 	if err != nil || hw.GPU == nil {
 		return ""
+	}
+	if cat != nil {
+		hwInfo := knowledge.HardwareInfo{
+			GPUArch:    hw.GPU.Arch,
+			GPUVRAMMiB: hw.GPU.VRAMMiB,
+			CPUArch:    hw.CPU.Arch,
+		}
+		if hp := cat.MatchHardwareProfile(hwInfo); hp != nil {
+			return hp.Metadata.Name
+		}
 	}
 	return hw.GPU.Arch + "-" + hw.CPU.Arch
 }
@@ -1728,8 +1797,11 @@ func buildHardwareInfo(ctx context.Context, cat *knowledge.Catalog, rtName strin
 		hwInfo.GPUMemUsedMiB = m.GPU.MemoryUsedMiB
 		hwInfo.GPUMemFreeMiB = m.GPU.MemoryTotalMiB - m.GPU.MemoryUsedMiB
 	}
-	// TDP from hardware profile catalog
+	// Match to specific hardware profile and populate TDP
 	if cat != nil {
+		if hp := cat.MatchHardwareProfile(hwInfo); hp != nil {
+			hwInfo.HardwareProfile = hp.Metadata.Name
+		}
 		hwInfo.TDPWatts = cat.FindHardwareTDP(hwInfo)
 	}
 	return hwInfo
@@ -2487,7 +2559,11 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 
 			// Performance reference (K4 — attach best known perf data)
 			perfRef := map[string]any{"source": "unknown"}
-			if golden, goldenBench, err := db.FindGoldenBenchmark(ctx, hwInfo.GPUArch, resolved.Engine, rd.ModelName); err == nil && golden != nil && goldenBench != nil {
+			hwKey := hwInfo.HardwareProfile
+			if hwKey == "" {
+				hwKey = hwInfo.GPUArch
+			}
+			if golden, goldenBench, err := db.FindGoldenBenchmark(ctx, hwKey, resolved.Engine, rd.ModelName); err == nil && golden != nil && goldenBench != nil {
 				perfRef = map[string]any{
 					"source":         "benchmark",
 					"benchmark_id":   goldenBench.ID,
@@ -3153,9 +3229,17 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			for _, c := range configs {
 				configIDs = append(configIDs, c.ID)
 			}
-			benchmarks, err := db.ListBenchmarkResults(ctx, configIDs, 0)
-			if err != nil {
-				return nil, fmt.Errorf("list benchmarks: %w", err)
+
+			// Only fetch benchmarks for matched configs.
+			// When a filter is active but matches no configs, return empty benchmarks
+			// instead of falling through to an unfiltered query.
+			hasFilter := p.Hardware != "" || p.Model != "" || p.Engine != ""
+			var benchmarks []*state.BenchmarkResult
+			if len(configIDs) > 0 || !hasFilter {
+				benchmarks, err = db.ListBenchmarkResults(ctx, configIDs, 0)
+				if err != nil {
+					return nil, fmt.Errorf("list benchmarks: %w", err)
+				}
 			}
 
 			notes, err := db.SearchNotes(ctx, state.NoteFilter{
@@ -3237,6 +3321,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 
 			imported := map[string]int{"configurations": 0, "benchmark_results": 0, "knowledge_notes": 0}
 			skipped := 0
+			var errors []string
 
 			rawDB := db.RawDB()
 			tx, err := rawDB.BeginTx(ctx, nil)
@@ -3275,7 +3360,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 					c.ID, c.HardwareID, c.EngineID, c.ModelID, c.Slot,
 					c.Config, c.ConfigHash, derivedFrom, c.Status, string(tagsJSON), c.Source, c.DeviceID)
 				if insertErr != nil {
-					skipped++
+					errors = append(errors, fmt.Sprintf("config %s: %v", c.ID, insertErr))
 					continue
 				}
 				imported["configurations"]++
@@ -3307,7 +3392,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 					b.ThroughputTPS, b.QPS, b.VRAMUsageMiB, b.RAMUsageMiB, b.PowerDrawWatts, b.GPUUtilPct,
 					b.ErrorRate, b.OOMOccurred, b.Stability, b.DurationS, b.SampleCount, b.TestedAt, b.AgentModel, b.Notes)
 				if insertErr != nil {
-					skipped++
+					errors = append(errors, fmt.Sprintf("benchmark %s: %v", b.ID, insertErr))
 					continue
 				}
 				imported["benchmark_results"]++
@@ -3334,10 +3419,20 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 					 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 					n.ID, n.Title, string(tagsJSON), n.HardwareProfile, n.Model, n.Engine, n.Content, n.Confidence)
 				if insertErr != nil {
-					skipped++
+					errors = append(errors, fmt.Sprintf("note %s: %v", n.ID, insertErr))
 					continue
 				}
 				imported["knowledge_notes"]++
+			}
+
+			// If any inserts failed, rollback the entire transaction
+			if len(errors) > 0 {
+				return json.Marshal(map[string]any{
+					"imported": map[string]int{"configurations": 0, "benchmark_results": 0, "knowledge_notes": 0},
+					"skipped":  skipped,
+					"errors":   errors,
+					"dry_run":  p.DryRun,
+				})
 			}
 
 			if !p.DryRun {
@@ -3366,7 +3461,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		StackPreflight: func(ctx context.Context, tier string) (json.RawMessage, error) {
 			installer := stack.NewInstaller(&execRunner{}, dataDir).
 				WithPodQuerier(&podQuerierAdapter{client: k3sClient})
-			hwProfile := detectHWProfile(ctx)
+			hwProfile := detectHWProfile(ctx, cat)
 			components := stack.FilterByTier(cat.StackComponents, tier)
 			items := installer.Preflight(ctx, components, hwProfile)
 			return json.Marshal(items)
@@ -3378,7 +3473,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if err := installer.PreCheck(ctx, components); err != nil {
 				return nil, err
 			}
-			hwProfile := detectHWProfile(ctx)
+			hwProfile := detectHWProfile(ctx, cat)
 			if allowDownload {
 				missing := installer.Preflight(ctx, components, hwProfile)
 				if err := stack.DownloadItems(ctx, missing); err != nil {
@@ -3394,7 +3489,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		StackStatus: func(ctx context.Context) (json.RawMessage, error) {
 			installer := stack.NewInstaller(&execRunner{}, dataDir).
 				WithPodQuerier(&podQuerierAdapter{client: k3sClient})
-			hwProfile := detectHWProfile(ctx)
+			hwProfile := detectHWProfile(ctx, cat)
 			result, err := installer.Status(ctx, cat.StackComponents, hwProfile)
 			if err != nil {
 				return nil, err

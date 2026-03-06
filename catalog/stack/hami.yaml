@@ -14,8 +14,8 @@ compatibility:
 #     causing device-plugin CrashLoopBackOff (HAMi PR #1637 not yet released)
 conditions:
   skip_profiles:
-    - Blackwell-arm64   # GB10: NVIDIA UMA, NVML memory query incompatible
-    - RDNA3.5-amd64     # AMD Radeon 8060S: RDNA not in HAMi supported devices
+    - nvidia-gb10-arm64   # GB10: NVIDIA UMA, NVML memory query incompatible
+    - amd-radeon-x86      # AMD Radeon 8060S: RDNA not in HAMi supported devices
 
 source:
   chart: "hami-2.4.1.tgz"

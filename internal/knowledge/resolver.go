@@ -171,7 +171,11 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 
 	// L2c: Golden config from benchmark-promoted optimal (between L0 and L1)
 	if ropts.GoldenConfig != nil {
-		goldenOverrides := ropts.GoldenConfig(hw.GPUArch, engineType, model.Metadata.Name)
+		hwKey := hw.HardwareProfile
+		if hwKey == "" {
+			hwKey = hw.GPUArch
+		}
+		goldenOverrides := ropts.GoldenConfig(hwKey, engineType, model.Metadata.Name)
 		for k, v := range goldenOverrides {
 			config[k] = v
 			provenance[k] = "L2c"
@@ -502,22 +506,59 @@ func (c *Catalog) FindEngineByName(name string, hw HardwareInfo) *EngineAsset {
 }
 
 // findGPUResourceName looks up the K8s GPU resource name from hardware profiles.
+// MatchHardwareProfile finds the best matching hardware profile for the given hardware.
+// Matching priority: exact profile name > arch+VRAM closest match > first arch match.
+func (c *Catalog) MatchHardwareProfile(hw HardwareInfo) *HardwareProfile {
+	// Priority 1: exact match by HardwareProfile name
+	if hw.HardwareProfile != "" {
+		for i := range c.HardwareProfiles {
+			if c.HardwareProfiles[i].Metadata.Name == hw.HardwareProfile {
+				return &c.HardwareProfiles[i]
+			}
+		}
+	}
+
+	// Priority 2: arch match — if multiple, prefer closest VRAM match
+	var bestMatch *HardwareProfile
+	bestDelta := -1
+	for i := range c.HardwareProfiles {
+		hp := &c.HardwareProfiles[i]
+		if hp.Hardware.GPU.Arch != hw.GPUArch {
+			continue
+		}
+		if hw.GPUVRAMMiB == 0 {
+			// No VRAM info — return first arch match
+			return hp
+		}
+		delta := hw.GPUVRAMMiB - hp.Hardware.GPU.VRAMMiB
+		if delta < 0 {
+			delta = -delta
+		}
+		if bestMatch == nil || delta < bestDelta {
+			bestMatch = hp
+			bestDelta = delta
+		}
+	}
+	return bestMatch
+}
+
+// findHardwareProfileFor returns the best matching profile, using MatchHardwareProfile.
+func (c *Catalog) findHardwareProfileFor(hw HardwareInfo) *HardwareProfile {
+	return c.MatchHardwareProfile(hw)
+}
+
 // Returns "" if not specified (no GPU resource request in pod spec).
 func (c *Catalog) findGPUResourceName(hw HardwareInfo) string {
-	for _, hp := range c.HardwareProfiles {
-		if hp.Hardware.GPU.Arch == hw.GPUArch && hp.Hardware.GPU.ResourceName != "" {
-			return hp.Hardware.GPU.ResourceName
-		}
+	if hp := c.findHardwareProfileFor(hw); hp != nil && hp.Hardware.GPU.ResourceName != "" {
+		return hp.Hardware.GPU.ResourceName
 	}
 	return ""
 }
 
 // findContainerAccess looks up vendor-specific container access config from hardware profiles.
 func (c *Catalog) findContainerAccess(hw HardwareInfo) *ContainerAccess {
-	for _, hp := range c.HardwareProfiles {
-		if hp.Hardware.GPU.Arch == hw.GPUArch && hp.Container != nil {
-			return hp.Container
-		}
+	if hp := c.findHardwareProfileFor(hw); hp != nil && hp.Container != nil {
+		return hp.Container
 	}
 	return nil
 }
@@ -525,21 +566,17 @@ func (c *Catalog) findContainerAccess(hw HardwareInfo) *ContainerAccess {
 // findRuntimeClassName looks up the K8s runtimeClassName from hardware profiles.
 // Returns "" if not specified (no runtimeClassName in pod spec).
 func (c *Catalog) findRuntimeClassName(hw HardwareInfo) string {
-	for _, hp := range c.HardwareProfiles {
-		if hp.Hardware.GPU.Arch == hw.GPUArch {
-			return hp.Hardware.GPU.RuntimeClassName
-		}
+	if hp := c.findHardwareProfileFor(hw); hp != nil {
+		return hp.Hardware.GPU.RuntimeClassName
 	}
 	return ""
 }
 
 // FindHardwareTDP returns the TDP (watts) for the hardware profile matching
-// the given GPU arch. Returns 0 if no matching profile or TDP is not set.
+// the given hardware. Returns 0 if no matching profile or TDP is not set.
 func (c *Catalog) FindHardwareTDP(hw HardwareInfo) int {
-	for _, hp := range c.HardwareProfiles {
-		if hp.Hardware.GPU.Arch == hw.GPUArch {
-			return hp.Constraints.TDPWatts
-		}
+	if hp := c.findHardwareProfileFor(hw); hp != nil {
+		return hp.Constraints.TDPWatts
 	}
 	return 0
 }
@@ -627,12 +664,8 @@ func (c *Catalog) findPartition(hw HardwareInfo) *PartitionStrategy {
 	var wildcard *PartitionStrategy
 	profileName := hw.HardwareProfile
 	if profileName == "" {
-		// Try to find a matching hardware profile by gpu arch
-		for _, hp := range c.HardwareProfiles {
-			if hp.Hardware.GPU.Arch == hw.GPUArch {
-				profileName = hp.Metadata.Name
-				break
-			}
+		if hp := c.findHardwareProfileFor(hw); hp != nil {
+			profileName = hp.Metadata.Name
 		}
 	}
 
