@@ -39,7 +39,8 @@ type deploymentMeta struct {
 // nativeProcess tracks a running inference engine process started in THIS CLI session.
 type nativeProcess struct {
 	name      string
-	cmd       *exec.Cmd
+	cmd       *exec.Cmd        // nil when launched via schtasks on Windows
+	pid       int              // Process ID; set even when cmd is nil
 	cancel    context.CancelFunc
 	done      chan struct{}
 	logFile   *os.File
@@ -188,49 +189,69 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	// Create cancellable context for this process
 	procCtx, cancel := context.WithCancel(context.Background())
 
-	cmd := exec.CommandContext(procCtx, command[0], command[1:]...)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	// Build environment: start with parent env, add distDir library path, then request env vars.
-	env := os.Environ()
-	if r.distDir != "" {
-		ldVar := "LD_LIBRARY_PATH"
-		if goruntime.GOOS == "darwin" {
-			ldVar = "DYLD_LIBRARY_PATH"
-		}
-		existing := os.Getenv(ldVar)
-		newVal := r.distDir
-		if existing != "" {
-			newVal = r.distDir + ":" + existing
-		}
-		env = append(env, ldVar+"="+newVal)
-	}
-	for k, v := range req.Env {
-		env = append(env, k+"="+v)
-	}
-	if len(env) > 0 {
-		cmd.Env = env
-	}
-
 	slog.Info("native deploy", "name", req.Name, "command", strings.Join(command, " "))
 
-	if err := cmd.Start(); err != nil {
-		cancel()
-		logFile.Close()
-		// Remove placeholder reservation on failure.
-		r.mu.Lock()
-		delete(r.processes, req.Name)
-		r.mu.Unlock()
-		return fmt.Errorf("start %s: %w", req.Name, err)
+	var cmd *exec.Cmd
+	var procPID int
+	var procLogFile *os.File
+
+	if goruntime.GOOS == "windows" {
+		_ = procCtx // schtasks creates its own process context
+		// On Windows, launch via schtasks /it to ensure the process runs in the
+		// interactive desktop session (Session 1). GPU engines (Vulkan/DirectX)
+		// need display session access which is unavailable via SSH (Session 0).
+		logFile.Close() // batch file will manage log output
+		pid, err := r.launchViaSchtasks(req.Name, command, logPath, req.Env)
+		if err != nil {
+			cancel()
+			clearPlaceholder()
+			return fmt.Errorf("start %s via schtasks: %w", req.Name, err)
+		}
+		procPID = pid
+		procLogFile = nil
+	} else {
+		cmd = exec.CommandContext(procCtx, command[0], command[1:]...)
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		cmd.Cancel = nil // Prevent CommandContext from killing child on context cancel
+		// Build environment: start with parent env, add distDir library path, then request env vars.
+		env := os.Environ()
+		if r.distDir != "" {
+			ldVar := "LD_LIBRARY_PATH"
+			if goruntime.GOOS == "darwin" {
+				ldVar = "DYLD_LIBRARY_PATH"
+			}
+			existing := os.Getenv(ldVar)
+			newVal := r.distDir
+			if existing != "" {
+				newVal = r.distDir + ":" + existing
+			}
+			env = append(env, ldVar+"="+newVal)
+		}
+		for k, v := range req.Env {
+			env = append(env, k+"="+v)
+		}
+		if len(env) > 0 {
+			cmd.Env = env
+		}
+		if err := cmd.Start(); err != nil {
+			cancel()
+			logFile.Close()
+			clearPlaceholder()
+			return fmt.Errorf("start %s: %w", req.Name, err)
+		}
+		procPID = cmd.Process.Pid
+		procLogFile = logFile
 	}
 
 	now := time.Now()
 	proc := &nativeProcess{
 		name:      req.Name,
 		cmd:       cmd,
+		pid:       procPID,
 		cancel:    cancel,
 		done:      make(chan struct{}),
-		logFile:   logFile,
+		logFile:   procLogFile,
 		logPath:   logPath,
 		port:      req.Port,
 		labels:    req.Labels,
@@ -244,7 +265,7 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	// Persist deployment metadata for cross-invocation discovery
 	meta := &deploymentMeta{
 		Name:      req.Name,
-		PID:       cmd.Process.Pid,
+		PID:       procPID,
 		Port:      req.Port,
 		Engine:    req.Engine,
 		Labels:    req.Labels,
@@ -283,18 +304,30 @@ func (r *NativeRuntime) Delete(_ context.Context, name string) error {
 	r.mu.Unlock()
 
 	if inMemory {
-		proc.cancel()
-
-		if !waitForProcessExit(proc, 5*time.Second) {
-			slog.Warn("process did not exit within timeout; forcing kill", "name", name)
-			if proc.cmd.Process != nil {
-				if err := proc.cmd.Process.Kill(); err != nil {
-					slog.Warn("force kill process", "name", name, "error", err)
+		if proc.cmd != nil {
+			// Standard Go child process
+			proc.cancel()
+			if !waitForProcessExit(proc, 5*time.Second) {
+				slog.Warn("process did not exit within timeout; forcing kill", "name", name)
+				if proc.cmd.Process != nil {
+					if err := proc.cmd.Process.Kill(); err != nil {
+						slog.Warn("force kill process", "name", name, "error", err)
+					}
+				}
+				if !waitForProcessExit(proc, 2*time.Second) {
+					r.removeMeta(name)
+					return fmt.Errorf("stop deployment %q: process did not exit after force kill", name)
 				}
 			}
-			if !waitForProcessExit(proc, 2*time.Second) {
-				r.removeMeta(name)
-				return fmt.Errorf("stop deployment %q: process did not exit after force kill", name)
+		} else if proc.pid > 0 {
+			// External process (e.g., Windows schtasks): kill by PID
+			if p, err := os.FindProcess(proc.pid); err == nil {
+				if err := p.Kill(); err != nil {
+					slog.Warn("kill process by PID", "name", name, "pid", proc.pid, "error", err)
+				}
+			}
+			if !waitForProcessExit(proc, 5*time.Second) {
+				slog.Warn("process did not exit within timeout after PID kill", "name", name, "pid", proc.pid)
 			}
 		}
 	} else {
@@ -381,22 +414,66 @@ func (r *NativeRuntime) Logs(_ context.Context, name string, tailLines int) (str
 }
 
 func (r *NativeRuntime) watchProcess(proc *nativeProcess) {
-	err := proc.cmd.Wait()
-	proc.mu.Lock()
-	proc.exited = true
-	proc.ready = false
-	proc.exitSuccess = err == nil
-	proc.mu.Unlock()
+	if proc.cmd != nil {
+		// Standard Go child process: use Wait() for precise exit detection.
+		err := proc.cmd.Wait()
+		proc.mu.Lock()
+		proc.exited = true
+		proc.ready = false
+		proc.exitSuccess = err == nil
+		proc.mu.Unlock()
+		if err != nil {
+			slog.Warn("process exited with error", "name", proc.name, "error", err)
+		} else {
+			slog.Info("process exited", "name", proc.name)
+		}
+	} else {
+		// External process (e.g., Windows schtasks): monitor by port liveness.
+		// Phase 1: Wait until health check marks ready, or detect early crash.
+		startupDeadline := time.Now().Add(180 * time.Second)
+		for time.Now().Before(startupDeadline) {
+			proc.mu.Lock()
+			ready := proc.ready
+			proc.mu.Unlock()
+			if ready {
+				break
+			}
+			// Check if PID vanished (process crashed during startup)
+			if proc.pid > 0 && !pidAlive(proc.pid) {
+				slog.Warn("process died during startup", "name", proc.name, "pid", proc.pid)
+				break
+			}
+			time.Sleep(3 * time.Second)
+		}
+		// Phase 2: Monitor running process by port liveness.
+		proc.mu.Lock()
+		isReady := proc.ready
+		proc.mu.Unlock()
+		if isReady {
+			for {
+				time.Sleep(10 * time.Second)
+				if !portAlive(proc.port) {
+					time.Sleep(3 * time.Second)
+					if !portAlive(proc.port) {
+						break
+					}
+				}
+			}
+		}
+		proc.mu.Lock()
+		if !proc.exited {
+			proc.exited = true
+			proc.ready = false
+			proc.exitSuccess = false
+		}
+		proc.mu.Unlock()
+		slog.Info("process exited (detected via monitoring)", "name", proc.name, "pid", proc.pid)
+	}
 	if proc.logFile != nil {
 		_ = proc.logFile.Close()
 	}
 	if proc.done != nil {
 		close(proc.done)
-	}
-	if err != nil {
-		slog.Warn("process exited with error", "name", proc.name, "error", err)
-	} else {
-		slog.Info("process exited", "name", proc.name)
 	}
 }
 
@@ -797,4 +874,158 @@ func waitForProcessExit(proc *nativeProcess, timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+// launchViaSchtasks launches a process via Windows Task Scheduler to ensure it
+// runs in the interactive desktop session (Session 1). This is required for GPU
+// engines (Vulkan/DirectX) that need display session access, which is unavailable
+// from SSH sessions (Session 0).
+func (r *NativeRuntime) launchViaSchtasks(name string, command []string, logPath string, envVars map[string]string) (int, error) {
+	// Write a batch wrapper that sets env vars and redirects output.
+	batPath := filepath.Join(r.logDir, name+"-launcher.bat")
+	var bat strings.Builder
+	bat.WriteString("@echo off\r\n")
+	for k, v := range envVars {
+		bat.WriteString(fmt.Sprintf("set \"%s=%s\"\r\n", k, v))
+	}
+	var cmdLine strings.Builder
+	for i, arg := range command {
+		if i > 0 {
+			cmdLine.WriteString(" ")
+		}
+		if strings.ContainsAny(arg, " \t") {
+			cmdLine.WriteString(fmt.Sprintf("\"%s\"", arg))
+		} else {
+			cmdLine.WriteString(arg)
+		}
+	}
+	bat.WriteString(fmt.Sprintf("%s > \"%s\" 2>&1\r\n", cmdLine.String(), logPath))
+
+	if err := os.WriteFile(batPath, []byte(bat.String()), 0o644); err != nil {
+		return 0, fmt.Errorf("write launcher script: %w", err)
+	}
+
+	// Create a one-time scheduled task with /it (interactive token).
+	taskName := "AIMA-deploy-" + name
+	createOut, err := exec.Command("schtasks", "/create", "/tn", taskName,
+		"/tr", batPath, "/sc", "once", "/st", "00:00", "/it", "/f").CombinedOutput()
+	if err != nil {
+		os.Remove(batPath)
+		return 0, fmt.Errorf("schtasks create: %w (output: %s)", err, string(createOut))
+	}
+
+	// Run the task.
+	runOut, err := exec.Command("schtasks", "/run", "/tn", taskName).CombinedOutput()
+	if err != nil {
+		exec.Command("schtasks", "/delete", "/tn", taskName, "/f").Run()
+		os.Remove(batPath)
+		return 0, fmt.Errorf("schtasks run: %w (output: %s)", err, string(runOut))
+	}
+
+	// Wait for the engine process to appear and discover its PID.
+	// Prefer finding the process by port (more precise than image name when
+	// multiple instances exist). Fall back to image name if port discovery fails.
+	port := 0
+	for i, arg := range command {
+		if arg == "--port" && i+1 < len(command) {
+			if p, err := strconv.Atoi(command[i+1]); err == nil {
+				port = p
+				break
+			}
+		}
+	}
+
+	binaryName := filepath.Base(command[0])
+	var pid int
+	for i := 0; i < 30; i++ {
+		time.Sleep(1 * time.Second)
+		if port > 0 {
+			pid = findProcessPIDByPort(port)
+		}
+		if pid == 0 {
+			pid = findProcessPIDByName(binaryName)
+		}
+		if pid > 0 {
+			break
+		}
+	}
+
+	// Clean up scheduled task definition (engine process continues running).
+	exec.Command("schtasks", "/delete", "/tn", taskName, "/f").Run()
+	os.Remove(batPath)
+
+	if pid == 0 {
+		slog.Warn("could not discover PID after schtasks launch", "name", name, "binary", binaryName)
+	}
+
+	return pid, nil
+}
+
+// findProcessPIDByPort returns the PID of a process listening on the given port.
+// Uses Windows netstat command. Returns 0 if not found.
+func findProcessPIDByPort(port int) int {
+	out, err := exec.Command("netstat", "-aon").Output()
+	if err != nil {
+		return 0
+	}
+	target := fmt.Sprintf(":%d ", port)
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "LISTENING") {
+			continue
+		}
+		if !strings.Contains(line, target) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 5 {
+			if pid, err := strconv.Atoi(fields[len(fields)-1]); err == nil {
+				return pid
+			}
+		}
+	}
+	return 0
+}
+
+// findProcessPIDByName returns the PID of a running process by its image name.
+// Uses Windows tasklist command. Returns 0 if not found.
+func findProcessPIDByName(imageName string) int {
+	out, err := exec.Command("tasklist", "/fi",
+		fmt.Sprintf("IMAGENAME eq %s", imageName), "/fo", "csv", "/nh").Output()
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "INFO:") {
+			continue
+		}
+		// CSV: "imagename","pid","session","session#","mem"
+		fields := strings.Split(line, "\",\"")
+		if len(fields) >= 2 {
+			pidStr := strings.Trim(fields[1], "\" \r")
+			if pid, err := strconv.Atoi(pidStr); err == nil {
+				return pid
+			}
+		}
+	}
+	return 0
+}
+
+// pidAlive checks if a process with the given PID exists.
+// On Windows, uses tasklist. On other platforms, conservatively returns true
+// (schtasks-based launching is Windows-only, so this path is not exercised).
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if goruntime.GOOS == "windows" {
+		out, err := exec.Command("tasklist", "/fi",
+			fmt.Sprintf("PID eq %d", pid), "/nh").Output()
+		if err != nil {
+			return false
+		}
+		return strings.Contains(string(out), strconv.Itoa(pid))
+	}
+	return true
 }
