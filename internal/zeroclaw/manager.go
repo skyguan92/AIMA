@@ -31,6 +31,11 @@ type Manager struct {
 	gatewayURL string
 	waitCh     chan error
 	mu         sync.Mutex
+
+	// Cached result of probeExecutable to avoid repeated fork+exec.
+	availableChecked bool
+	availablePath    string
+	availableResult  bool
 }
 
 // ManagerOption configures the Manager.
@@ -62,25 +67,47 @@ func NewManager(opts ...ManagerOption) *Manager {
 	return m
 }
 
-// Available checks if ZeroClaw binary exists and is executable.
+// Available checks if ZeroClaw binary exists and can actually execute.
+// A file existing on disk is not enough — it may be linked against a newer
+// glibc or otherwise broken. We run a quick smoke test on first call and
+// cache the result until the binary path changes.
 func (m *Manager) Available() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.availableChecked && m.availablePath == m.binaryPath {
+		return m.availableResult
+	}
+
+	m.availablePath = m.binaryPath
+	m.availableChecked = true
+	m.availableResult = m.probeExecutable()
+	return m.availableResult
+}
+
+// probeExecutable verifies the binary can actually run (not just exist).
+// Must be called with m.mu held.
+func (m *Manager) probeExecutable() bool {
 	path, err := exec.LookPath(m.binaryPath)
 	if err != nil {
-		// Try as absolute/relative path
-		info, err := os.Stat(m.binaryPath)
-		if err != nil {
+		info, statErr := os.Stat(m.binaryPath)
+		if statErr != nil || info.IsDir() {
 			return false
 		}
-		return !info.IsDir()
+		path = m.binaryPath
 	}
-	info, err := os.Stat(path)
-	if err != nil {
+
+	// Run "zeroclaw version" with a tight timeout to verify the binary loads.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "version")
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		slog.Debug("zeroclaw probe failed", "path", path, "error", err)
 		return false
 	}
-	return !info.IsDir()
+	return true
 }
 
 // Start launches the ZeroClaw sidecar process.

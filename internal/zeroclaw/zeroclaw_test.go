@@ -25,15 +25,35 @@ func TestAvailable_NoBinary(t *testing.T) {
 }
 
 func TestAvailable_WithBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script helper not portable on windows")
+	}
+
 	dir := t.TempDir()
-	binPath := filepath.Join(dir, executableName())
-	if err := os.WriteFile(binPath, []byte("fake"), 0o755); err != nil {
+	binPath := filepath.Join(dir, "zeroclaw")
+	// Write a script that responds to "version" subcommand
+	script := "#!/bin/sh\necho zeroclaw-test 0.0.0\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake binary: %v", err)
 	}
 
 	m := NewManager(WithBinaryPath(binPath))
 	if !m.Available() {
-		t.Error("Available() = false, want true for existing binary")
+		t.Error("Available() = false, want true for working binary")
+	}
+}
+
+func TestAvailable_BrokenBinary(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, executableName())
+	// Write something that exists but cannot execute properly
+	if err := os.WriteFile(binPath, []byte("not-a-real-binary"), 0o755); err != nil {
+		t.Fatalf("write broken binary: %v", err)
+	}
+
+	m := NewManager(WithBinaryPath(binPath))
+	if m.Available() {
+		t.Error("Available() = true, want false for broken binary")
 	}
 }
 

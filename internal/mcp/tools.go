@@ -877,7 +877,16 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.save",
 		Description: "Save a knowledge note recording exploration results, experiment findings, or recommendations. Use after completing a benchmark or deployment experiment to preserve the findings for future reference.",
-		InputSchema: schema(`"note":{"type":"object","description":"Knowledge note to save"}`, "note"),
+		InputSchema: schema(
+			`"note":{"type":"object","description":"Knowledge note to save","properties":{`+
+				`"title":{"type":"string","description":"Short descriptive title for the note"},`+
+				`"content":{"type":"string","description":"Full text content of the note (findings, observations, recommendations)"},`+
+				`"hardware_profile":{"type":"string","description":"Hardware profile name, e.g. 'nvidia-rtx4090-x86'"},`+
+				`"model":{"type":"string","description":"Model name, e.g. 'glm-4.7-flash'"},`+
+				`"engine":{"type":"string","description":"Engine type, e.g. 'sglang-kt'"},`+
+				`"tags":{"type":"array","items":{"type":"string"},"description":"Tags for categorization"},`+
+				`"confidence":{"type":"string","description":"Confidence level: high, medium, low"}`+
+				`},"required":["title","content"]}`, "note"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SaveKnowledge == nil {
 				return ErrorResult("knowledge.save not implemented"), nil

@@ -2,7 +2,9 @@ package state
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1377,6 +1379,13 @@ func (d *DB) DeleteEngine(ctx context.Context, id string) error {
 // Knowledge Notes CRUD
 
 func (d *DB) InsertNote(ctx context.Context, n *KnowledgeNote) error {
+	if n.ID == "" {
+		var buf [8]byte
+		if _, err := rand.Read(buf[:]); err != nil {
+			return fmt.Errorf("generate note id: %w", err)
+		}
+		n.ID = hex.EncodeToString(buf[:])
+	}
 	tagsJSON, err := json.Marshal(n.Tags)
 	if err != nil {
 		return fmt.Errorf("marshal tags for note %s: %w", n.ID, err)

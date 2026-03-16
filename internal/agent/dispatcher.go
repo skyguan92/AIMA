@@ -88,7 +88,7 @@ func (d *Dispatcher) zeroClawSupportsSessions() bool {
 	return d.zeroclaw != nil && d.zeroclaw.SupportsSessions()
 }
 
-// complexKeywords triggers routing to L3b when present in the query.
+// complexKeywords triggers routing to L3b when present as whole words in the query.
 // Fixed-size array to prevent accidental mutation.
 var complexKeywords = [...]string{
 	"optimize",
@@ -100,10 +100,15 @@ var complexKeywords = [...]string{
 }
 
 func isComplexQuery(query string) bool {
-	lower := strings.ToLower(query)
-	for _, kw := range complexKeywords {
-		if strings.Contains(lower, kw) {
-			return true
+	words := strings.Fields(strings.ToLower(query))
+	for _, w := range words {
+		// Strip common punctuation so "all?" or "all," still match
+		w = strings.TrimRight(w, ".,;:!?\"')")
+		w = strings.TrimLeft(w, "\"'(")
+		for _, kw := range complexKeywords {
+			if w == kw {
+				return true
+			}
 		}
 	}
 	return false

@@ -605,7 +605,10 @@ func TestIsComplexQuery(t *testing.T) {
 		{"list models", false},
 		{"what GPU do I have", false},
 		{"deploy qwen3-8b", false},
-		{"OPTIMIZE this", true}, // case insensitive
+		{"OPTIMIZE this", true},                         // case insensitive
+		{"save a knowledge note with tool calling", false}, // "calling" contains "all" substring but is not "all"
+		{"install the binary", false},                      // "install" contains "all" substring but is not "all"
+		{"show all, please", true},                         // "all" with trailing punctuation still matches
 	}
 
 	for _, tt := range tests {
