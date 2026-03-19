@@ -36,6 +36,7 @@ func WriteConfig(path string, cfg map[string]any) error {
 // OpenClaw config. Only touches paths managed by AIMA:
 //   - models.providers.vllm (LLM/VLM models)
 //   - tools.media.audio (ASR models)
+//   - tools.media.image (image generation models)
 //   - messages.tts (TTS model)
 func MergeAIMAConfig(existing map[string]any, result *SyncResult) map[string]any {
 	if existing == nil {
@@ -86,6 +87,25 @@ func MergeAIMAConfig(existing map[string]any, result *SyncResult) map[string]any
 		media["audio"] = map[string]any{
 			"enabled": true,
 			"models":  audioModels,
+		}
+	}
+
+	// --- Image Generation: tools.media.image ---
+	if len(result.ImageGenModels) > 0 {
+		tools := ensureMap(existing, "tools")
+		media := ensureMap(tools, "media")
+
+		imageModels := make([]any, len(result.ImageGenModels))
+		for i, m := range result.ImageGenModels {
+			imageModels[i] = map[string]any{
+				"provider": "openai",
+				"model":    m.ID,
+				"baseUrl":  result.ProxyAddr,
+			}
+		}
+		media["image"] = map[string]any{
+			"enabled": true,
+			"models":  imageModels,
 		}
 	}
 

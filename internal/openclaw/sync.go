@@ -10,13 +10,14 @@ import (
 
 // SyncResult holds the categorized models ready for OpenClaw config generation.
 type SyncResult struct {
-	LLMModels []ModelEntry `json:"llmModels,omitempty"`
-	ASRModels []AudioEntry `json:"asrModels,omitempty"`
-	TTSModel  *TTSEntry    `json:"ttsModel,omitempty"`
-	ProxyAddr string       `json:"proxyAddr"`
-	APIKey    string       `json:"apiKey,omitempty"`
-	ConfigPath string      `json:"configPath"`
-	Written   bool         `json:"written"`
+	LLMModels      []ModelEntry    `json:"llmModels,omitempty"`
+	ASRModels      []AudioEntry    `json:"asrModels,omitempty"`
+	TTSModel       *TTSEntry       `json:"ttsModel,omitempty"`
+	ImageGenModels []ImageGenEntry `json:"imageGenModels,omitempty"`
+	ProxyAddr      string          `json:"proxyAddr"`
+	APIKey         string          `json:"apiKey,omitempty"`
+	ConfigPath     string          `json:"configPath"`
+	Written        bool            `json:"written"`
 }
 
 // ModelEntry represents an LLM/VLM model for OpenClaw's models.providers.vllm.
@@ -35,6 +36,11 @@ type AudioEntry struct {
 
 // TTSEntry represents a TTS model for OpenClaw's messages.tts.
 type TTSEntry struct {
+	ID string `json:"id"`
+}
+
+// ImageGenEntry represents an image generation model for OpenClaw's tools.media.image.
+type ImageGenEntry struct {
 	ID string `json:"id"`
 }
 
@@ -76,6 +82,9 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 			// Only one TTS model supported — last wins
 			result.TTSModel = &TTSEntry{ID: b.ModelName}
 
+		case "image_gen":
+			result.ImageGenModels = append(result.ImageGenModels, ImageGenEntry{ID: b.ModelName})
+
 		default:
 			slog.Debug("openclaw sync: skipping model with unknown type",
 				"model", b.ModelName, "type", modelType)
@@ -105,6 +114,7 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 		"llm", len(result.LLMModels),
 		"asr", len(result.ASRModels),
 		"tts", result.TTSModel != nil,
+		"image_gen", len(result.ImageGenModels),
 		"config", deps.ConfigPath)
 
 	return result, nil

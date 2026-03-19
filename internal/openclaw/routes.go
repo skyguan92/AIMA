@@ -17,6 +17,7 @@ func RegisterRoutes(deps *Deps) func(*http.ServeMux) {
 	return func(mux *http.ServeMux) {
 		mux.HandleFunc("/v1/audio/speech", deps.handleTTS)
 		mux.HandleFunc("/v1/audio/transcriptions", deps.handleASR)
+		mux.HandleFunc("/v1/images/generations", deps.handleImageGen)
 	}
 }
 
@@ -88,6 +89,38 @@ func (d *Deps) handleASR(w http.ResponseWriter, r *http.Request) {
 	backend := d.findBackend(model)
 	if backend == nil {
 		http.Error(w, fmt.Sprintf(`{"error":"model %q not found"}`, model), http.StatusNotFound)
+		return
+	}
+
+	d.reverseProxy(w, r, backend.Address, body)
+}
+
+// handleImageGen proxies image generation requests to the backend serving the requested model.
+// Expects JSON body: {"model":"<model-name>", "prompt":"...", ...}
+func (d *Deps) handleImageGen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MB limit
+	r.Body.Close()
+	if err != nil {
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Model == "" {
+		http.Error(w, `{"error":"missing or invalid model field"}`, http.StatusBadRequest)
+		return
+	}
+
+	backend := d.findBackend(req.Model)
+	if backend == nil {
+		http.Error(w, fmt.Sprintf(`{"error":"model %q not found"}`, req.Model), http.StatusNotFound)
 		return
 	}
 
