@@ -140,6 +140,10 @@ func (d *Deps) findBackend(model string) *Backend {
 
 // reverseProxy sends the request to the target backend.
 func (d *Deps) reverseProxy(w http.ResponseWriter, r *http.Request, targetAddr string, body []byte) {
+	// Backend addresses may be stored as "host:port" without scheme
+	if !strings.HasPrefix(targetAddr, "http://") && !strings.HasPrefix(targetAddr, "https://") {
+		targetAddr = "http://" + targetAddr
+	}
 	target, err := url.Parse(targetAddr)
 	if err != nil {
 		slog.Error("openclaw proxy: invalid backend address", "addr", targetAddr, "err", err)
