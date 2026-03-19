@@ -33,6 +33,7 @@ import (
 	"github.com/jguan/aima/internal/proxy"
 	"github.com/jguan/aima/internal/runtime"
 	"github.com/jguan/aima/internal/stack"
+	"github.com/jguan/aima/internal/support"
 	"github.com/jguan/aima/internal/ui"
 	"github.com/jguan/aima/internal/zeroclaw"
 
@@ -174,6 +175,7 @@ func run() error {
 	// 8. Create MCP server with tool deps wired
 	mcpServer := mcp.NewServer()
 	deps := buildToolDeps(cat, db, knowledgeStore, rt, nativeRt, dockerRt, k3sRt, proxyServer, k3sClient, dataDir, factoryDigests)
+	supportSvc := support.NewService(db, support.WithLogger(slog.Default()))
 
 	// 9. Create agent (L3a Go Agent)
 	toolAdapter := &mcpToolAdapter{server: mcpServer, db: db, pending: make(map[int64]*pendingApproval)}
@@ -298,6 +300,19 @@ func run() error {
 		default:
 			return nil, fmt.Errorf("unknown resource type %q", snap.ResourceType)
 		}
+	}
+
+	deps.SupportAskForHelp = func(ctx context.Context, description, endpoint, inviteCode, workerCode string) (json.RawMessage, error) {
+		result, err := supportSvc.AskForHelp(ctx, support.AskRequest{
+			Description: description,
+			Endpoint:    endpoint,
+			InviteCode:  inviteCode,
+			WorkerCode:  workerCode,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
 	}
 
 	// 9e. Fleet management: registry + client + REST routes + MCP tools
@@ -1122,6 +1137,7 @@ func run() error {
 		ToolDeps:      deps,
 		FleetRegistry: fleetRegistry,
 		FleetClient:   fleetClient,
+		Support:       supportSvc,
 	}
 
 	rootCmd := cli.NewRootCmd(app)
@@ -2732,7 +2748,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			})
 			deployName := knowledge.SanitizePodName(modelName + "-" + resolved.Engine)
 			result := map[string]any{
-				"name":  deployName,
+				"name": deployName,
 				"model": modelName, "engine": resolved.Engine,
 				"slot": resolved.Slot, "status": "deploying",
 				"runtime": activeRt.Name(),

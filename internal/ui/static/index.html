@@ -2242,7 +2242,9 @@ function aimaApp() {
       this.thinking = true;
       this.scrollChat();
 
-      if (text.startsWith('/cli')) {
+      if (text.startsWith('/askforhelp')) {
+        await this.sendAskForHelp(text.slice(11).trim());
+      } else if (text.startsWith('/cli')) {
         await this.sendCLI(text.slice(4).trim());
       } else {
         await this.sendAgent(text);
@@ -2264,6 +2266,52 @@ function aimaApp() {
         // SSE failed (e.g. endpoint not available) → fall back to sync
         await this._sendAgentSync(text, params);
       }
+    },
+
+    async sendAskForHelp(text) {
+      const toolIndex = this.messages.length;
+      const startTime = Date.now();
+      const params = {};
+      if (text) params.description = text;
+
+      this.messages.push({
+        role: 'tool',
+        toolName: 'support.askforhelp',
+        args: params,
+        status: 'running',
+        expanded: false,
+        startTime: startTime
+      });
+      this.scrollChat();
+
+      const data = await this.callTool('support.askforhelp', params);
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
+      if (data._err) {
+        this.messages.splice(toolIndex, 1, {
+          ...this.messages[toolIndex],
+          status: 'error',
+          result: data._err,
+          duration: duration
+        });
+        this.messages.push({ role: 'error', text: 'Error: ' + data._err });
+        this.scrollChat();
+        return;
+      }
+
+      this.messages.splice(toolIndex, 1, {
+        ...this.messages[toolIndex],
+        status: 'success',
+        result: data,
+        duration: duration
+      });
+
+      const summary = data.created
+        ? ('Support task created: ' + (data.task_id || 'pending'))
+        : (data.reused_active_task
+          ? ('Support task already active: ' + (data.task_id || 'pending'))
+          : ('Support connected as device ' + (data.device_id || 'unknown')));
+      this.messages.push({ role: 'ai', text: summary });
+      this.scrollChat();
     },
 
     async _sendAgentStream(text, params) {
