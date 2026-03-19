@@ -2737,7 +2737,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			})
 			deployName := knowledge.SanitizePodName(modelName + "-" + resolved.Engine)
 			result := map[string]any{
-				"name":  deployName,
+				"name": deployName,
 				"model": modelName, "engine": resolved.Engine,
 				"slot": resolved.Slot, "status": "deploying",
 				"runtime": activeRt.Name(),
