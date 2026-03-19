@@ -55,6 +55,9 @@ func testApp(t *testing.T) *App {
 			AgentStatus: func(ctx context.Context) (json.RawMessage, error) {
 				return json.RawMessage(`{"zeroclaw_available":false,"zeroclaw_healthy":false}`), nil
 			},
+			SupportAskForHelp: func(ctx context.Context, description, endpoint, inviteCode, workerCode string) (json.RawMessage, error) {
+				return json.RawMessage(`{"enabled":true,"device_id":"dev-test","created":false}`), nil
+			},
 		},
 	}
 }
@@ -72,7 +75,7 @@ func TestNewRootCmd(t *testing.T) {
 		"init", "hal",
 		"deploy", "undeploy", "status",
 		"model", "engine", "knowledge", "catalog",
-		"ask", "agent", "config", "serve", "discover",
+		"askforhelp", "ask", "agent", "config", "serve", "discover",
 	}
 	cmds := make(map[string]bool)
 	for _, c := range root.Commands() {
@@ -235,6 +238,23 @@ func TestAgentSubcommands(t *testing.T) {
 		if !subs[name] {
 			t.Errorf("agent missing subcommand %q", name)
 		}
+	}
+}
+
+func TestAskForHelpCommand(t *testing.T) {
+	app := testApp(t)
+	root := NewRootCmd(app)
+
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"askforhelp", "help", "me"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("askforhelp failed: %v", err)
+	}
+
+	if got := buf.String(); got == "" || !bytes.Contains(buf.Bytes(), []byte(`"device_id": "dev-test"`)) {
+		t.Fatalf("unexpected askforhelp output: %q", got)
 	}
 }
 

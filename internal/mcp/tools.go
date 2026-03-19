@@ -78,12 +78,13 @@ type ToolDeps struct {
 	DeployApprove func(ctx context.Context, id int64) (json.RawMessage, error)
 
 	// Agent
-	DispatchAsk     func(ctx context.Context, query string, forceLocal, forceDeep, skipPerms bool, sessionID string) (json.RawMessage, string, error)
-	AgentInstall    func(ctx context.Context) (json.RawMessage, error)
-	AgentStatus     func(ctx context.Context) (json.RawMessage, error)
-	AgentGuide      func(ctx context.Context) (json.RawMessage, error)
-	RollbackList    func(ctx context.Context) (json.RawMessage, error)
-	RollbackRestore func(ctx context.Context, id int64) (json.RawMessage, error)
+	DispatchAsk       func(ctx context.Context, query string, forceLocal, forceDeep, skipPerms bool, sessionID string) (json.RawMessage, string, error)
+	AgentInstall      func(ctx context.Context) (json.RawMessage, error)
+	AgentStatus       func(ctx context.Context) (json.RawMessage, error)
+	AgentGuide        func(ctx context.Context) (json.RawMessage, error)
+	RollbackList      func(ctx context.Context) (json.RawMessage, error)
+	RollbackRestore   func(ctx context.Context, id int64) (json.RawMessage, error)
+	SupportAskForHelp func(ctx context.Context, description, endpoint, inviteCode, workerCode string) (json.RawMessage, error)
 
 	// System
 	SystemStatus func(ctx context.Context) (json.RawMessage, error)
@@ -149,6 +150,21 @@ type ToolDeps struct {
 }
 
 // validConfigKeys is the whitelist for system.config get/set.
+var supportedConfigKeys = []string{
+	"api_key",
+	"llm.endpoint",
+	"llm.model",
+	"llm.api_key",
+	"llm.user_agent",
+	"llm.extra_params",
+	"central.endpoint",
+	"central.api_key",
+	"support.enabled",
+	"support.endpoint",
+	"support.invite_code",
+	"support.worker_code",
+}
+
 var validConfigKeys = map[string]bool{
 	"api_key":          true,
 	"llm.endpoint":     true,
@@ -158,11 +174,33 @@ var validConfigKeys = map[string]bool{
 	"llm.extra_params": true,
 	"central.endpoint": true,
 	"central.api_key":  true,
+	"support.enabled":     true,
+	"support.endpoint":    true,
+	"support.invite_code": true,
+	"support.worker_code": true,
+}
+
+var sensitiveConfigKeys = map[string]bool{
+	"api_key":             true,
+	"llm.api_key":         true,
+	"central.api_key":     true,
+	"support.invite_code": true,
+	"support.worker_code": true,
 }
 
 // IsValidConfigKey reports whether key is a recognized configuration key.
 func IsValidConfigKey(key string) bool {
 	return validConfigKeys[key]
+}
+
+// IsSensitiveConfigKey reports whether key should be masked in user-visible output.
+func IsSensitiveConfigKey(key string) bool {
+	return sensitiveConfigKeys[key]
+}
+
+// SupportedConfigKeysString returns the config whitelist in CLI/error-message order.
+func SupportedConfigKeysString() string {
+	return strings.Join(supportedConfigKeys, ", ")
 }
 
 // isCommandAllowed checks if a command is in the whitelist.
@@ -1499,6 +1537,38 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 		},
 	})
 
+	// support.askforhelp
+	s.RegisterTool(&Tool{
+		Name:        "support.askforhelp",
+		Description: "Connect this AIMA instance to the configured aima-service-new support service as a regular device, and optionally create a remote help task from a natural-language description. This is the shared backend for CLI `aima askforhelp` and UI `/askforhelp`. First-time registration requires support.endpoint plus either support.invite_code or support.worker_code.",
+		InputSchema: schema(
+			`"description":{"type":"string","description":"Optional natural-language request to create a support task immediately"},` +
+				`"endpoint":{"type":"string","description":"Optional override for support.endpoint; persisted when provided"},` +
+				`"invite_code":{"type":"string","description":"Optional invite code for first-time registration; persisted when provided"},` +
+				`"worker_code":{"type":"string","description":"Optional worker enrollment code for first-time registration; persisted when provided"}`),
+		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
+			if deps.SupportAskForHelp == nil {
+				return ErrorResult("support.askforhelp not implemented"), nil
+			}
+			var p struct {
+				Description string `json:"description"`
+				Endpoint    string `json:"endpoint"`
+				InviteCode  string `json:"invite_code"`
+				WorkerCode  string `json:"worker_code"`
+			}
+			if len(params) > 0 {
+				if err := json.Unmarshal(params, &p); err != nil {
+					return nil, fmt.Errorf("parse params: %w", err)
+				}
+			}
+			data, err := deps.SupportAskForHelp(ctx, p.Description, p.Endpoint, p.InviteCode, p.WorkerCode)
+			if err != nil {
+				return nil, fmt.Errorf("support askforhelp: %w", err)
+			}
+			return TextResult(string(data)), nil
+		},
+	})
+
 	// agent.ask
 	s.RegisterTool(&Tool{
 		Name:        "agent.ask",
@@ -1641,9 +1711,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// system.config
 	s.RegisterTool(&Tool{
 		Name:        "system.config",
-		Description: "Get or set a persistent system configuration value. Supported keys: api_key (auth token), llm.endpoint (Agent LLM URL), llm.model (Agent LLM model name), llm.api_key (Agent LLM auth), llm.extra_params (JSON object merged into every LLM request, e.g. temperature/top_p). Values for api_key and llm.api_key are masked in responses. Setting api_key hot-reloads auth; setting llm.* hot-swaps the Agent LLM client. Omit value to read, provide value to write.",
+		Description: "Get or set a persistent system configuration value. Supported keys: api_key, llm.endpoint, llm.model, llm.api_key, llm.user_agent, llm.extra_params, support.enabled, support.endpoint, support.invite_code, support.worker_code. Sensitive keys are masked in responses. Setting api_key hot-reloads auth; setting llm.* hot-swaps the Agent LLM client. Omit value to read, provide value to write.",
 		InputSchema: schema(
-			`"key":{"type":"string","description":"Configuration key: 'api_key', 'llm.endpoint', 'llm.model', 'llm.api_key', 'llm.user_agent', or 'llm.extra_params'"},`+
+			`"key":{"type":"string","description":"Configuration key: `+SupportedConfigKeysString()+`"},`+
 				`"value":{"type":"string","description":"Value to set. Omit this field to read the current value."}`,
 			"key"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
@@ -1658,7 +1728,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 				return ErrorResult("key is required"), nil
 			}
 			if !IsValidConfigKey(p.Key) {
-				return ErrorResult(fmt.Sprintf("unknown config key %q; supported keys: api_key, llm.endpoint, llm.model, llm.api_key, llm.user_agent, llm.extra_params", p.Key)), nil
+				return ErrorResult(fmt.Sprintf("unknown config key %q; supported keys: %s", p.Key, SupportedConfigKeysString())), nil
 			}
 
 			if p.Value != nil {
@@ -1670,7 +1740,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 					return nil, fmt.Errorf("set config %s: %w", p.Key, err)
 				}
 				display := *p.Value
-				if p.Key == "api_key" || p.Key == "llm.api_key" {
+				if IsSensitiveConfigKey(p.Key) {
 					display = "***"
 				}
 				return TextResult(fmt.Sprintf("config %s set to %s", p.Key, display)), nil
@@ -1684,7 +1754,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if err != nil {
 				return nil, fmt.Errorf("get config %s: %w", p.Key, err)
 			}
-			if p.Key == "api_key" || p.Key == "llm.api_key" {
+			if IsSensitiveConfigKey(p.Key) {
 				val = "***"
 			}
 			return TextResult(val), nil
