@@ -27,6 +27,7 @@ import (
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/model"
+	"github.com/jguan/aima/internal/openclaw"
 	"github.com/jguan/aima/internal/proxy"
 	"github.com/jguan/aima/internal/runtime"
 	"github.com/jguan/aima/internal/stack"
@@ -285,9 +286,28 @@ func run() error {
 	}
 	fleetRoutes := fleet.RegisterRoutes(fleetDeps)
 	uiRoutes := ui.RegisterRoutes()
+
+	// 9e2. OpenClaw integration: wire adapters + routes + sync tool
+	openclawDeps := &openclaw.Deps{
+		Backends:   proxyBackendAdapter{proxyServer},
+		Catalog:    catalogAdapter{cat},
+		ConfigPath: openclaw.DefaultConfigPath(),
+		ProxyAddr:  fmt.Sprintf("http://127.0.0.1:%d/v1", proxy.DefaultPort),
+		APIKey:     proxyServer.APIKey(),
+	}
+	openclawRoutes := openclaw.RegisterRoutes(openclawDeps)
+	deps.OpenClawSync = func(ctx context.Context, dryRun bool) (json.RawMessage, error) {
+		result, err := openclaw.Sync(ctx, openclawDeps, dryRun)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+
 	proxyServer.SetExtraRoutes(func(mux *http.ServeMux) {
 		fleetRoutes(mux)
 		uiRoutes(mux)
+		openclawRoutes(mux)
 	})
 
 	// fleetEnsureDiscovery runs a one-shot mDNS scan if the registry is empty.
@@ -929,6 +949,64 @@ func (a *podQuerierAdapter) ListPodsByLabel(ctx context.Context, namespace, labe
 		}
 	}
 	return details, nil
+}
+
+// proxyBackendAdapter bridges proxy.Server to openclaw.BackendLister.
+type proxyBackendAdapter struct{ s *proxy.Server }
+
+func (a proxyBackendAdapter) ListBackends() map[string]*openclaw.Backend {
+	pbs := a.s.ListBackends()
+	result := make(map[string]*openclaw.Backend, len(pbs))
+	for k, b := range pbs {
+		result[k] = &openclaw.Backend{
+			ModelName:  b.ModelName,
+			EngineType: b.EngineType,
+			Address:    b.Address,
+			Ready:      b.Ready,
+			Remote:     b.Remote,
+		}
+	}
+	return result
+}
+
+// catalogAdapter bridges knowledge.Catalog to openclaw.CatalogReader.
+type catalogAdapter struct{ cat *knowledge.Catalog }
+
+func (a catalogAdapter) ModelType(name string) string {
+	for _, m := range a.cat.ModelAssets {
+		if m.Metadata.Name == name {
+			return m.Metadata.Type
+		}
+	}
+	return ""
+}
+
+func (a catalogAdapter) ModelContextWindow(name string) int {
+	for _, m := range a.cat.ModelAssets {
+		if m.Metadata.Name != name {
+			continue
+		}
+		for _, v := range m.Variants {
+			if ml, ok := v.DefaultConfig["max_model_len"]; ok {
+				switch n := ml.(type) {
+				case int:
+					return n
+				case float64:
+					return int(n)
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func (a catalogAdapter) ModelFamily(name string) string {
+	for _, m := range a.cat.ModelAssets {
+		if m.Metadata.Name == name {
+			return m.Metadata.Family
+		}
+	}
+	return ""
 }
 
 // detectHWProfile returns the hardware profile string (e.g. "Blackwell-arm64") or "" if detection fails.

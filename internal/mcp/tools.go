@@ -96,6 +96,9 @@ type ToolDeps struct {
 	FleetDeviceInfo  func(ctx context.Context, deviceID string) (json.RawMessage, error)
 	FleetDeviceTools func(ctx context.Context, deviceID string) (json.RawMessage, error)
 	FleetExecTool    func(ctx context.Context, deviceID, toolName string, params json.RawMessage) (json.RawMessage, error)
+
+	// OpenClaw integration
+	OpenClawSync func(ctx context.Context, dryRun bool) (json.RawMessage, error)
 }
 
 // validConfigKeys is the whitelist for system.config get/set.
@@ -1565,6 +1568,29 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			data, err := deps.FleetExecTool(ctx, p.DeviceID, p.ToolName, p.Params)
 			if err != nil {
 				return nil, fmt.Errorf("fleet exec %s on %s: %w", p.ToolName, p.DeviceID, err)
+			}
+			return TextResult(string(data)), nil
+		},
+	})
+
+	// openclaw.sync
+	s.RegisterTool(&Tool{
+		Name:        "openclaw.sync",
+		Description: "Sync AIMA deployed models to OpenClaw config (openclaw.json). Reads all ready local backends, categorizes by modality (LLM/VLM/ASR/TTS), and writes them as OpenClaw providers. Use --dry-run to preview without writing.",
+		InputSchema: schema(`"dry_run":{"type":"boolean","description":"If true, preview changes without writing to openclaw.json (default false)"}`),
+		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
+			if deps.OpenClawSync == nil {
+				return ErrorResult("openclaw.sync not available"), nil
+			}
+			var p struct {
+				DryRun bool `json:"dry_run"`
+			}
+			if len(params) > 0 {
+				json.Unmarshal(params, &p)
+			}
+			data, err := deps.OpenClawSync(ctx, p.DryRun)
+			if err != nil {
+				return nil, fmt.Errorf("openclaw sync: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
