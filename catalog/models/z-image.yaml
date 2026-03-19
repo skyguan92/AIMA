@@ -1,0 +1,49 @@
+kind: model_asset
+metadata:
+  name: z-image
+  type: image_gen
+  family: tongyi
+  parameter_count: "12B"
+storage:
+  formats: [safetensors]
+  default_path_pattern: "{{.DataDir}}/models/{{.Name}}"
+  sources:
+    - type: huggingface
+      repo: Tongyi-MAI/Z-Image
+      format: safetensors
+    - type: modelscope
+      repo: Tongyi-MAI/Z-Image
+      format: safetensors
+    - type: local_path
+      path: ""
+variants:
+  # --- GPU diffusers 容器 (Blackwell/Ada/Ampere) ---
+  # Z-Image 12B 参数文生图模型, diffusers ZImagePipeline
+  # 基于 Qwen3 文本编码器 + ZImageTransformer2DModel + VAE
+  # 使用自建 diffusers+FastAPI 引擎 (OpenAI 兼容 /v1/images/generations)
+  - name: z-image-gpu-diffusers
+    hardware:
+      gpu_arch: "*"
+      vram_min_mib: 16384
+      unified_memory: false
+    engine: z-image-diffusers
+    format: safetensors
+    default_config:
+      port: 8188
+    expected_performance:
+      vram_mib: 22000
+      notes: "GPU BF16 inference, ~20s/image at 512x512 28 steps on GB10. Supports 512-2048px various aspect ratios. guidance_scale 3.0-5.0 recommended."
+
+  # --- GB10 统一内存 ---
+  - name: z-image-gb10-diffusers
+    hardware:
+      gpu_arch: Blackwell
+      vram_min_mib: 16384
+      unified_memory: true
+    engine: z-image-diffusers
+    format: safetensors
+    default_config:
+      port: 8188
+    expected_performance:
+      vram_mib: 22000
+      notes: "GB10 unified memory, 22GB GPU. 512x512 ~20s (28 steps, first-run includes JIT). Z-Image-Turbo available for faster inference (8 steps)."
