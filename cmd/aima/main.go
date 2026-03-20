@@ -86,7 +86,13 @@ func run() error {
 	}
 
 	// 1. Determine data directory
+	// Priority: AIMA_DATA_DIR env > /etc/aima/data-dir (shared config from systemd install) > ~/.aima
 	dataDir := os.Getenv("AIMA_DATA_DIR")
+	if dataDir == "" {
+		if shared, err := os.ReadFile("/etc/aima/data-dir"); err == nil {
+			dataDir = strings.TrimSpace(string(shared))
+		}
+	}
 	if dataDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -95,7 +101,12 @@ func run() error {
 		dataDir = filepath.Join(home, ".aima")
 	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return fmt.Errorf("create data dir: %w", err)
+		if _, statErr := os.Stat(dataDir); statErr != nil {
+			return fmt.Errorf("create data dir: %w", err)
+		}
+		// Directory exists but we can't write to it (different owner).
+		// Fall back to user's home dir for writable state (DB, cache).
+		slog.Info("shared data dir is read-only for current user, using home for state", "shared", dataDir)
 	}
 
 	// 2. Open state database
@@ -2835,6 +2846,21 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if modelPath == "" {
 				modelPath = filepath.Join(dataDir, "models", modelName)
 			}
+			// Guard: if the resolved model path is empty or missing model files,
+			// search alternative locations. This handles the case where aima serve
+			// runs as root (HOME=/root) but deploy is invoked as a regular user,
+			// so $HOME/.aima/models differs from where the model was downloaded.
+			if !dirContainsModelFiles(modelPath) {
+				if alt := findModelDir(modelName, dataDir); alt != "" {
+					slog.Info("model path fallback: using alternative location",
+						"original", modelPath, "resolved", alt)
+					modelPath = alt
+				} else {
+					slog.Warn("model path has no model files and no alternative found; deploy may fail",
+						"path", modelPath,
+						"hint", "ensure model files exist or set AIMA_DATA_DIR to a shared directory")
+				}
+			}
 			// Native binary engines require a single model file path; container engines
 			// take the directory. Use the presence of Source (native binary download) to
 			// distinguish — not the engine type name.
@@ -4540,6 +4566,72 @@ func findModelFileInDir(dir string) string {
 		switch strings.ToLower(filepath.Ext(e.Name())) {
 		case ".gguf", ".ggml", ".bin", ".safetensors":
 			return filepath.Join(dir, e.Name())
+		}
+	}
+	return ""
+}
+
+// dirContainsModelFiles reports whether dir exists and contains at least one
+// recognized model file (config.json for HF models, or .gguf/.safetensors for single-file).
+func dirContainsModelFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		if name == "config.json" {
+			return true
+		}
+		switch filepath.Ext(name) {
+		case ".gguf", ".ggml", ".safetensors":
+			return true
+		}
+	}
+	return false
+}
+
+// findModelDir searches alternative well-known locations for a model directory.
+// Returns the first path that contains model files, or "" if none found.
+// Because the primary dataDir is user-specific (~/.aima), models downloaded by
+// a different user (e.g. root via systemd) may be inaccessible to the current user.
+// For paths we can read, we verify model files exist. For paths we can't read
+// (e.g. /root/.aima when running as non-root), we accept them if the directory
+// exists — Docker/K3S run as root and can access them.
+func findModelDir(modelName, primaryDataDir string) string {
+	candidates := []string{
+		filepath.Join("/root/.aima/models", modelName),
+		filepath.Join("/data/models", modelName),
+		filepath.Join("/mnt/data/models", modelName),
+	}
+	// Case-insensitive matches (Qwen3.5-9B vs qwen3.5-9b) in shared dirs.
+	for _, parent := range []string{"/data/models", "/mnt/data/models", filepath.Join(primaryDataDir, "models")} {
+		entries, err := os.ReadDir(parent)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() && strings.EqualFold(e.Name(), modelName) && e.Name() != modelName {
+				candidates = append(candidates, filepath.Join(parent, e.Name()))
+			}
+		}
+	}
+	for _, p := range candidates {
+		if p == filepath.Join(primaryDataDir, "models", modelName) {
+			continue // already checked by caller
+		}
+		if dirContainsModelFiles(p) {
+			return p
+		}
+		// If we can't read the directory (permission denied) but it exists,
+		// accept it — container runtimes (Docker/K3S) run as root and can mount it.
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			if !fi.Mode().IsRegular() {
+				return p
+			}
 		}
 	}
 	return ""
