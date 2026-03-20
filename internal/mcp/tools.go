@@ -15,20 +15,20 @@ type ToolDeps struct {
 	CollectMetrics func(ctx context.Context) (json.RawMessage, error)
 
 	// Model management
-	ScanModels  func(ctx context.Context) (json.RawMessage, error)
-	ListModels  func(ctx context.Context) (json.RawMessage, error)
-	PullModel   func(ctx context.Context, name string) error
-	ImportModel func(ctx context.Context, path string) (json.RawMessage, error)
+	ScanModels   func(ctx context.Context) (json.RawMessage, error)
+	ListModels   func(ctx context.Context) (json.RawMessage, error)
+	PullModel    func(ctx context.Context, name string) error
+	ImportModel  func(ctx context.Context, path string) (json.RawMessage, error)
 	GetModelInfo func(ctx context.Context, name string) (json.RawMessage, error)
-	RemoveModel func(ctx context.Context, name string, deleteFiles bool) error
+	RemoveModel  func(ctx context.Context, name string, deleteFiles bool) error
 
 	// Engine management
-	ScanEngines    func(ctx context.Context, runtime string, autoImport bool) (json.RawMessage, error) // runtime: "auto" | "container" | "native"
-	ListEngines    func(ctx context.Context) (json.RawMessage, error)
-	GetEngineInfo  func(ctx context.Context, name string) (json.RawMessage, error)
-	PullEngine     func(ctx context.Context, name string) error
-	ImportEngine   func(ctx context.Context, path string) error
-	RemoveEngine   func(ctx context.Context, name string) error
+	ScanEngines   func(ctx context.Context, runtime string, autoImport bool) (json.RawMessage, error) // runtime: "auto" | "container" | "native"
+	ListEngines   func(ctx context.Context) (json.RawMessage, error)
+	GetEngineInfo func(ctx context.Context, name string) (json.RawMessage, error)
+	PullEngine    func(ctx context.Context, name string) error
+	ImportEngine  func(ctx context.Context, path string) error
+	RemoveEngine  func(ctx context.Context, name string) error
 
 	// Deployment (runtime package)
 	DeployApply  func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error)
@@ -55,11 +55,11 @@ type ToolDeps struct {
 	PromoteConfig      func(ctx context.Context, configID, status string) (json.RawMessage, error)
 
 	// Knowledge query (enhanced — powered by SQLite relational queries)
-	SearchConfigs     func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
-	CompareConfigs    func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
-	SimilarConfigs    func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
-	LineageConfigs    func(ctx context.Context, configID string) (json.RawMessage, error)
-	GapsKnowledge     func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
+	SearchConfigs      func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
+	CompareConfigs     func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
+	SimilarConfigs     func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
+	LineageConfigs     func(ctx context.Context, configID string) (json.RawMessage, error)
+	GapsKnowledge      func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
 	AggregateKnowledge func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
 
 	// Stack management
@@ -224,15 +224,15 @@ func isCommandAllowed(command string) bool {
 	allowedWithSafeFlags := map[string][]string{
 		"nvidia-smi": {
 			"-q", "--query", // query modes (--query-gpu, --query-compute-apps, etc.)
-			"-L", "--list",  // list GPUs
-			"-i",            // select GPU by index (read-only)
-			"--format",      // output format (csv, noheader, etc.)
-			"--id",          // select GPU by ID
+			"-L", "--list", // list GPUs
+			"-i",       // select GPU by index (read-only)
+			"--format", // output format (csv, noheader, etc.)
+			"--id",     // select GPU by ID
 		},
 		"df": {
 			"-h", "--human", // human-readable
-			"-T", "--type",  // show filesystem type
-			"-a", "--all",   // show all filesystems
+			"-T", "--type", // show filesystem type
+			"-a", "--all", // show all filesystems
 		},
 		"uname": {
 			"-a", "-s", "-r", "-m", "-n", "-v", "-p", "-o", // all flags are read-only
@@ -392,7 +392,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.PullModel == nil {
 				return ErrorResult("model.pull not implemented"), nil
 			}
-			var p struct{ Name string `json:"name"` }
+			var p struct {
+				Name string `json:"name"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -415,7 +417,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.ImportModel == nil {
 				return ErrorResult("model.import not implemented"), nil
 			}
-			var p struct{ Path string `json:"path"` }
+			var p struct {
+				Path string `json:"path"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -439,7 +443,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.GetModelInfo == nil {
 				return ErrorResult("model.info not implemented"), nil
 			}
-			var p struct{ Name string `json:"name"` }
+			var p struct {
+				Name string `json:"name"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -520,7 +526,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.GetEngineInfo == nil {
 				return ErrorResult("engine.info not implemented"), nil
 			}
-			var p struct{ Name string `json:"name"` }
+			var p struct {
+				Name string `json:"name"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -561,7 +569,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.PullEngine == nil {
 				return ErrorResult("engine.pull not implemented"), nil
 			}
-			var p struct{ Name string `json:"name"` }
+			var p struct {
+				Name string `json:"name"`
+			}
 			if len(params) > 0 {
 				if err := json.Unmarshal(params, &p); err != nil {
 					return ErrorResult(fmt.Sprintf("invalid params: %v", err)), nil
@@ -585,7 +595,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.ImportEngine == nil {
 				return ErrorResult("engine.import not implemented"), nil
 			}
-			var p struct{ Path string `json:"path"` }
+			var p struct {
+				Path string `json:"path"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -608,7 +620,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.RemoveEngine == nil {
 				return ErrorResult("engine.remove not implemented"), nil
 			}
-			var p struct{ Name string `json:"name"` }
+			var p struct {
+				Name string `json:"name"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -738,7 +752,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.DeployDelete == nil {
 				return ErrorResult("deploy.delete not implemented"), nil
 			}
-			var p struct{ Name string `json:"name"` }
+			var p struct {
+				Name string `json:"name"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -761,7 +777,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.DeployStatus == nil {
 				return ErrorResult("deploy.status not implemented"), nil
 			}
-			var p struct{ Name string `json:"name"` }
+			var p struct {
+				Name string `json:"name"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -914,7 +932,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.SaveKnowledge == nil {
 				return ErrorResult("knowledge.save not implemented"), nil
 			}
-			var p struct{ Note json.RawMessage `json:"note"` }
+			var p struct {
+				Note json.RawMessage `json:"note"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -1092,7 +1112,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.ExecShell == nil {
 				return ErrorResult("shell.exec not implemented"), nil
 			}
-			var p struct{ Command string `json:"command"` }
+			var p struct {
+				Command string `json:"command"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -1180,7 +1202,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.LineageConfigs == nil {
 				return ErrorResult("knowledge.lineage not implemented"), nil
 			}
-			var p struct{ ConfigID string `json:"config_id"` }
+			var p struct {
+				ConfigID string `json:"config_id"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -1577,7 +1601,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 				return ErrorResult("agent.ask not implemented"), nil
 			}
 			var p struct {
-				Query     string `json:"query"`
+				Query      string `json:"query"`
 				ForceLocal bool   `json:"force_local"`
 				ForceDeep  bool   `json:"force_deep"`
 				SkipPerms  bool   `json:"dangerously_skip_permissions"`
@@ -1779,7 +1803,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.FleetDeviceInfo == nil {
 				return ErrorResult("fleet.device_info not implemented"), nil
 			}
-			var p struct{ DeviceID string `json:"device_id"` }
+			var p struct {
+				DeviceID string `json:"device_id"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
@@ -1803,7 +1829,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			if deps.FleetDeviceTools == nil {
 				return ErrorResult("fleet.device_tools not implemented"), nil
 			}
-			var p struct{ DeviceID string `json:"device_id"` }
+			var p struct {
+				DeviceID string `json:"device_id"`
+			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
 			}
