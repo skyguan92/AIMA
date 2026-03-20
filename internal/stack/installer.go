@@ -718,6 +718,22 @@ func (inst *Installer) installDaemonSystemd(ctx context.Context, comp knowledge.
 	for k, v := range env {
 		envLines = append(envLines, k+"="+v)
 	}
+	// Pin AIMA_DATA_DIR to a shared, world-readable path so that CLI commands
+	// invoked by any user resolve the same data directory as the systemd service.
+	// Using /var/lib/aima (not /root/.aima) because /root is typically mode 700.
+	aimaDataDir := "/var/lib/aima"
+	if v, exists := env["AIMA_DATA_DIR"]; exists {
+		aimaDataDir = v
+	} else {
+		envLines = append(envLines, "AIMA_DATA_DIR="+aimaDataDir)
+	}
+	if err := os.MkdirAll(aimaDataDir, 0o755); err != nil {
+		slog.Warn("failed to create shared data dir", "path", aimaDataDir, "error", err)
+	}
+	// Write shared data-dir pointer so any user's CLI resolves the same path.
+	if err := os.WriteFile(filepath.Join(envDir, "data-dir"), []byte(aimaDataDir+"\n"), 0o644); err != nil {
+		slog.Warn("failed to write shared data-dir config", "error", err)
+	}
 	envFile := filepath.Join(envDir, name+".env")
 	if err := os.WriteFile(envFile, []byte(strings.Join(envLines, "\n")+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write env file %s: %w", envFile, err)
