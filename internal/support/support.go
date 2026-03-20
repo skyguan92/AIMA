@@ -126,6 +126,7 @@ type TaskSnapshot struct {
 
 // MessageSnapshot captures the latest persisted support interaction message.
 type MessageSnapshot struct {
+	Seq       int64  `json:"seq,omitempty"`
 	Message   string `json:"message,omitempty"`
 	Type      string `json:"type,omitempty"`
 	Level     string `json:"level,omitempty"`
@@ -135,14 +136,15 @@ type MessageSnapshot struct {
 
 // Status is the persisted support state exposed to other AIMA surfaces like the UI.
 type Status struct {
-	Enabled             bool             `json:"enabled"`
-	Endpoint            string           `json:"endpoint,omitempty"`
-	Registered          bool             `json:"registered"`
-	DeviceID            string           `json:"device_id,omitempty"`
-	PollIntervalSeconds int              `json:"poll_interval_seconds,omitempty"`
-	ActiveTask          *TaskSnapshot    `json:"active_task,omitempty"`
-	LastTask            *TaskSnapshot    `json:"last_task,omitempty"`
-	LastMessage         *MessageSnapshot `json:"last_message,omitempty"`
+	Enabled             bool              `json:"enabled"`
+	Endpoint            string            `json:"endpoint,omitempty"`
+	Registered          bool              `json:"registered"`
+	DeviceID            string            `json:"device_id,omitempty"`
+	PollIntervalSeconds int               `json:"poll_interval_seconds,omitempty"`
+	ActiveTask          *TaskSnapshot     `json:"active_task,omitempty"`
+	LastTask            *TaskSnapshot     `json:"last_task,omitempty"`
+	LastMessage         *MessageSnapshot  `json:"last_message,omitempty"`
+	Messages            []MessageSnapshot `json:"messages,omitempty"`
 }
 
 // RunOptions control how the support polling loop behaves.
@@ -190,6 +192,8 @@ func (e *RegistrationPromptError) Error() string {
 // Option customizes a Service.
 type Option func(*Service)
 
+const maxMessageLog = 100
+
 // Service is the built-in AIMA device client for aima-service-new.
 type Service struct {
 	store            ConfigStore
@@ -199,6 +203,10 @@ type Service struct {
 	progressInterval time.Duration
 	outputLimit      int
 	previewLimit     int
+
+	msgMu  sync.Mutex
+	msgLog []MessageSnapshot
+	msgSeq int64
 }
 
 // NewService constructs a support client backed by the given config store.
@@ -345,6 +353,7 @@ func (s *Service) Status(ctx context.Context) Status {
 	if message := s.loadMessageSnapshot(ctx); hasMessageSnapshot(message) {
 		status.LastMessage = &message
 	}
+	status.Messages = s.MessagesSince(0)
 	return status
 }
 
@@ -802,6 +811,15 @@ func (s *Service) executeSingleCommand(ctx context.Context, endpoint string, sta
 		return commandResultAckResponse{}, err
 	}
 
+	// Surface command intent to message log so UI can show what's happening
+	if resp.CommandIntent != "" {
+		s.appendMessage(MessageSnapshot{
+			Message: resp.CommandIntent,
+			Type:    "command_intent",
+			Phase:   "start",
+		})
+	}
+
 	timeoutSeconds := resp.CommandTimeoutSeconds
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 300
@@ -927,6 +945,32 @@ func (s *Service) submitResultWithRetry(ctx context.Context, endpoint string, st
 	return commandResultAckResponse{}, lastErr
 }
 
+// appendMessage adds a message to the in-memory log with a monotonically increasing seq.
+func (s *Service) appendMessage(msg MessageSnapshot) {
+	s.msgMu.Lock()
+	defer s.msgMu.Unlock()
+	s.msgSeq++
+	msg.Seq = s.msgSeq
+	msg.UpdatedAt = s.now().UTC().Format(time.RFC3339)
+	s.msgLog = append(s.msgLog, msg)
+	if len(s.msgLog) > maxMessageLog {
+		s.msgLog = s.msgLog[len(s.msgLog)-maxMessageLog:]
+	}
+}
+
+// MessagesSince returns all messages with seq > afterSeq.
+func (s *Service) MessagesSince(afterSeq int64) []MessageSnapshot {
+	s.msgMu.Lock()
+	defer s.msgMu.Unlock()
+	var result []MessageSnapshot
+	for _, m := range s.msgLog {
+		if m.Seq > afterSeq {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
 func (s *Service) emitNotification(ctx context.Context, notify NotifyFunc, notification Notification) {
 	if notify != nil {
 		notify(ctx, notification)
@@ -994,6 +1038,7 @@ func (s *Service) persistNotification(ctx context.Context, notification Notifica
 		Phase:   strings.TrimSpace(notification.Phase),
 	}
 	if hasMessageSnapshot(message) {
+		s.appendMessage(message)
 		current := s.loadMessageSnapshot(ctx)
 		if current.Message != message.Message || current.Type != message.Type || current.Level != message.Level || current.Phase != message.Phase {
 			s.persistStateEntries(ctx, map[string]string{

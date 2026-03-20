@@ -186,8 +186,8 @@ func run() error {
 
 	// 8. Create MCP server with tool deps wired
 	mcpServer := mcp.NewServer()
-	deps := buildToolDeps(cat, db, knowledgeStore, rt, nativeRt, dockerRt, k3sRt, proxyServer, k3sClient, dataDir, factoryDigests)
 	supportSvc := support.NewService(db, support.WithLogger(slog.Default()))
+	deps := buildToolDeps(cat, db, knowledgeStore, rt, nativeRt, dockerRt, k3sRt, proxyServer, k3sClient, dataDir, factoryDigests, supportSvc)
 
 	// 9. Create agent (L3a Go Agent)
 	toolAdapter := &mcpToolAdapter{server: mcpServer, db: db, pending: make(map[int64]*pendingApproval)}
@@ -2446,8 +2446,7 @@ func resolveDeployment(ctx context.Context, cat *knowledge.Catalog, db *state.DB
 
 // buildToolDeps wires all ToolDeps fields to real implementations.
 // All runtime variants are provided so DeployApply can select per-deployment.
-func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store, rt runtime.Runtime, nativeRt runtime.Runtime, dockerRt runtime.Runtime, k3sRt runtime.Runtime, proxyServer *proxy.Server, k3sClient *k3s.Client, dataDir string, factoryDigests map[string]string) *mcp.ToolDeps {
-	supportView := support.NewService(db, support.WithLogger(slog.Default()))
+func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store, rt runtime.Runtime, nativeRt runtime.Runtime, dockerRt runtime.Runtime, k3sRt runtime.Runtime, proxyServer *proxy.Server, k3sClient *k3s.Client, dataDir string, factoryDigests map[string]string, supportView *support.Service) *mcp.ToolDeps {
 	scanEnginesCore := func(ctx context.Context, runtimeFilter string, autoImport bool) (json.RawMessage, error) {
 		assetPatterns := make(map[string][]string)
 		binaryAssets := make(map[string]string)

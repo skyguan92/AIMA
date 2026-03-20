@@ -2098,13 +2098,14 @@ function aimaApp() {
       deviceId: '',
       activeTask: null,
       lastTask: null,
-      lastMessage: null
+      lastMessage: null,
+      messages: []
     },
     _supportSeen: {
       connection: '',
       activeTask: '',
       lastTask: '',
-      lastMessage: ''
+      msgSeq: 0
     },
 
     // Polling intervals
@@ -2166,6 +2167,7 @@ function aimaApp() {
     async callTool(name, params) {
       const raw = await this.callToolRaw(name, params);
       if (raw._err) return { _err: raw._err };
+      if (raw.error && typeof raw.error === 'string') return { _err: raw.error };
       if (raw.content && Array.isArray(raw.content) && raw.content.length > 0) {
         const text = raw.content[0].text || '';
         if (raw.isError) return { _err: text };
@@ -2264,7 +2266,8 @@ function aimaApp() {
         deviceId: data.device_id || '',
         activeTask: data.active_task || null,
         lastTask: data.last_task || null,
-        lastMessage: data.last_message || null
+        lastMessage: data.last_message || null,
+        messages: Array.isArray(data.messages) ? data.messages : []
       };
       this.syncSupportMessages();
     },
@@ -2276,17 +2279,6 @@ function aimaApp() {
         task.status || '',
         task.target || '',
         task.updated_at || ''
-      ].join('|');
-    },
-
-    supportMessageSignature(message) {
-      if (!message) return '';
-      return [
-        message.message || '',
-        message.type || '',
-        message.level || '',
-        message.phase || '',
-        message.updated_at || ''
       ].join('|');
     },
 
@@ -2308,6 +2300,29 @@ function aimaApp() {
       const support = this.supportState || {};
       let changed = false;
 
+      // Process in-memory message log (seq-based, no messages lost)
+      const msgs = support.messages || [];
+      const seenSeq = this._supportSeen.msgSeq || 0;
+      for (const m of msgs) {
+        if (!m.seq || m.seq <= seenSeq) continue;
+        this._supportSeen.msgSeq = m.seq;
+        const msg = (m.message || '').trim();
+        if (!msg) continue;
+
+        // Format based on type
+        let prefix = '[support] ';
+        if (m.type === 'command_intent') prefix = '[running] ';
+        else if (m.type === 'notification') prefix = '';
+        else if (m.type === 'task_completion') prefix = '[task] ';
+        else if (m.type === 'info_request') prefix = '[question] ';
+        else if (m.type === 'choice') prefix = '[choice] ';
+        else if (m.type === 'approval') prefix = '[approval] ';
+
+        this.messages.push({ role: 'ai', text: prefix + msg });
+        changed = true;
+      }
+
+      // Track active task changes (for task status updates not covered by message log)
       const activeSig = this.supportTaskSignature(support.activeTask);
       if (activeSig && activeSig !== this._supportSeen.activeTask) {
         const task = support.activeTask;
@@ -2321,6 +2336,7 @@ function aimaApp() {
         this._supportSeen.activeTask = '';
       }
 
+      // Track task completion
       const lastTaskSig = this.supportTaskSignature(support.lastTask);
       if (lastTaskSig && lastTaskSig !== this._supportSeen.lastTask) {
         const task = support.lastTask;
@@ -2331,17 +2347,9 @@ function aimaApp() {
         changed = true;
       }
 
-      const lastMsgSig = this.supportMessageSignature(support.lastMessage);
-      if (lastMsgSig &&
-          lastMsgSig !== this._supportSeen.lastMessage &&
-          (!support.lastMessage.type || support.lastMessage.type !== 'task_completion')) {
-        this.messages.push({ role: 'ai', text: '[support] ' + (support.lastMessage.message || '') });
-        this._supportSeen.lastMessage = lastMsgSig;
-        changed = true;
-      }
-
+      // Track initial connection (only if no messages from log yet)
       const connectionSig = support.enabled && support.registered && support.deviceId ? support.deviceId : '';
-      if (connectionSig && connectionSig !== this._supportSeen.connection && !activeSig && !lastTaskSig) {
+      if (connectionSig && connectionSig !== this._supportSeen.connection && !activeSig && !lastTaskSig && msgs.length === 0) {
         this.messages.push({ role: 'ai', text: 'Support connected as device ' + support.deviceId });
         this._supportSeen.connection = connectionSig;
         changed = true;
@@ -2459,6 +2467,9 @@ function aimaApp() {
 
     // ── Chat ──
 
+    _supportPendingType: null,
+    _supportPendingParams: null,
+
     async send() {
       const text = this.input.trim();
       if (!text || this.thinking) return;
@@ -2473,8 +2484,13 @@ function aimaApp() {
       this.thinking = true;
       this.scrollChat();
 
-      if (text.startsWith('/cli')) {
+      // If there's a pending support registration prompt, treat input as the code
+      if (this._supportPendingType) {
+        await this._retrySupportWithCode(text);
+      } else if (text.startsWith('/cli')) {
         await this.sendCLI(text.slice(4).trim());
+      } else if (text.startsWith('/askforhelp')) {
+        await this.sendAskForHelp(text.slice('/askforhelp'.length).trim());
       } else {
         await this.sendAgent(text);
       }
@@ -2516,6 +2532,101 @@ function aimaApp() {
       const data = await this.callTool('support.askforhelp', params);
       const duration = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
       if (data._err) {
+        const errLower = (data._err || '').toLowerCase();
+        const needsInvite = errLower.includes('invite_code') || errLower.includes('invite code') || errLower.includes('worker_enrollment_code') || errLower.includes('worker enrollment code');
+        const needsRecovery = errLower.includes('recovery_code') || errLower.includes('recovery code');
+
+        if (needsInvite || needsRecovery) {
+          // Prompt user for the required code via chat
+          this.messages.splice(toolIndex, 1, {
+            ...this.messages[toolIndex],
+            status: 'error',
+            result: data._err,
+            duration: duration
+          });
+          const promptText = needsRecovery
+            ? 'This device was previously registered. Please enter your saved recovery code:\n此设备之前已经注册过，请输入已保存的恢复码：'
+            : 'Device registration requires an invite code or worker code. Please enter it below:\n设备注册需要邀请码或 Worker 接入码，请在下方输入：';
+          this.messages.push({ role: 'ai', text: promptText });
+          this.scrollChat();
+
+          // Wait for user input
+          this._supportPromiseResolve = null;
+          this._supportPendingType = needsRecovery ? 'recovery' : 'invite';
+          this._supportPendingParams = params;
+          this.thinking = false;
+          return;
+        }
+
+        this.messages.splice(toolIndex, 1, {
+          ...this.messages[toolIndex],
+          status: 'error',
+          result: data._err,
+          duration: duration
+        });
+        this.messages.push({ role: 'error', text: 'Error: ' + data._err });
+        this.scrollChat();
+        return;
+      }
+
+      this._supportPendingType = null;
+      this._supportPendingParams = null;
+      this.messages.splice(toolIndex, 1, {
+        ...this.messages[toolIndex],
+        status: 'success',
+        result: data,
+        duration: duration
+      });
+      this.rememberSupportResult(data);
+
+      if (data.created) {
+        this.messages.push({ role: 'ai', text: 'Support task created: ' + (data.task_id || 'pending') + '\nWaiting for remote assistance... 等待远程协助中...' });
+      } else if (data.reused_active_task) {
+        this.messages.push({ role: 'ai', text: 'Support task already active: ' + (data.task_id || 'pending') + ' (' + (data.task_status || 'in progress') + ')\nWaiting for remote assistance... 等待远程协助中...' });
+      } else {
+        // Connected but no task yet — prompt user for a description
+        let connMsg = 'Device linked 设备已连接! (ID: ' + (data.device_id || 'unknown') + ')';
+        if (data.max_tasks > 0) connMsg += '\nBudget 额度: ' + (data.used_tasks || 0) + '/' + data.max_tasks + ' tasks';
+        if (data.referral_code) connMsg += '\nReferral code 推荐码: ' + data.referral_code;
+        connMsg += '\n\nWhat would you like help with? 请描述你需要的帮助：';
+        this.messages.push({ role: 'ai', text: connMsg });
+        this._supportPendingType = 'description';
+        this._supportPendingParams = {};
+        this.thinking = false;
+        this.scrollChat();
+        return;
+      }
+      this.scrollChat();
+    },
+
+    async _retrySupportWithCode(code) {
+      const params = this._supportPendingParams || {};
+      const pendingType = this._supportPendingType;
+      if (pendingType === 'recovery') {
+        params.recovery_code = code;
+      } else if (pendingType === 'description') {
+        params.description = code;
+      } else {
+        params.invite_code = code;
+      }
+      this._supportPendingType = null;
+      this._supportPendingParams = null;
+
+      const toolIndex = this.messages.length;
+      const startTime = Date.now();
+      this.messages.push({
+        role: 'tool',
+        toolName: 'support.askforhelp',
+        args: params,
+        status: 'running',
+        expanded: false,
+        startTime: startTime
+      });
+      this.scrollChat();
+
+      const data = await this.callTool('support.askforhelp', params);
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
+      if (data._err) {
         this.messages.splice(toolIndex, 1, {
           ...this.messages[toolIndex],
           status: 'error',
@@ -2535,12 +2646,13 @@ function aimaApp() {
       });
       this.rememberSupportResult(data);
 
-      const summary = data.created
-        ? ('Support task created: ' + (data.task_id || 'pending'))
-        : (data.reused_active_task
-          ? ('Support task already active: ' + (data.task_id || 'pending'))
-          : ('Support connected as device ' + (data.device_id || 'unknown')));
-      this.messages.push({ role: 'ai', text: summary });
+      if (data.created) {
+        this.messages.push({ role: 'ai', text: 'Support task created: ' + (data.task_id || 'pending') + '\nWaiting for remote assistance... 等待远程协助中...' });
+      } else if (data.reused_active_task) {
+        this.messages.push({ role: 'ai', text: 'Support task already active: ' + (data.task_id || 'pending') + ' (' + (data.task_status || 'in progress') + ')' });
+      } else {
+        this.messages.push({ role: 'ai', text: 'Support connected as device ' + (data.device_id || 'unknown') });
+      }
       this.scrollChat();
     },
     async _sendAgentStream(text, params) {
