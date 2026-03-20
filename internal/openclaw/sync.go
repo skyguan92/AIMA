@@ -3,9 +3,13 @@ package openclaw
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/jguan/aima/internal/openclaw/skills"
 )
 
 // SyncResult holds the categorized models ready for OpenClaw config generation.
@@ -110,6 +114,12 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 	}
 	result.Written = true
 
+	// Deploy AIMA skills to ~/.openclaw/skills/
+	skillsDir := filepath.Join(filepath.Dir(deps.ConfigPath), "skills")
+	if err := DeploySkills(skillsDir); err != nil {
+		slog.Warn("openclaw sync: failed to deploy skills", "err", err)
+	}
+
 	slog.Info("openclaw sync complete",
 		"llm", len(result.LLMModels),
 		"asr", len(result.ASRModels),
@@ -118,6 +128,29 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 		"config", deps.ConfigPath)
 
 	return result, nil
+}
+
+// DeploySkills copies embedded AIMA skills to the target directory.
+// Existing files are overwritten to keep skills in sync with the binary.
+func DeploySkills(targetDir string) error {
+	return fs.WalkDir(skills.FS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		dest := filepath.Join(targetDir, path)
+		if d.IsDir() {
+			return os.MkdirAll(dest, 0755)
+		}
+		data, err := skills.FS.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read embedded skill %s: %w", path, err)
+		}
+		perm := os.FileMode(0644)
+		if strings.HasSuffix(path, ".sh") {
+			perm = 0755
+		}
+		return os.WriteFile(dest, data, perm)
+	})
 }
 
 // formatDisplayName creates a human-readable display name from a model ID.
