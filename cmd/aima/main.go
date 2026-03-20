@@ -303,19 +303,20 @@ func run() error {
 		}
 	}
 
-	deps.SupportAskForHelp = func(ctx context.Context, description, endpoint, inviteCode, workerCode string) (json.RawMessage, error) {
+	deps.SupportAskForHelp = func(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error) {
 		result, err := supportSvc.AskForHelp(ctx, support.AskRequest{
-			Description: description,
-			Endpoint:    endpoint,
-			InviteCode:  inviteCode,
-			WorkerCode:  workerCode,
+			Description:  description,
+			Endpoint:     endpoint,
+			InviteCode:   inviteCode,
+			WorkerCode:   workerCode,
+			RecoveryCode: recoveryCode,
+			ReferralCode: referralCode,
 		})
 		if err != nil {
 			return nil, err
 		}
 		return json.Marshal(result)
 	}
-
 	// 9e. Fleet management: registry + client + REST routes + MCP tools
 	fleetRegistry := fleet.NewRegistry(proxy.DefaultPort)
 	fleetClient := fleet.NewClient(os.Getenv("AIMA_API_KEY"))
@@ -2328,6 +2329,7 @@ func resolveDeployment(ctx context.Context, cat *knowledge.Catalog, db *state.DB
 // buildToolDeps wires all ToolDeps fields to real implementations.
 // All runtime variants are provided so DeployApply can select per-deployment.
 func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store, rt runtime.Runtime, nativeRt runtime.Runtime, dockerRt runtime.Runtime, k3sRt runtime.Runtime, proxyServer *proxy.Server, k3sClient *k3s.Client, dataDir string, factoryDigests map[string]string) *mcp.ToolDeps {
+	supportView := support.NewService(db, support.WithLogger(slog.Default()))
 	scanEnginesCore := func(ctx context.Context, runtimeFilter string, autoImport bool) (json.RawMessage, error) {
 		assetPatterns := make(map[string][]string)
 		binaryAssets := make(map[string]string)
@@ -4005,6 +4007,9 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			}
 			if b, e := json.Marshal(cli.Version); e == nil {
 				status["version"] = b
+			}
+			if b, e := json.Marshal(supportView.Status(ctx)); e == nil {
+				status["support"] = b
 			}
 			return json.Marshal(status)
 		},

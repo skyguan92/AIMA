@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -133,6 +135,19 @@ func TestServiceAskForHelpAndRun(t *testing.T) {
 	if got := store.mustGet(configStateDeviceID); got != "dev-1" {
 		t.Fatalf("device state not saved, got %q", got)
 	}
+	statusBeforeRun := svc.Status(ctx)
+	if !statusBeforeRun.Enabled || !statusBeforeRun.Registered {
+		t.Fatalf("expected enabled registered status, got %+v", statusBeforeRun)
+	}
+	if statusBeforeRun.ActiveTask == nil {
+		t.Fatalf("expected active task snapshot before Run, got %+v", statusBeforeRun)
+	}
+	if statusBeforeRun.ActiveTask.TaskID != "task-1" || statusBeforeRun.ActiveTask.Status != "created" {
+		t.Fatalf("unexpected active task snapshot before Run: %+v", statusBeforeRun.ActiveTask)
+	}
+	if statusBeforeRun.ActiveTask.Target != "diagnose and fix the issue" {
+		t.Fatalf("unexpected active task target before Run: %+v", statusBeforeRun.ActiveTask)
+	}
 
 	if err := svc.Run(ctx, RunOptions{StopWhenIdle: true}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -148,6 +163,19 @@ func TestServiceAskForHelpAndRun(t *testing.T) {
 	}
 	if stdout, _ := state.lastResultBody["stdout"].(string); stdout == "" {
 		t.Fatalf("stdout missing from result payload: %+v", state.lastResultBody)
+	}
+	statusAfterRun := svc.Status(ctx)
+	if statusAfterRun.ActiveTask != nil {
+		t.Fatalf("expected active task cleared after Run, got %+v", statusAfterRun.ActiveTask)
+	}
+	if statusAfterRun.LastTask == nil {
+		t.Fatalf("expected last task snapshot after Run, got %+v", statusAfterRun)
+	}
+	if statusAfterRun.LastTask.TaskID != "task-1" || statusAfterRun.LastTask.Status != "succeeded" {
+		t.Fatalf("unexpected last task snapshot after Run: %+v", statusAfterRun.LastTask)
+	}
+	if statusAfterRun.LastMessage == nil || !strings.Contains(statusAfterRun.LastMessage.Message, "Task task-1 finished with status succeeded") {
+		t.Fatalf("unexpected last message snapshot after Run: %+v", statusAfterRun.LastMessage)
 	}
 }
 
@@ -265,6 +293,65 @@ func TestServiceRunRetriesTransientPollFailure(t *testing.T) {
 	}
 	if state.resultCalls != 1 {
 		t.Fatalf("resultCalls = %d, want 1", state.resultCalls)
+	}
+}
+
+func TestServiceAskForHelpRegistrationPromptErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		status int
+		detail string
+		kind   RegistrationPromptKind
+	}{
+		{
+			name:   "invite_or_worker",
+			status: http.StatusUnprocessableEntity,
+			detail: "invite_code or worker_enrollment_code is required for new device registration",
+			kind:   RegistrationPromptInviteOrWorker,
+		},
+		{
+			name:   "recovery",
+			status: http.StatusForbidden,
+			detail: "valid recovery_code required to refresh existing device credentials",
+			kind:   RegistrationPromptRecovery,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/devices/self-register", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				if err := json.NewEncoder(w).Encode(map[string]any{"detail": tc.detail}); err != nil {
+					t.Fatalf("encode error response: %v", err)
+				}
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			svc := NewService(newMemoryStore(), WithHTTPClient(server.Client()))
+			_, err := svc.AskForHelp(context.Background(), AskRequest{Endpoint: server.URL})
+			if err == nil {
+				t.Fatal("expected registration prompt error")
+			}
+
+			var promptErr *RegistrationPromptError
+			if !errors.As(err, &promptErr) {
+				t.Fatalf("expected RegistrationPromptError, got %T (%v)", err, err)
+			}
+			if promptErr.Kind != tc.kind {
+				t.Fatalf("prompt kind = %q, want %q", promptErr.Kind, tc.kind)
+			}
+			if promptErr.Detail != tc.detail {
+				t.Fatalf("prompt detail = %q, want %q", promptErr.Detail, tc.detail)
+			}
+		})
 	}
 }
 

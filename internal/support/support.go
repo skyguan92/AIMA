@@ -29,12 +29,24 @@ const (
 
 	DefaultEndpoint = "http://121.37.119.185/platform"
 
-	configStateDeviceID        = "support.state.device_id"
-	configStateToken           = "support.state.token"
-	configStateRecoveryCode    = "support.state.recovery_code"
-	configStateReferralCode    = "support.state.referral_code"
-	configStateTokenExpiresAt  = "support.state.token_expires_at"
-	configStatePollIntervalSec = "support.state.poll_interval_seconds"
+	configStateDeviceID             = "support.state.device_id"
+	configStateToken                = "support.state.token"
+	configStateRecoveryCode         = "support.state.recovery_code"
+	configStateReferralCode         = "support.state.referral_code"
+	configStateTokenExpiresAt       = "support.state.token_expires_at"
+	configStatePollIntervalSec      = "support.state.poll_interval_seconds"
+	configStateActiveTaskID         = "support.state.active_task_id"
+	configStateActiveTaskStatus     = "support.state.active_task_status"
+	configStateActiveTaskTarget     = "support.state.active_task_target"
+	configStateActiveTaskUpdatedAt  = "support.state.active_task_updated_at"
+	configStateLastTaskID           = "support.state.last_task_id"
+	configStateLastTaskStatus       = "support.state.last_task_status"
+	configStateLastTaskUpdatedAt    = "support.state.last_task_updated_at"
+	configStateLastMessage          = "support.state.last_message"
+	configStateLastMessageType      = "support.state.last_message_type"
+	configStateLastMessageLevel     = "support.state.last_message_level"
+	configStateLastMessagePhase     = "support.state.last_message_phase"
+	configStateLastMessageUpdatedAt = "support.state.last_message_updated_at"
 
 	defaultPollInterval     = 5 * time.Second
 	defaultProgressInterval = 5 * time.Second
@@ -79,10 +91,12 @@ type NotifyFunc func(ctx context.Context, notification Notification)
 
 // AskRequest captures the user-facing support entrypoint parameters.
 type AskRequest struct {
-	Description string
-	Endpoint    string
-	InviteCode  string
-	WorkerCode  string
+	Description  string
+	Endpoint     string
+	InviteCode   string
+	WorkerCode   string
+	RecoveryCode string
+	ReferralCode string
 }
 
 // AskResult is returned by CLI, MCP, and UI support entrypoints.
@@ -96,6 +110,39 @@ type AskResult struct {
 	TaskID              string `json:"task_id,omitempty"`
 	TaskStatus          string `json:"task_status,omitempty"`
 	TaskTarget          string `json:"task_target,omitempty"`
+	ReferralCode        string `json:"referral_code,omitempty"`
+	ShareText           string `json:"share_text,omitempty"`
+	MaxTasks            int    `json:"max_tasks,omitempty"`
+	UsedTasks           int    `json:"used_tasks,omitempty"`
+}
+
+// TaskSnapshot captures the latest persisted support task state.
+type TaskSnapshot struct {
+	TaskID    string `json:"task_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Target    string `json:"target,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// MessageSnapshot captures the latest persisted support interaction message.
+type MessageSnapshot struct {
+	Message   string `json:"message,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Level     string `json:"level,omitempty"`
+	Phase     string `json:"phase,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// Status is the persisted support state exposed to other AIMA surfaces like the UI.
+type Status struct {
+	Enabled             bool             `json:"enabled"`
+	Endpoint            string           `json:"endpoint,omitempty"`
+	Registered          bool             `json:"registered"`
+	DeviceID            string           `json:"device_id,omitempty"`
+	PollIntervalSeconds int              `json:"poll_interval_seconds,omitempty"`
+	ActiveTask          *TaskSnapshot    `json:"active_task,omitempty"`
+	LastTask            *TaskSnapshot    `json:"last_task,omitempty"`
+	LastMessage         *MessageSnapshot `json:"last_message,omitempty"`
 }
 
 // RunOptions control how the support polling loop behaves.
@@ -103,6 +150,41 @@ type RunOptions struct {
 	StopWhenIdle bool
 	Prompt       PromptFunc
 	Notify       NotifyFunc
+}
+
+// RegistrationPromptKind identifies which extra credential the platform needs.
+type RegistrationPromptKind string
+
+const (
+	RegistrationPromptInviteOrWorker RegistrationPromptKind = "invite_or_worker"
+	RegistrationPromptRecovery       RegistrationPromptKind = "recovery_code"
+)
+
+// RegistrationPromptError indicates registration can continue after asking the
+// user for an invite/worker code or recovery code.
+type RegistrationPromptError struct {
+	Kind   RegistrationPromptKind
+	Detail string
+}
+
+func (e *RegistrationPromptError) Error() string {
+	switch e.Kind {
+	case RegistrationPromptInviteOrWorker:
+		if e.Detail != "" {
+			return fmt.Sprintf("support registration needs invite or worker code: %s", e.Detail)
+		}
+		return "support registration needs invite or worker code"
+	case RegistrationPromptRecovery:
+		if e.Detail != "" {
+			return fmt.Sprintf("support registration needs recovery code: %s", e.Detail)
+		}
+		return "support registration needs recovery code"
+	default:
+		if e.Detail != "" {
+			return e.Detail
+		}
+		return "support registration needs more input"
+	}
 }
 
 // Option customizes a Service.
@@ -171,7 +253,7 @@ func (s *Service) AskForHelp(ctx context.Context, req AskRequest) (AskResult, er
 		return AskResult{}, err
 	}
 
-	state, endpoint, err := s.ensureRegistered(ctx)
+	state, endpoint, registerResp, err := s.ensureRegistered(ctx, req)
 	if err != nil {
 		return AskResult{}, err
 	}
@@ -183,12 +265,20 @@ func (s *Service) AskForHelp(ctx context.Context, req AskRequest) (AskResult, er
 	if err != nil {
 		return AskResult{}, err
 	}
+	s.persistActiveTask(ctx, active.TaskID, active.Status, active.Target)
 
 	result := AskResult{
 		Enabled:             true,
 		Endpoint:            endpoint,
 		DeviceID:            state.DeviceID,
 		PollIntervalSeconds: state.PollIntervalSeconds,
+		ReferralCode:        state.ReferralCode,
+	}
+	if registerResp != nil {
+		result.ReferralCode = registerResp.ReferralCode
+		result.ShareText = registerResp.ShareText
+		result.MaxTasks = registerResp.Budget.MaxTasks
+		result.UsedTasks = registerResp.Budget.UsedTasks
 	}
 
 	if req.Description == "" {
@@ -217,6 +307,7 @@ func (s *Service) AskForHelp(ctx context.Context, req AskRequest) (AskResult, er
 			if activeErr != nil {
 				return AskResult{}, activeErr
 			}
+			s.persistActiveTask(ctx, active.TaskID, active.Status, active.Target)
 			result.TaskID = active.TaskID
 			result.TaskStatus = active.Status
 			result.TaskTarget = active.Target
@@ -226,10 +317,35 @@ func (s *Service) AskForHelp(ctx context.Context, req AskRequest) (AskResult, er
 		return AskResult{}, err
 	}
 
+	s.persistActiveTask(ctx, task.TaskID, task.Status, req.Description)
 	result.Created = true
 	result.TaskID = task.TaskID
 	result.TaskStatus = task.Status
+	result.TaskTarget = strings.TrimSpace(req.Description)
 	return result, nil
+}
+
+// Status returns the latest persisted support state without performing network I/O.
+func (s *Service) Status(ctx context.Context) Status {
+	state := s.loadState(ctx)
+	status := Status{
+		Enabled:             s.isEnabled(ctx),
+		Endpoint:            s.endpointFromConfig(ctx),
+		Registered:          state.DeviceID != "",
+		DeviceID:            state.DeviceID,
+		PollIntervalSeconds: state.PollIntervalSeconds,
+	}
+
+	if active := s.loadTaskSnapshot(ctx, configStateActiveTaskID, configStateActiveTaskStatus, configStateActiveTaskTarget, configStateActiveTaskUpdatedAt); hasTaskSnapshot(active) {
+		status.ActiveTask = &active
+	}
+	if last := s.loadTaskSnapshot(ctx, configStateLastTaskID, configStateLastTaskStatus, "", configStateLastTaskUpdatedAt); hasTaskSnapshot(last) {
+		status.LastTask = &last
+	}
+	if message := s.loadMessageSnapshot(ctx); hasMessageSnapshot(message) {
+		status.LastMessage = &message
+	}
+	return status
 }
 
 // RunBackground keeps a support polling loop alive for as long as ctx is active.
@@ -263,7 +379,7 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) error {
 			continue
 		}
 
-		state, endpoint, err := s.ensureRegistered(ctx)
+		state, endpoint, _, err := s.ensureRegistered(ctx, AskRequest{})
 		if err != nil {
 			if opts.StopWhenIdle {
 				return err
@@ -364,7 +480,7 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) error {
 
 		if pollResp.NotifTaskID != "" || pollResp.NotifTaskStatus != "" {
 			sawActive = true
-			s.emitNotification(ctx, opts.Notify, Notification{
+			notification := Notification{
 				Message:              fmt.Sprintf("Task %s finished with status %s", pollResp.NotifTaskID, pollResp.NotifTaskStatus),
 				Type:                 "task_completion",
 				TaskID:               pollResp.NotifTaskID,
@@ -372,7 +488,9 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) error {
 				ReferralCode:         pollResp.NotifReferralCode,
 				ShareText:            pollResp.NotifShareText,
 				BudgetTasksRemaining: pollResp.NotifBudgetTasksRemaining,
-			})
+			}
+			s.persistNotification(ctx, notification)
+			s.emitNotification(ctx, opts.Notify, notification)
 		}
 
 		active, err := s.getActiveTask(ctx, endpoint, state)
@@ -396,6 +514,7 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) error {
 			}
 			continue
 		}
+		s.persistActiveTask(ctx, active.TaskID, active.Status, active.Target)
 		if active.HasActiveTask {
 			sawActive = true
 		} else if opts.StopWhenIdle && sawActive {
@@ -430,12 +549,19 @@ type deviceTaskResponse struct {
 }
 
 type selfRegisterResponse struct {
-	DeviceID            string `json:"device_id"`
-	Token               string `json:"token"`
-	RecoveryCode        string `json:"recovery_code"`
-	TokenExpiresAt      string `json:"token_expires_at"`
-	PollIntervalSeconds int    `json:"poll_interval_seconds"`
-	ReferralCode        string `json:"referral_code"`
+	DeviceID            string     `json:"device_id"`
+	Token               string     `json:"token"`
+	RecoveryCode        string     `json:"recovery_code"`
+	TokenExpiresAt      string     `json:"token_expires_at"`
+	PollIntervalSeconds int        `json:"poll_interval_seconds"`
+	Budget              budgetInfo `json:"budget"`
+	ReferralCode        string     `json:"referral_code"`
+	ShareText           string     `json:"share_text"`
+}
+
+type budgetInfo struct {
+	MaxTasks  int `json:"max_tasks"`
+	UsedTasks int `json:"used_tasks"`
 }
 
 type renewTokenResponse struct {
@@ -501,27 +627,33 @@ func (s *Service) persistOverrides(ctx context.Context, req AskRequest) error {
 	return nil
 }
 
-func (s *Service) ensureRegistered(ctx context.Context) (deviceState, string, error) {
+func (s *Service) ensureRegistered(ctx context.Context, req AskRequest) (deviceState, string, *selfRegisterResponse, error) {
 	state := s.loadState(ctx)
 	endpoint := s.endpointFromConfig(ctx)
 	if endpoint == "" {
-		return deviceState{}, "", fmt.Errorf("support endpoint is not configured; set %s or AIMA_SUPPORT_ENDPOINT", ConfigEndpoint)
+		return deviceState{}, "", nil, fmt.Errorf("support endpoint is not configured; set %s or AIMA_SUPPORT_ENDPOINT", ConfigEndpoint)
 	}
 
 	if state.DeviceID != "" && state.Token != "" {
 		if _, err := s.getActiveTask(ctx, endpoint, state); err == nil {
-			return state, endpoint, nil
+			return state, endpoint, nil, nil
 		} else if !isAuthError(err) {
-			return deviceState{}, "", err
+			return deviceState{}, "", nil, err
 		}
 	}
 
 	registerReq, err := buildSelfRegisterRequest(ctx)
 	if err != nil {
-		return deviceState{}, "", err
+		return deviceState{}, "", nil, err
+	}
+	if recovery := strings.TrimSpace(req.RecoveryCode); recovery != "" {
+		state.RecoveryCode = recovery
 	}
 	if state.RecoveryCode != "" {
 		registerReq["recovery_code"] = state.RecoveryCode
+	}
+	if referral := strings.TrimSpace(req.ReferralCode); referral != "" {
+		registerReq["referral_code"] = referral
 	}
 	if invite := s.optionalConfig(ctx, ConfigInviteCode, "AIMA_SUPPORT_INVITE_CODE"); invite != "" {
 		registerReq["invite_code"] = invite
@@ -532,7 +664,7 @@ func (s *Service) ensureRegistered(ctx context.Context) (deviceState, string, er
 
 	var resp selfRegisterResponse
 	if err := s.doJSON(ctx, http.MethodPost, endpoint+"/devices/self-register", "", registerReq, &resp); err != nil {
-		return deviceState{}, "", err
+		return deviceState{}, "", nil, classifyRegistrationError(err)
 	}
 	state.DeviceID = resp.DeviceID
 	state.Token = resp.Token
@@ -543,9 +675,9 @@ func (s *Service) ensureRegistered(ctx context.Context) (deviceState, string, er
 		state.PollIntervalSeconds = resp.PollIntervalSeconds
 	}
 	if err := s.saveState(ctx, state); err != nil {
-		return deviceState{}, "", err
+		return deviceState{}, "", nil, err
 	}
-	return state, endpoint, nil
+	return state, endpoint, &resp, nil
 }
 
 func (s *Service) renewTokenIfNeeded(ctx context.Context, endpoint string, state deviceState) (deviceState, error) {
@@ -610,6 +742,7 @@ func (s *Service) handleInteraction(ctx context.Context, endpoint string, state 
 		Level:   resp.InteractionLevel,
 		Phase:   resp.InteractionPhase,
 	}
+	s.persistNotification(ctx, notification)
 	if resp.InteractionType == "notification" {
 		s.emitNotification(ctx, opts.Notify, notification)
 		return s.respondInteraction(ctx, endpoint, state, resp.InteractionID, "displayed")
@@ -808,6 +941,104 @@ func (s *Service) emitNotification(ctx context.Context, notify NotifyFunc, notif
 	}
 }
 
+func (s *Service) loadTaskSnapshot(ctx context.Context, idKey, statusKey, targetKey, updatedKey string) TaskSnapshot {
+	snapshot := TaskSnapshot{
+		TaskID:    s.optionalConfig(ctx, idKey, ""),
+		Status:    s.optionalConfig(ctx, statusKey, ""),
+		UpdatedAt: s.optionalConfig(ctx, updatedKey, ""),
+	}
+	if targetKey != "" {
+		snapshot.Target = s.optionalConfig(ctx, targetKey, "")
+	}
+	return snapshot
+}
+
+func (s *Service) loadMessageSnapshot(ctx context.Context) MessageSnapshot {
+	return MessageSnapshot{
+		Message:   s.optionalConfig(ctx, configStateLastMessage, ""),
+		Type:      s.optionalConfig(ctx, configStateLastMessageType, ""),
+		Level:     s.optionalConfig(ctx, configStateLastMessageLevel, ""),
+		Phase:     s.optionalConfig(ctx, configStateLastMessagePhase, ""),
+		UpdatedAt: s.optionalConfig(ctx, configStateLastMessageUpdatedAt, ""),
+	}
+}
+
+func (s *Service) persistActiveTask(ctx context.Context, taskID, status, target string) {
+	current := s.loadTaskSnapshot(ctx, configStateActiveTaskID, configStateActiveTaskStatus, configStateActiveTaskTarget, configStateActiveTaskUpdatedAt)
+	next := TaskSnapshot{
+		TaskID: strings.TrimSpace(taskID),
+		Status: strings.TrimSpace(status),
+		Target: strings.TrimSpace(target),
+	}
+	if current.TaskID == next.TaskID && current.Status == next.Status && current.Target == next.Target {
+		return
+	}
+
+	entries := map[string]string{
+		configStateActiveTaskID:     next.TaskID,
+		configStateActiveTaskStatus: next.Status,
+		configStateActiveTaskTarget: next.Target,
+	}
+	if hasTaskSnapshot(next) || hasTaskSnapshot(current) {
+		entries[configStateActiveTaskUpdatedAt] = s.now().UTC().Format(time.RFC3339)
+	}
+	s.persistStateEntries(ctx, entries)
+}
+
+func (s *Service) persistNotification(ctx context.Context, notification Notification) {
+	now := s.now().UTC().Format(time.RFC3339)
+	message := MessageSnapshot{
+		Message: strings.TrimSpace(notification.Message),
+		Type:    strings.TrimSpace(notification.Type),
+		Level:   strings.TrimSpace(notification.Level),
+		Phase:   strings.TrimSpace(notification.Phase),
+	}
+	if hasMessageSnapshot(message) {
+		current := s.loadMessageSnapshot(ctx)
+		if current.Message != message.Message || current.Type != message.Type || current.Level != message.Level || current.Phase != message.Phase {
+			s.persistStateEntries(ctx, map[string]string{
+				configStateLastMessage:          message.Message,
+				configStateLastMessageType:      message.Type,
+				configStateLastMessageLevel:     message.Level,
+				configStateLastMessagePhase:     message.Phase,
+				configStateLastMessageUpdatedAt: now,
+			})
+		}
+	}
+
+	taskID := strings.TrimSpace(notification.TaskID)
+	taskStatus := strings.TrimSpace(notification.TaskStatus)
+	if taskID == "" && taskStatus == "" {
+		return
+	}
+
+	current := s.loadTaskSnapshot(ctx, configStateLastTaskID, configStateLastTaskStatus, "", configStateLastTaskUpdatedAt)
+	if current.TaskID != taskID || current.Status != taskStatus {
+		s.persistStateEntries(ctx, map[string]string{
+			configStateLastTaskID:        taskID,
+			configStateLastTaskStatus:    taskStatus,
+			configStateLastTaskUpdatedAt: now,
+		})
+	}
+	s.persistActiveTask(ctx, "", "", "")
+}
+
+func (s *Service) persistStateEntries(ctx context.Context, entries map[string]string) {
+	for key, value := range entries {
+		if err := s.store.SetConfig(ctx, key, value); err != nil {
+			s.logger.Warn("persist support state entry failed", "key", key, "error", err)
+		}
+	}
+}
+
+func hasTaskSnapshot(snapshot TaskSnapshot) bool {
+	return snapshot.TaskID != "" || snapshot.Status != "" || snapshot.Target != ""
+}
+
+func hasMessageSnapshot(snapshot MessageSnapshot) bool {
+	return snapshot.Message != ""
+}
+
 func (s *Service) loadState(ctx context.Context) deviceState {
 	state := deviceState{
 		PollIntervalSeconds: int(defaultPollInterval / time.Second),
@@ -949,6 +1180,47 @@ func newHTTPStatusError(statusCode int, body []byte) error {
 		Detail:     detail,
 		Body:       strings.TrimSpace(string(body)),
 	}
+}
+
+func classifyRegistrationError(err error) error {
+	var statusErr *httpStatusError
+	if !errors.As(err, &statusErr) {
+		return err
+	}
+	detail := strings.ToLower(strings.TrimSpace(statusErr.Detail))
+	switch {
+	case needsRecoveryPrompt(detail):
+		return &RegistrationPromptError{
+			Kind:   RegistrationPromptRecovery,
+			Detail: statusErr.Detail,
+		}
+	case needsInvitePrompt(detail):
+		return &RegistrationPromptError{
+			Kind:   RegistrationPromptInviteOrWorker,
+			Detail: statusErr.Detail,
+		}
+	default:
+		return err
+	}
+}
+
+func needsInvitePrompt(detail string) bool {
+	if detail == "" {
+		return false
+	}
+	return strings.Contains(detail, "invite_code") ||
+		strings.Contains(detail, "invalid invite code") ||
+		strings.Contains(detail, "worker_enrollment_code") ||
+		strings.Contains(detail, "worker enrollment code") ||
+		strings.Contains(detail, "new invite_code required")
+}
+
+func needsRecoveryPrompt(detail string) bool {
+	if detail == "" {
+		return false
+	}
+	return strings.Contains(detail, "recovery_code") ||
+		strings.Contains(detail, "saved recovery code")
 }
 
 func isAuthError(err error) bool {

@@ -108,7 +108,9 @@ func TestHandleMessage_ToolsCall(t *testing.T) {
 		Description: "Echo input",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}}}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
-			var p struct{ Msg string `json:"msg"` }
+			var p struct {
+				Msg string `json:"msg"`
+			}
 			json.Unmarshal(params, &p)
 			return TextResult("echo: " + p.Msg), nil
 		},
@@ -426,7 +428,6 @@ func TestRegisterAllTools(t *testing.T) {
 		"knowledge.generate_pod", "knowledge.list_profiles", "knowledge.list_engines", "knowledge.list_models",
 		"knowledge.list",
 		"system.status", "system.config",
-		"support.askforhelp",
 		"agent.ask", "agent.install", "agent.status",
 		"shell.exec",
 	}
@@ -497,23 +498,23 @@ func TestShellExecWhitelist(t *testing.T) {
 		{"nvidia-smi -q", true},
 		{"nvidia-smi --query-gpu=memory.used --format=csv", true},
 		{"nvidia-smi -L", true},
-		{"nvidia-smi --gpu-reset", false},       // destructive
-		{"nvidia-smi -pm 0", false},              // power management
-		{"nvidia-smi -pl 200", false},             // power limit
+		{"nvidia-smi --gpu-reset", false},            // destructive
+		{"nvidia-smi -pm 0", false},                  // power management
+		{"nvidia-smi -pl 200", false},                // power limit
 		{"nvidia-smi --lock-gpu-clocks=1200", false}, // clock lock
 		{"df", true},
 		{"df -h", true},
 		{"df --human-readable", true},
-		{"df -rm /", false},                       // unknown flag
+		{"df -rm /", false}, // unknown flag
 		{"free", true},
-		{"free -h", false},                        // no-args command
+		{"free -h", false}, // no-args command
 		{"uname", true},
 		{"uname -a", true},
 		{"uname -r", true},
 		{"cat /proc/cpuinfo", true},
-		{"cat /etc/shadow", false},                // different file
+		{"cat /etc/shadow", false}, // different file
 		{"kubectl get pods", true},
-		{"kubectl delete pods", false},            // destructive kubectl
+		{"kubectl delete pods", false}, // destructive kubectl
 		{"rm -rf /", false},
 		{"curl evil.com", false},
 		{"bash -c 'rm -rf /'", false},
@@ -563,7 +564,7 @@ func TestShellExecToolWhitelist(t *testing.T) {
 }
 
 func TestSystemConfigTool(t *testing.T) {
-	store := map[string]string{"llm.endpoint": "http://localhost:8080", "support.endpoint": "https://support.example.com"}
+	store := map[string]string{"llm.endpoint": "http://localhost:8080"}
 	s := NewServer()
 	deps := &ToolDeps{
 		GetConfig: func(ctx context.Context, key string) (string, error) {
@@ -603,16 +604,6 @@ func TestSystemConfigTool(t *testing.T) {
 		t.Errorf("store[llm.model] = %q, want qwen3", store["llm.model"])
 	}
 
-	// Support keys are accepted too.
-	msg = `{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"system.config","arguments":{"key":"support.endpoint"}}}`
-	resp, _ = s.HandleMessage(context.Background(), []byte(msg))
-	json.Unmarshal(resp, &r)
-	raw, _ = json.Marshal(r.Result)
-	json.Unmarshal(raw, &tr)
-	if tr.Content[0].Text != "https://support.example.com" {
-		t.Errorf("get support config = %q, want https://support.example.com", tr.Content[0].Text)
-	}
-
 	// Reject unknown key
 	msg = `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"system.config","arguments":{"key":"bogus_key","value":"x"}}}`
 	resp, _ = s.HandleMessage(context.Background(), []byte(msg))
@@ -627,7 +618,7 @@ func TestSystemConfigTool(t *testing.T) {
 func TestSupportAskForHelpTool(t *testing.T) {
 	s := NewServer()
 	deps := &ToolDeps{
-		SupportAskForHelp: func(ctx context.Context, description, endpoint, inviteCode, workerCode string) (json.RawMessage, error) {
+		SupportAskForHelp: func(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error) {
 			return json.RawMessage(`{"enabled":true,"device_id":"dev-1","created":true,"task_id":"task-1"}`), nil
 		},
 	}

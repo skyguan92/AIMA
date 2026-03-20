@@ -33,34 +33,6 @@
   --orange: var(--warning);
   --red: var(--error);
 
-
-  --fg-rgb: 255, 255, 255;
-  --highlight-rgb: 255, 255, 255;
-
-
-  --bg-blur: rgba(255, 255, 255, 0.8);
-  --bg-popover: rgba(245, 245, 247, 0.95);
-  --bg-popover-solid: rgba(255, 255, 255, 0.98);
-  --bg-input-alt: rgba(235, 235, 240, 0.5);
-  --bg-blur: var(--bg-blur);
-  --bg-popover: var(--bg-popover);
-  --bg-popover-solid: var(--bg-popover-solid);
-  --bg-input-alt: var(--bg-input-alt);
-
-  --shadow-rgb: 0, 0, 0;
-
-  --bg-blur: rgba(255, 255, 255, 0.8);
-  --bg-popover: rgba(245, 245, 247, 0.95);
-  --bg-popover-solid: rgba(255, 255, 255, 0.98);
-  --bg-input-alt: rgba(235, 235, 240, 0.5);
-
-
-  --bg-blur: var(--bg-blur);
-  --bg-popover: var(--bg-popover);
-  --bg-popover-solid: var(--bg-popover-solid);
-  --bg-input-alt: var(--bg-input-alt);
-
-
   /* Text - High contrast */
   --text: #f5f5f7;
   --text-dim: rgba(245, 245, 247, 0.55);
@@ -93,51 +65,11 @@
   --duration-slow: 400ms;
 
   /* Panel Styles */
-  --panel-border: 1px solid rgba(var(--fg-rgb), 0.08);
+  --panel-border: 1px solid rgba(255, 255, 255, 0.08);
   --panel-shadow:
-    0 4px 24px rgba(var(--shadow-rgb), 0.4),
-    0 1px 2px rgba(var(--shadow-rgb), 0.2),
-    inset 0 1px 0 rgba(var(--highlight-rgb), 0.3);
-}
-
-
-[data-theme="light"] {
-  --bg-primary: #f5f5f7;
-  --bg-secondary: #e5e5ea;
-  --bg-tertiary: #d1d1d6;
-  --bg-panel: rgba(var(--fg-rgb), 0.72);
-  --bg-input: rgba(var(--fg-rgb), 0.85);
-  --bg-deep: linear-gradient(180deg, #f5f5f7 0%, #e5e5ea 100%);
-  
-  --fg-rgb: 0, 0, 0;
-  --shadow-rgb: 0, 0, 0;
-
-  --bg-blur: var(--bg-blur);
-  --bg-popover: var(--bg-popover);
-  --bg-popover-solid: var(--bg-popover-solid);
-  --bg-input-alt: var(--bg-input-alt);
-
-  
-  --text: #1d1d1f;
-  --text-dim: rgba(29, 29, 31, 0.65);
-  --text-tertiary: rgba(29, 29, 31, 0.45);
-  
-  --panel-border: 1px solid rgba(var(--shadow-rgb), 0.05);
-  --panel-shadow:
-    0 4px 24px rgba(var(--shadow-rgb), 0.06),
-    0 1px 2px rgba(var(--shadow-rgb), 0.04),
-    inset 0 1px 0 rgba(var(--highlight-rgb), 0.6);
-}
-
-
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb {
-  background: rgba(var(--fg-rgb), 0.2);
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(var(--fg-rgb), 0.4);
+    0 4px 24px rgba(0, 0, 0, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 /* ===== Reset ===== */
@@ -151,10 +83,6 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-
-  transition: background-color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1), 
-              color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1),
-              border-color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
 /* ===== Layout ===== */
@@ -170,14 +98,10 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 10px 16px;
-  border-bottom: 1px solid rgba(var(--fg-rgb), 0.05);
-  background: var(--bg-blur);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(20, 20, 22, 0.8);
   flex-shrink: 0;
   min-height: 48px;
-
-  transition: background-color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1), 
-              color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1),
-              border-color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 .topbar-logo {
   font-family: var(--font-sans);
@@ -214,7 +138,7 @@ body {
 .status-dot.offline { background: var(--error); box-shadow: 0 0 6px rgba(255, 69, 58, 0.5); }
 .status-text { font-size: 12px; color: var(--text-tertiary); }
 .btn-icon {
-  background: rgba(var(--fg-rgb), 0.05);
+  background: rgba(255, 255, 255, 0.05);
   border: none;
   color: var(--text-dim);
   width: 32px;
@@ -230,13 +154,13 @@ body {
     color var(--duration-fast) var(--ease-smooth);
 }
 .btn-icon:hover {
-  background: rgba(var(--fg-rgb), 0.1);
+  background: rgba(255, 255, 255, 0.1);
   color: var(--text);
 }
 
 /* Language selector */
 .lang-select {
-  background: rgba(var(--fg-rgb), 0.05);
+  background: rgba(255, 255, 255, 0.05);
   border: none;
   color: var(--text-dim);
   font-family: var(--font-sans);
@@ -252,7 +176,7 @@ body {
     background var(--duration-fast) var(--ease-smooth),
     color var(--duration-fast) var(--ease-smooth);
 }
-.lang-select:hover { background: rgba(var(--fg-rgb), 0.1); color: var(--text); }
+.lang-select:hover { background: rgba(255, 255, 255, 0.1); color: var(--text); }
 .lang-select option {
   background: var(--bg-secondary);
   color: var(--text);
@@ -276,24 +200,20 @@ body {
   gap: 10px;
 }
 .sidebar-left {
-  border-right: 1px solid rgba(var(--fg-rgb), 0.04);
-  background: rgba(var(--shadow-rgb), 0.15);
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(0, 0, 0, 0.15);
 }
 .sidebar-right {
-  border-left: 1px solid rgba(var(--fg-rgb), 0.04);
-  background: rgba(var(--shadow-rgb), 0.15);
+  border-left: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(0, 0, 0, 0.15);
 }
 
 /* Panel card - subtle style */
 .panel {
-  background: rgba(var(--fg-rgb), 0.03);
-  border: 1px solid rgba(var(--fg-rgb), 0.05);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 10px;
   padding: 12px;
-
-  transition: background-color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1), 
-              color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1),
-              border-color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 .panel-title {
   font-family: var(--font-sans);
@@ -315,7 +235,7 @@ body {
   gap: 8px;
   margin-bottom: 12px;
   padding-bottom: 10px;
-  border-bottom: 1px solid rgba(var(--fg-rgb), 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 .device-name {
   font-family: var(--font-sans);
@@ -340,7 +260,7 @@ body {
 }
 .gauge-bar {
   height: 4px;
-  background: rgba(var(--fg-rgb), 0.06);
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -368,7 +288,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid rgba(var(--fg-rgb), 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 .panel-list li:last-child { border-bottom: none; }
 .panel-list .dot {
@@ -393,7 +313,7 @@ body {
   align-items: center;
   gap: 8px;
   padding: 8px 0;
-  border-bottom: 1px solid rgba(var(--fg-rgb), 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   font-size: 13px;
 }
 .fleet-device:last-child { border-bottom: none; }
@@ -407,7 +327,7 @@ body {
   transition: background var(--duration-fast) var(--ease-smooth);
 }
 .fleet-device.clickable:hover {
-  background: rgba(var(--fg-rgb), 0.06);
+  background: rgba(255, 255, 255, 0.06);
 }
 .fleet-link-hint {
   font-size: 14px;
@@ -427,7 +347,7 @@ body {
   align-items: center;
   padding: 5px 0;
   font-size: 12px;
-  border-bottom: 1px solid rgba(var(--fg-rgb), 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 .agent-info-row:last-child { border-bottom: none; }
 .agent-info-label { color: var(--text-tertiary); }
@@ -455,7 +375,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: rgba(var(--shadow-rgb), 0.1);
+  background: rgba(0, 0, 0, 0.1);
 }
 
 /* Agent header - minimal Claude Code style */
@@ -464,7 +384,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 10px 16px;
-  border-bottom: 1px solid rgba(var(--fg-rgb), 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   background: transparent;
   flex-shrink: 0;
 }
@@ -505,11 +425,11 @@ body {
 .chat-messages::-webkit-scrollbar { width: 4px; }
 .chat-messages::-webkit-scrollbar-track { background: transparent; }
 .chat-messages::-webkit-scrollbar-thumb {
-  background: rgba(var(--fg-rgb), 0.1);
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 2px;
 }
 .chat-messages::-webkit-scrollbar-thumb:hover {
-  background: rgba(var(--fg-rgb), 0.2);
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .msg {
@@ -551,14 +471,14 @@ body {
   align-items: center;
   gap: 8px;
   padding: 4px 10px 4px 4px;
-  background: rgba(var(--fg-rgb), 0.04);
+  background: rgba(255, 255, 255, 0.04);
   border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
   transition: background var(--duration-fast) var(--ease-smooth);
 }
 .msg-tool-header:hover {
-  background: rgba(var(--fg-rgb), 0.08);
+  background: rgba(255, 255, 255, 0.08);
 }
 .msg-tool-indicator {
   width: 14px;
@@ -630,9 +550,9 @@ body {
   margin-top: 6px;
   margin-left: 22px;
   padding: 10px 12px;
-  background: rgba(var(--shadow-rgb), 0.25);
+  background: rgba(0, 0, 0, 0.25);
   border-radius: 8px;
-  border-left: 2px solid rgba(var(--fg-rgb), 0.1);
+  border-left: 2px solid rgba(255, 255, 255, 0.1);
   font-size: 11px;
   color: var(--text-dim);
   overflow-x: auto;
@@ -650,7 +570,7 @@ body {
   font-weight: 500;
 }
 .msg-tool-result {
-  border-top: 1px solid rgba(var(--fg-rgb), 0.06);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   padding-top: 6px;
   margin-top: 6px;
 }
@@ -710,21 +630,12 @@ body {
 }
 
 /* Chat input - clean minimal style */
-
-.chat-input-wrap {
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-.chat-input-wrap:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--cyan-glow);
-}
-
 .chat-input-wrap {
   display: flex;
   align-items: center;
   padding: 12px 16px;
-  border-top: 1px solid rgba(var(--fg-rgb), 0.05);
-  background: var(--bg-input-alt);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(29, 29, 31, 0.5);
   flex-shrink: 0;
   gap: 10px;
 }
@@ -781,8 +692,8 @@ body {
   align-items: center;
   gap: 24px;
   padding: 8px 16px;
-  border-top: 1px solid rgba(var(--fg-rgb), 0.04);
-  background: var(--bg-blur);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(20, 20, 22, 0.8);
   flex-shrink: 0;
   font-size: 11px;
   min-height: 32px;
@@ -803,7 +714,7 @@ body {
 .bottom-gauge-bar {
   flex: 1;
   height: 3px;
-  background: rgba(var(--fg-rgb), 0.06);
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -823,7 +734,7 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(var(--shadow-rgb), 0.5);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -836,9 +747,9 @@ body {
 }
 .modal {
   background: var(--bg-secondary);
-  border: 1px solid rgba(var(--fg-rgb), 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
-  box-shadow: 0 20px 60px rgba(var(--shadow-rgb), 0.4);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
   padding: 24px;
   width: 400px;
   max-height: 85vh;
@@ -865,7 +776,7 @@ body {
 .modal-section {
   margin-bottom: 18px;
   padding-bottom: 18px;
-  border-bottom: 1px solid rgba(var(--fg-rgb), 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 .modal-section:last-of-type { border-bottom: none; margin-bottom: 12px; padding-bottom: 0; }
 .modal-section-title {
@@ -889,8 +800,8 @@ body {
 .modal input[type="password"],
 .modal input[type="url"] {
   width: 100%;
-  background: rgba(var(--fg-rgb), 0.05);
-  border: 1px solid rgba(var(--fg-rgb), 0.08);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 6px;
   color: var(--text);
   font-family: var(--font-mono);
@@ -903,13 +814,12 @@ body {
 }
 .modal input:focus {
   border-color: var(--accent);
-  background: rgba(var(--fg-rgb), 0.08);
-  box-shadow: 0 0 0 3px var(--cyan-glow);
+  background: rgba(255, 255, 255, 0.08);
 }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 .modal-btn {
-  background: rgba(var(--fg-rgb), 0.05);
-  border: 1px solid rgba(var(--fg-rgb), 0.08);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   color: var(--text);
   font-family: var(--font-sans);
   font-size: 13px;
@@ -922,8 +832,8 @@ body {
     border-color var(--duration-fast) var(--ease-smooth);
 }
 .modal-btn:hover {
-  background: rgba(var(--fg-rgb), 0.1);
-  border-color: rgba(var(--fg-rgb), 0.12);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.12);
 }
 .modal-btn.primary {
   background: var(--accent);
@@ -952,8 +862,8 @@ body {
 /* ===== Mobile ===== */
 .mobile-tabs {
   display: none;
-  border-top: 1px solid rgba(var(--fg-rgb), 0.05);
-  background: var(--bg-popover);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(20, 20, 22, 0.95);
   flex-shrink: 0;
   padding-bottom: env(safe-area-inset-bottom, 0);
 }
@@ -984,10 +894,10 @@ body {
   right: 0;
   max-height: 60vh;
   overflow-y: auto;
-  background: var(--bg-popover-solid);
+  background: rgba(29, 29, 31, 0.98);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-top: 1px solid rgba(var(--fg-rgb), 0.06);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   padding: 16px;
   z-index: 50;
   padding-bottom: calc(16px + env(safe-area-inset-bottom, 0));
@@ -1020,8 +930,8 @@ body {
     display: flex;
     gap: 12px;
     padding: 8px 12px;
-    border-bottom: 1px solid rgba(var(--fg-rgb), 0.04);
-    background: var(--bg-popover);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    background: rgba(20, 20, 22, 0.9);
     font-size: 10px;
     font-family: var(--font-mono);
     color: var(--text-tertiary);
@@ -1039,7 +949,7 @@ body {
   .mobile-metrics .mm-bar {
     width: 40px;
     height: 3px;
-    background: rgba(var(--fg-rgb), 0.08);
+    background: rgba(255, 255, 255, 0.08);
     border-radius: 2px;
     overflow: hidden;
   }
@@ -1095,11 +1005,7 @@ body {
   .topbar {
     padding: 10px 12px;
     min-height: 48px;
-  
-  transition: background-color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1), 
-              color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1),
-              border-color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
-}
+  }
   .topbar-logo {
     font-size: 16px;
   }
@@ -1113,11 +1019,7 @@ body {
 
   .panel {
     padding: 12px;
-  
-  transition: background-color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1), 
-              color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1),
-              border-color 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
-}
+  }
   .panel-title {
     font-size: 11px;
     margin-bottom: 10px;
@@ -1146,7 +1048,7 @@ body {
 /* Deploy progress - enhanced startup visualization */
 .deploy-progress {
   height: 4px;
-  background: rgba(var(--fg-rgb), 0.08);
+  background: rgba(255, 255, 255, 0.08);
   border-radius: 2px;
   margin-top: 6px;
   overflow: hidden;
@@ -1231,11 +1133,7 @@ body {
         <option value="fr">FR</option>
         <option value="de">DE</option>
       </select>
-      <button class="btn-icon" @click="toggleTheme()" :title="theme === 'light' ? 'Dark Mode' : 'Light Mode'">
-          <svg x-show="theme === 'light'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-          <svg x-show="theme === 'dark'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-        </button>
-        <button class="btn-icon" @click="openSettings()" :title="t('settings')">&#x2699;</button>
+      <button class="btn-icon" @click="openSettings()" :title="t('settings')">&#x2699;</button>
     </div>
   </div>
 
@@ -1695,8 +1593,8 @@ var I18N = {
     settings_saved: 'Settings saved successfully.',
     settings_error: 'Failed to save settings.',
     settings_cleared: 'Settings cleared.',
-    cli_help_header: 'CLI Mode — Supports both CLI commands and MCP tool names',
-    cli_help_usage: 'Usage:\n  CLI style:  /cli model pull qwen3-8b\n              /cli deploy qwen3-8b\n              /cli status\n              /cli config set llm.model gpt-4o\n  MCP style:  /cli model.pull name=qwen3-8b\n              /cli deploy.apply model=qwen3-8b\n              /cli system.config {"key":"llm.model"}',
+    cli_help_header: 'CLI Mode — Available MCP Tools',
+    cli_help_usage: 'Usage: /cli <tool> [params]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
     cli_unknown_tool: 'Unknown tool: ',
   },
   zh: {
@@ -1748,8 +1646,8 @@ var I18N = {
     settings_saved: '\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\u3002',
     settings_error: '\u4FDD\u5B58\u8BBE\u7F6E\u5931\u8D25\u3002',
     settings_cleared: '\u8BBE\u7F6E\u5DF2\u6E05\u9664\u3002',
-    cli_help_header: 'CLI \u6A21\u5F0F \u2014 \u652F\u6301 CLI \u547D\u4EE4\u548C MCP \u5DE5\u5177\u540D',
-    cli_help_usage: '\u7528\u6CD5:\n  CLI \u98CE\u683C:  /cli model pull qwen3-8b\n              /cli deploy qwen3-8b\n              /cli status\n              /cli config set llm.model gpt-4o\n  MCP \u98CE\u683C:  /cli model.pull name=qwen3-8b\n              /cli deploy.apply model=qwen3-8b\n              /cli system.config {"key":"llm.model"}',
+    cli_help_header: 'CLI \u6A21\u5F0F \u2014 \u53EF\u7528 MCP \u5DE5\u5177',
+    cli_help_usage: '\u7528\u6CD5: /cli <\u5DE5\u5177\u540D> [\u53C2\u6570]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
     cli_unknown_tool: '\u672A\u77E5\u5DE5\u5177: ',
   },
   ja: {
@@ -2022,14 +1920,6 @@ var I18N = {
 function aimaApp() {
   return {
     // i18n
-    
-    theme: localStorage.getItem('aima_theme') || 'dark',
-    
-    toggleTheme() {
-      this.theme = this.theme === 'light' ? 'dark' : 'light';
-      localStorage.setItem('aima_theme', this.theme);
-      document.documentElement.setAttribute('data-theme', this.theme);
-    },
     lang: localStorage.getItem('aima_lang') || 'en',
 
     t(key) {
@@ -2082,6 +1972,20 @@ function aimaApp() {
     models: [],
     deployments: [],
     fleet: [],
+    supportState: {
+      enabled: false,
+      registered: false,
+      deviceId: '',
+      activeTask: null,
+      lastTask: null,
+      lastMessage: null
+    },
+    _supportSeen: {
+      connection: '',
+      activeTask: '',
+      lastTask: '',
+      lastMessage: ''
+    },
 
     // Polling intervals
     _timers: [],
@@ -2229,6 +2133,103 @@ function aimaApp() {
           total: this.fmtMiB(mt)
         };
       }
+      this.handleSupportStatus(data.support);
+    },
+
+    handleSupportStatus(data) {
+      if (!data || typeof data !== 'object') return;
+      this.supportState = {
+        enabled: data.enabled === true,
+        registered: data.registered === true,
+        deviceId: data.device_id || '',
+        activeTask: data.active_task || null,
+        lastTask: data.last_task || null,
+        lastMessage: data.last_message || null
+      };
+      this.syncSupportMessages();
+    },
+
+    supportTaskSignature(task) {
+      if (!task) return '';
+      return [
+        task.task_id || '',
+        task.status || '',
+        task.target || '',
+        task.updated_at || ''
+      ].join('|');
+    },
+
+    supportMessageSignature(message) {
+      if (!message) return '';
+      return [
+        message.message || '',
+        message.type || '',
+        message.level || '',
+        message.phase || '',
+        message.updated_at || ''
+      ].join('|');
+    },
+
+    rememberSupportResult(data) {
+      if (!data || typeof data !== 'object') return;
+      if (data.device_id) {
+        this._supportSeen.connection = data.device_id;
+      }
+      if (data.task_id || data.task_status || data.task_target) {
+        this._supportSeen.activeTask = this.supportTaskSignature({
+          task_id: data.task_id || '',
+          status: data.task_status || '',
+          target: data.task_target || ''
+        });
+      }
+    },
+
+    syncSupportMessages() {
+      const support = this.supportState || {};
+      let changed = false;
+
+      const activeSig = this.supportTaskSignature(support.activeTask);
+      if (activeSig && activeSig !== this._supportSeen.activeTask) {
+        const task = support.activeTask;
+        let text = 'Support task active: ' + (task.task_id || 'pending');
+        if (task.status) text += ' (' + task.status + ')';
+        if (task.target) text += ' - ' + task.target;
+        this.messages.push({ role: 'ai', text: text });
+        this._supportSeen.activeTask = activeSig;
+        changed = true;
+      } else if (!activeSig) {
+        this._supportSeen.activeTask = '';
+      }
+
+      const lastTaskSig = this.supportTaskSignature(support.lastTask);
+      if (lastTaskSig && lastTaskSig !== this._supportSeen.lastTask) {
+        const task = support.lastTask;
+        let text = 'Support task ' + (task.task_id || 'pending') + ' finished';
+        if (task.status) text += ': ' + task.status;
+        this.messages.push({ role: 'ai', text: text });
+        this._supportSeen.lastTask = lastTaskSig;
+        changed = true;
+      }
+
+      const lastMsgSig = this.supportMessageSignature(support.lastMessage);
+      if (lastMsgSig &&
+          lastMsgSig !== this._supportSeen.lastMessage &&
+          (!support.lastMessage.type || support.lastMessage.type !== 'task_completion')) {
+        this.messages.push({ role: 'ai', text: '[support] ' + (support.lastMessage.message || '') });
+        this._supportSeen.lastMessage = lastMsgSig;
+        changed = true;
+      }
+
+      const connectionSig = support.enabled && support.registered && support.deviceId ? support.deviceId : '';
+      if (connectionSig && connectionSig !== this._supportSeen.connection && !activeSig && !lastTaskSig) {
+        this.messages.push({ role: 'ai', text: 'Support connected as device ' + support.deviceId });
+        this._supportSeen.connection = connectionSig;
+        changed = true;
+      }
+
+      if (changed) {
+        this.scrollChat();
+      }
     },
 
     async pollEngines() {
@@ -2352,9 +2353,7 @@ function aimaApp() {
       this.thinking = true;
       this.scrollChat();
 
-      if (text.startsWith('/askforhelp')) {
-        await this.sendAskForHelp(text.slice(11).trim());
-      } else if (text.startsWith('/cli')) {
+      if (text.startsWith('/cli')) {
         await this.sendCLI(text.slice(4).trim());
       } else {
         await this.sendAgent(text);
@@ -2414,6 +2413,7 @@ function aimaApp() {
         result: data,
         duration: duration
       });
+      this.rememberSupportResult(data);
 
       const summary = data.created
         ? ('Support task created: ' + (data.task_id || 'pending'))
@@ -2423,7 +2423,6 @@ function aimaApp() {
       this.messages.push({ role: 'ai', text: summary });
       this.scrollChat();
     },
-
     async _sendAgentStream(text, params) {
       const headers = { 'Content-Type': 'application/json' };
       if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
@@ -2629,113 +2628,6 @@ function aimaApp() {
     },
 
     // ── CLI Mode (/cli prefix) ──
-    // Auto-maps "noun verb args..." → MCP tool "noun.verb" with schema-based
-    // positional arg binding. Only a handful of namespace exceptions needed.
-
-    // Namespace remap: CLI noun → MCP namespace (when they differ)
-    _cliNS: { hal: 'hardware', config: 'system' },
-    // Direct command map: single-word CLI commands → MCP tool
-    _cliDirect: {
-      undeploy: 'deploy.delete',
-      init: 'stack.init',
-      ask: 'agent.ask',
-      discover: 'discover.lan',
-    },
-
-    // Resolve "noun verb ..." or "noun.verb ..." into { tool, params }.
-    // Uses _cliToolsCache inputSchema.required for positional arg names.
-    _resolveCLI(args) {
-      const tokens = args.split(/\s+/);
-      const first = tokens[0].toLowerCase();
-
-      // Already a dotted MCP tool name? Pass through.
-      if (first.includes('.')) {
-        const paramStr = tokens.slice(1).join(' ');
-        return { tool: first, params: this._parseCLIParams(paramStr) };
-      }
-
-      // Direct single-command mapping
-      if (this._cliDirect[first]) {
-        return this._buildParams(this._cliDirect[first], tokens.slice(1));
-      }
-
-      // "status" special case: no args → system.status, with args → deploy.status
-      if (first === 'status') {
-        if (tokens.length <= 1) return { tool: 'system.status', params: {} };
-        return this._buildParams('deploy.status', tokens.slice(1));
-      }
-
-      // "config get/set" → system.config
-      if (first === 'config') {
-        const sub = (tokens[1] || '').toLowerCase();
-        if (sub === 'get' || sub === 'set') {
-          return this._buildParams('system.config', tokens.slice(2));
-        }
-      }
-
-      // Two-token: "noun verb" → "ns.verb" (with namespace remap)
-      const ns = this._cliNS[first] || first;
-      if (tokens.length >= 2) {
-        const verb = tokens[1].toLowerCase().replace(/-/g, '_');
-        const tool = ns + '.' + verb;
-        return this._buildParams(tool, tokens.slice(2));
-      }
-
-      // Single noun with no verb: try ns.detect (hal), ns.list, or ns.apply
-      const defaults = [ns + '.detect', ns + '.list', ns + '.apply'];
-      const cache = this._cliToolsCache;
-      if (cache) {
-        const found = defaults.find(d => cache.some(t => t.name === d));
-        if (found) return this._buildParams(found, tokens.slice(1));
-      }
-      // Fallback: treat single word as tool name
-      return { tool: first, params: {} };
-    },
-
-    // Map positional tokens to named params using tool inputSchema.required.
-    _buildParams(tool, tokens) {
-      const params = {};
-      const positional = [];
-      for (const t of tokens) {
-        const eq = t.indexOf('=');
-        if (eq > 0) {
-          const k = t.slice(0, eq);
-          let v = t.slice(eq + 1);
-          if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
-            v = v.slice(1, -1);
-          if (v === 'true') params[k] = true;
-          else if (v === 'false') params[k] = false;
-          else if (/^\d+$/.test(v)) params[k] = parseInt(v, 10);
-          else if (/^\d+\.\d+$/.test(v)) params[k] = parseFloat(v);
-          else params[k] = v;
-        } else {
-          positional.push(t);
-        }
-      }
-      if (positional.length > 0) {
-        // Get required param names from cached tool schema
-        const schema = this._getToolSchema(tool);
-        const reqKeys = schema ? (schema.required || []) : [];
-        if (reqKeys.length === 1 && positional.length > 1) {
-          // Single required param + multiple words → join (e.g. "ask hello world")
-          params[reqKeys[0]] = positional.join(' ');
-        } else {
-          for (let i = 0; i < positional.length && i < reqKeys.length; i++) {
-            let v = positional[i];
-            if (/^\d+$/.test(v)) v = parseInt(v, 10);
-            params[reqKeys[i]] = v;
-          }
-        }
-      }
-      return { tool, params };
-    },
-
-    // Look up a tool's inputSchema from the cached tool list.
-    _getToolSchema(name) {
-      if (!this._cliToolsCache) return null;
-      const t = this._cliToolsCache.find(t => t.name === name);
-      return t ? t.inputSchema : null;
-    },
 
     async sendCLI(args) {
       if (!args || args === 'help') {
@@ -2743,29 +2635,11 @@ function aimaApp() {
         return;
       }
 
-      // "version" → fetch from system.status (no hardcoded version string)
-      if (args.trim().toLowerCase() === 'version') {
-        const data = await this.callTool('system.status');
-        const ver = data && data.version ? data.version : '(unknown)';
-        this.messages.push({ role: 'ai', text: 'aima ' + ver + ' (web ui)' });
-        this.scrollChat();
-        return;
-      }
-
-      // Ensure tool cache is loaded for schema-based positional arg mapping
-      if (!this._cliToolsCache) {
-        const headers = {};
-        if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
-        try {
-          const resp = await fetch('/api/v1/tools', { headers });
-          if (resp.ok) {
-            this._cliToolsCache = await resp.json();
-            this._cliToolsCacheTime = Date.now();
-          }
-        } catch {}
-      }
-
-      const { tool: toolName, params } = this._resolveCLI(args);
+      // Parse: first token = tool name, rest = params
+      const spaceIdx = args.indexOf(' ');
+      const toolName = spaceIdx === -1 ? args : args.slice(0, spaceIdx);
+      const paramStr = spaceIdx === -1 ? '' : args.slice(spaceIdx + 1).trim();
+      const params = this._parseCLIParams(paramStr);
 
       const toolIndex = this.messages.length;
       const startTime = Date.now();

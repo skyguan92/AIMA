@@ -78,13 +78,13 @@ type ToolDeps struct {
 	DeployApprove func(ctx context.Context, id int64) (json.RawMessage, error)
 
 	// Agent
-	DispatchAsk     func(ctx context.Context, query string, forceLocal, forceDeep, skipPerms bool, sessionID string) (json.RawMessage, string, error)
-	AgentInstall    func(ctx context.Context) (json.RawMessage, error)
-	AgentStatus     func(ctx context.Context) (json.RawMessage, error)
-	AgentGuide      func(ctx context.Context) (json.RawMessage, error)
-	RollbackList    func(ctx context.Context) (json.RawMessage, error)
-	RollbackRestore func(ctx context.Context, id int64) (json.RawMessage, error)
-	SupportAskForHelp func(ctx context.Context, description, endpoint, inviteCode, workerCode string) (json.RawMessage, error)
+	DispatchAsk       func(ctx context.Context, query string, forceLocal, forceDeep, skipPerms bool, sessionID string) (json.RawMessage, string, error)
+	AgentInstall      func(ctx context.Context) (json.RawMessage, error)
+	AgentStatus       func(ctx context.Context) (json.RawMessage, error)
+	AgentGuide        func(ctx context.Context) (json.RawMessage, error)
+	RollbackList      func(ctx context.Context) (json.RawMessage, error)
+	RollbackRestore   func(ctx context.Context, id int64) (json.RawMessage, error)
+	SupportAskForHelp func(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error)
 
 	// System
 	SystemStatus func(ctx context.Context) (json.RawMessage, error)
@@ -170,14 +170,14 @@ var supportedConfigKeys = []string{
 }
 
 var validConfigKeys = map[string]bool{
-	"api_key":          true,
-	"llm.endpoint":     true,
-	"llm.model":        true,
-	"llm.api_key":      true,
-	"llm.user_agent":   true,
-	"llm.extra_params": true,
-	"central.endpoint": true,
-	"central.api_key":  true,
+	"api_key":             true,
+	"llm.endpoint":        true,
+	"llm.model":           true,
+	"llm.api_key":         true,
+	"llm.user_agent":      true,
+	"llm.extra_params":    true,
+	"central.endpoint":    true,
+	"central.api_key":     true,
 	"support.enabled":     true,
 	"support.endpoint":    true,
 	"support.invite_code": true,
@@ -1529,35 +1529,38 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// support.askforhelp
 	s.RegisterTool(&Tool{
 		Name:        "support.askforhelp",
-		Description: "Connect this AIMA instance to the configured aima-service-new support service as a regular device, and optionally create a remote help task from a natural-language description. This is the shared backend for CLI `aima askforhelp` and UI `/askforhelp`. First-time registration requires support.endpoint plus either support.invite_code or support.worker_code.",
+		Description: "Connect this AIMA instance to the configured aima-service-new support service as a regular device, and optionally create a remote help task from a natural-language description. This is the shared backend for CLI `aima askforhelp` and UI `/askforhelp`. First-time registration supports invite_code, worker_code, or referral_code; stale registrations may require recovery_code.",
 		InputSchema: schema(
 			`"description":{"type":"string","description":"Optional natural-language request to create a support task immediately"},` +
 				`"endpoint":{"type":"string","description":"Optional override for support.endpoint; persisted when provided"},` +
 				`"invite_code":{"type":"string","description":"Optional invite code for first-time registration; persisted when provided"},` +
-				`"worker_code":{"type":"string","description":"Optional worker enrollment code for first-time registration; persisted when provided"}`),
+				`"worker_code":{"type":"string","description":"Optional worker enrollment code for first-time registration; persisted when provided"},` +
+				`"recovery_code":{"type":"string","description":"Optional saved recovery code used when refreshing an older registration"},` +
+				`"referral_code":{"type":"string","description":"Optional referral code for self-service registration"}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SupportAskForHelp == nil {
 				return ErrorResult("support.askforhelp not implemented"), nil
 			}
 			var p struct {
-				Description string `json:"description"`
-				Endpoint    string `json:"endpoint"`
-				InviteCode  string `json:"invite_code"`
-				WorkerCode  string `json:"worker_code"`
+				Description  string `json:"description"`
+				Endpoint     string `json:"endpoint"`
+				InviteCode   string `json:"invite_code"`
+				WorkerCode   string `json:"worker_code"`
+				RecoveryCode string `json:"recovery_code"`
+				ReferralCode string `json:"referral_code"`
 			}
 			if len(params) > 0 {
 				if err := json.Unmarshal(params, &p); err != nil {
 					return nil, fmt.Errorf("parse params: %w", err)
 				}
 			}
-			data, err := deps.SupportAskForHelp(ctx, p.Description, p.Endpoint, p.InviteCode, p.WorkerCode)
+			data, err := deps.SupportAskForHelp(ctx, p.Description, p.Endpoint, p.InviteCode, p.WorkerCode, p.RecoveryCode, p.ReferralCode)
 			if err != nil {
 				return nil, fmt.Errorf("support askforhelp: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
 	})
-
 	// agent.ask
 	s.RegisterTool(&Tool{
 		Name:        "agent.ask",
