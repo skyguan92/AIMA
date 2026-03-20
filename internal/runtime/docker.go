@@ -167,6 +167,18 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 		command[i] = c
 	}
 
+	// Append --port if not already present in the startup command
+	hasPort := false
+	for _, c := range command {
+		if strings.Contains(c, "--port") {
+			hasPort = true
+			break
+		}
+	}
+	if !hasPort && req.Port > 0 {
+		command = append(command, "--port", strconv.Itoa(req.Port))
+	}
+
 	// Append config values as CLI flags, with template substitution
 	for _, f := range configToFlags(req.Config) {
 		f = strings.ReplaceAll(f, "{{.ModelName}}", req.Name)

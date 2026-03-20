@@ -379,6 +379,113 @@ func run() error {
 		return json.Marshal(result)
 	}
 
+	deps.ScenarioList = func(ctx context.Context) (json.RawMessage, error) {
+		type entry struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Target      string `json:"target"`
+			Deployments int    `json:"deployments"`
+		}
+		var list []entry
+		for _, ds := range cat.DeploymentScenarios {
+			list = append(list, entry{
+				Name:        ds.Metadata.Name,
+				Description: ds.Metadata.Description,
+				Target:      ds.Target.HardwareProfile,
+				Deployments: len(ds.Deployments),
+			})
+		}
+		return json.Marshal(list)
+	}
+
+	deps.ScenarioApply = func(ctx context.Context, name string, dryRun bool) (json.RawMessage, error) {
+		var scenario *knowledge.DeploymentScenario
+		for i := range cat.DeploymentScenarios {
+			if cat.DeploymentScenarios[i].Metadata.Name == name {
+				scenario = &cat.DeploymentScenarios[i]
+				break
+			}
+		}
+		if scenario == nil {
+			names := make([]string, 0, len(cat.DeploymentScenarios))
+			for _, ds := range cat.DeploymentScenarios {
+				names = append(names, ds.Metadata.Name)
+			}
+			return nil, fmt.Errorf("scenario %q not found (available: %v)", name, names)
+		}
+
+		type deployResult struct {
+			Model  string          `json:"model"`
+			Engine string          `json:"engine"`
+			Status string          `json:"status"`
+			Error  string          `json:"error,omitempty"`
+			Data   json.RawMessage `json:"data,omitempty"`
+		}
+		var results []deployResult
+
+		for i, d := range scenario.Deployments {
+			if dryRun {
+				if deps.DeployDryRun == nil {
+					results = append(results, deployResult{Model: d.Model, Engine: d.Engine, Status: "error", Error: "deploy.dry_run not available"})
+					continue
+				}
+				data, err := deps.DeployDryRun(ctx, d.Engine, d.Model, d.Slot, d.Config)
+				if err != nil {
+					results = append(results, deployResult{Model: d.Model, Engine: d.Engine, Status: "error", Error: err.Error()})
+				} else {
+					results = append(results, deployResult{Model: d.Model, Engine: d.Engine, Status: "dry_run", Data: data})
+				}
+				continue
+			}
+
+			if deps.DeployApply == nil {
+				results = append(results, deployResult{Model: d.Model, Engine: d.Engine, Status: "error", Error: "deploy.apply not available"})
+				continue
+			}
+			data, err := deps.DeployApply(ctx, d.Engine, d.Model, d.Slot, d.Config)
+			if err != nil {
+				results = append(results, deployResult{Model: d.Model, Engine: d.Engine, Status: "error", Error: err.Error()})
+				continue
+			}
+
+			// Auto-approve if needed
+			var raw map[string]any
+			if json.Unmarshal(data, &raw) == nil {
+				if status, _ := raw["status"].(string); status == "NEEDS_APPROVAL" {
+					if id, ok := raw["approval_id"].(float64); ok && deps.DeployApprove != nil {
+						if approved, err := deps.DeployApprove(ctx, int64(id)); err == nil {
+							data = approved
+						}
+					}
+				}
+			}
+			results = append(results, deployResult{Model: d.Model, Engine: d.Engine, Status: "ok", Data: data})
+
+			// Brief pause between deployments for resource settling
+			if i < len(scenario.Deployments)-1 {
+				time.Sleep(2 * time.Second)
+			}
+		}
+
+		// Post-deploy actions
+		// TODO: replace with generic MCP tool dispatch when a second action type is added.
+		if !dryRun {
+			for _, action := range scenario.PostDeploy {
+				if action.Action == "openclaw_sync" && deps.OpenClawSync != nil {
+					if data, err := deps.OpenClawSync(ctx, false); err == nil {
+						results = append(results, deployResult{Model: "openclaw_sync", Status: "ok", Data: data})
+					}
+				}
+			}
+		}
+
+		return json.Marshal(map[string]any{
+			"scenario":    name,
+			"dry_run":     dryRun,
+			"deployments": results,
+		})
+	}
+
 	var patrol *agent.Patrol // created later; captured by closure, safe because serve runs after init
 	proxyServer.SetExtraRoutes(func(mux *http.ServeMux) {
 		fleetRoutes(mux)
@@ -2837,7 +2944,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			})
 			deployName := knowledge.SanitizePodName(modelName + "-" + resolved.Engine)
 			result := map[string]any{
-				"name": deployName,
+				"name":  deployName,
 				"model": modelName, "engine": resolved.Engine,
 				"slot": resolved.Slot, "status": "deploying",
 				"runtime": activeRt.Name(),
@@ -4085,6 +4192,13 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				}
 			}
 			summary["models"] = modelNames
+
+			scenarioNames := make([]string, 0, len(cat.DeploymentScenarios))
+			for _, ds := range cat.DeploymentScenarios {
+				scenarioNames = append(scenarioNames, ds.Metadata.Name)
+			}
+			summary["deployment_scenarios"] = len(cat.DeploymentScenarios)
+			summary["scenarios"] = scenarioNames
 
 			return json.Marshal(summary)
 		},

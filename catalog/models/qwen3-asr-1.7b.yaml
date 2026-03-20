@@ -49,6 +49,23 @@ variants:
       vram_mib: 3870
       notes: "3.87 GiB model + 4.43 GiB KV cache (41K tokens) + 2.17 GiB CUDA graphs ≈ 10.5 GiB total (gmu=0.1). Encoder cache 2048 tokens. RTF 0.076-0.17 (6-13x real-time): 1.3s audio→0.22s, 7s→0.59s, 20s→1.56s. API: /v1/chat/completions with input_audio base64 (not /v1/audio/transcriptions). Needs vllm[audio] deps (librosa+soundfile). Cold start ~90s (load 20s + compile 15s + CUDA graphs 62s). Validated on GB10 2026-03-20."
 
+  # --- GB10 (Blackwell, vllm-nightly-audio — custom image with vllm[audio]) ---
+  - name: qwen3-asr-1.7b-blackwell-vllm-audio-bf16
+    hardware:
+      gpu_arch: Blackwell
+      vram_min_mib: 4096
+      unified_memory: true
+    engine: vllm-nightly-audio
+    format: safetensors
+    default_config:
+      gpu_memory_utilization: 0.1
+      max_model_len: 8192
+      dtype: bfloat16
+      trust_remote_code: true
+    expected_performance:
+      vram_mib: 3870
+      notes: "Same as vllm-nightly variant but uses vllm-asr-audio:latest image with audio deps pre-installed. Validated on GB10 2026-03-20."
+
   # --- GB10 vllm-spark variant (vllm-spark-tf5 镜像, 已在 containerd) ---
   - name: qwen3-asr-1.7b-blackwell-vllm-spark-bf16
     hardware:

@@ -18,12 +18,13 @@ import (
 
 // Catalog holds all knowledge assets loaded from embedded YAML files.
 type Catalog struct {
-	mu                  sync.Mutex
-	HardwareProfiles    []HardwareProfile
-	PartitionStrategies []PartitionStrategy
-	EngineAssets        []EngineAsset
-	ModelAssets         []ModelAsset
-	StackComponents     []StackComponent
+	mu                   sync.Mutex
+	HardwareProfiles     []HardwareProfile
+	PartitionStrategies  []PartitionStrategy
+	EngineAssets         []EngineAsset
+	ModelAssets          []ModelAsset
+	StackComponents      []StackComponent
+	DeploymentScenarios  []DeploymentScenario
 }
 
 // --- Hardware Profile ---
@@ -471,11 +472,56 @@ type SlotRAM struct {
 	MiB int `yaml:"mib"`
 }
 
+// --- Deployment Scenario ---
+
+type DeploymentScenario struct {
+	Kind         string                 `yaml:"kind"`
+	Metadata     ScenarioMetadata       `yaml:"metadata"`
+	Target       ScenarioTarget         `yaml:"target"`
+	Deployments  []ScenarioDeployment   `yaml:"deployments"`
+	PostDeploy   []ScenarioAction       `yaml:"post_deploy,omitempty"`
+	Integrations map[string]any         `yaml:"integrations,omitempty"`
+	Verified     *ScenarioVerification  `yaml:"verified,omitempty"`
+	OpenQuestions []StackQuestion       `yaml:"open_questions,omitempty"`
+}
+
+type ScenarioMetadata struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+}
+
+type ScenarioTarget struct {
+	HardwareProfile   string `yaml:"hardware_profile"`
+	PartitionStrategy string `yaml:"partition_strategy,omitempty"`
+}
+
+type ScenarioDeployment struct {
+	Model      string         `yaml:"model"`
+	Engine     string         `yaml:"engine"`
+	Slot       string         `yaml:"slot,omitempty"`
+	Role       string         `yaml:"role,omitempty"`
+	Modalities []string       `yaml:"modalities,omitempty"`
+	Config     map[string]any `yaml:"config,omitempty"`
+	Notes      string         `yaml:"notes,omitempty"`
+}
+
+type ScenarioAction struct {
+	Action      string `yaml:"action"`
+	Description string `yaml:"description,omitempty"`
+}
+
+type ScenarioVerification struct {
+	Date     string            `yaml:"date"`
+	Hardware string            `yaml:"hardware"`
+	Results  map[string]string `yaml:"results,omitempty"`
+	Notes    string            `yaml:"notes,omitempty"`
+}
+
 // LoadCatalog loads and parses all YAML knowledge assets from an fs.FS.
 func LoadCatalog(fsys fs.FS) (*Catalog, error) {
 	cat := &Catalog{}
 
-	dirs := []string{"hardware", "engines", "models", "partitions", "stack"}
+	dirs := []string{"hardware", "engines", "models", "partitions", "stack", "scenarios"}
 	for _, dir := range dirs {
 		entries, err := fs.ReadDir(fsys, dir)
 		if err != nil {
@@ -582,6 +628,15 @@ func (cat *Catalog) parseAsset(data []byte, path string) error {
 			return fmt.Errorf("parse stack component %s: %w", path, err)
 		}
 		cat.StackComponents = append(cat.StackComponents, sc)
+	case "deployment_scenario":
+		var ds DeploymentScenario
+		if err := yaml.Unmarshal(data, &ds); err != nil {
+			return fmt.Errorf("parse deployment scenario %s: %w", path, err)
+		}
+		for i := range ds.Deployments {
+			ds.Deployments[i].Config = normalizeMap(ds.Deployments[i].Config)
+		}
+		cat.DeploymentScenarios = append(cat.DeploymentScenarios, ds)
 	default:
 		// Unknown kind: skip silently
 	}
@@ -612,6 +667,9 @@ func (cat *Catalog) ParsedKind() string {
 	if len(cat.StackComponents) > 0 {
 		kinds = append(kinds, "stack_component")
 	}
+	if len(cat.DeploymentScenarios) > 0 {
+		kinds = append(kinds, "deployment_scenario")
+	}
 	if len(kinds) == 1 {
 		return kinds[0]
 	}
@@ -625,7 +683,7 @@ func LoadCatalogLenient(fsys fs.FS) (*Catalog, []string) {
 	cat := &Catalog{}
 	var warnings []string
 
-	dirs := []string{"hardware", "engines", "models", "partitions", "stack"}
+	dirs := []string{"hardware", "engines", "models", "partitions", "stack", "scenarios"}
 	for _, dir := range dirs {
 		entries, err := fs.ReadDir(fsys, dir)
 		if err != nil {
@@ -660,7 +718,7 @@ type overlayProbe struct {
 // keyed by the asset's metadata.name. Used to detect overlay staleness.
 func ComputeDigests(fsys fs.FS) map[string]string {
 	digests := make(map[string]string)
-	dirs := []string{"hardware", "engines", "models", "partitions", "stack"}
+	dirs := []string{"hardware", "engines", "models", "partitions", "stack", "scenarios"}
 	for _, dir := range dirs {
 		entries, err := fs.ReadDir(fsys, dir)
 		if err != nil {
@@ -709,6 +767,7 @@ func MergeCatalog(base, overlay *Catalog) *Catalog {
 	base.ModelAssets = mergeSlice(base.ModelAssets, overlay.ModelAssets, func(v ModelAsset) string { return v.Metadata.Name })
 	base.PartitionStrategies = mergeSlice(base.PartitionStrategies, overlay.PartitionStrategies, func(v PartitionStrategy) string { return v.Metadata.Name })
 	base.StackComponents = mergeSlice(base.StackComponents, overlay.StackComponents, func(v StackComponent) string { return v.Metadata.Name })
+	base.DeploymentScenarios = mergeSlice(base.DeploymentScenarios, overlay.DeploymentScenarios, func(v DeploymentScenario) string { return v.Metadata.Name })
 	return base
 }
 
@@ -764,6 +823,9 @@ func CollectNames(cat *Catalog) map[string]bool {
 	for _, v := range cat.StackComponents {
 		names[v.Metadata.Name] = true
 	}
+	for _, v := range cat.DeploymentScenarios {
+		names[v.Metadata.Name] = true
+	}
 	return names
 }
 
@@ -772,7 +834,7 @@ func extractOverlayDigests(fsys fs.FS) map[string]string {
 		return nil
 	}
 	digests := make(map[string]string)
-	dirs := []string{"hardware", "engines", "models", "partitions", "stack"}
+	dirs := []string{"hardware", "engines", "models", "partitions", "stack", "scenarios"}
 	for _, dir := range dirs {
 		entries, err := fs.ReadDir(fsys, dir)
 		if err != nil {
@@ -840,6 +902,8 @@ func KindToDir(kind string) string {
 		return "partitions"
 	case "stack_component":
 		return "stack"
+	case "deployment_scenario":
+		return "scenarios"
 	default:
 		return ""
 	}

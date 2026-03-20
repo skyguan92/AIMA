@@ -56,6 +56,7 @@ func NewRootCmd(app *App) *cobra.Command {
 		newTuningCmd(app),
 		newAppCmd(app),
 		newOpenClawCmd(app),
+		newScenarioCmd(app),
 		newVersionCmd(),
 	)
 

@@ -95,7 +95,7 @@ AIMA 通过 Remote Runtime 将推理请求代理到远程设备。
 │   L3a: Go Agent (内置轻量) │ L3b: ZeroClaw (Sidecar)         │
 ├───────────────────────────────────────────────────────────────┤
 │   Knowledge Layer (知识层)                                     │
-│   5 种知识资产 (go:embed YAML + 磁盘 overlay) + SQLite 查询    │
+│   6 种知识资产 (go:embed YAML + 磁盘 overlay) + SQLite 查询    │
 ├───────────────────────────────────────────────────────────────┤
 │   Orchestration Layer (编排层) — 按需分层                        │
 │   Tier 1: Docker + CDI │ Tier 2: + K3S + HAMi (GPU 分区)      │

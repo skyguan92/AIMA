@@ -151,6 +151,10 @@ type ToolDeps struct {
 
 	// OpenClaw integration
 	OpenClawSync func(ctx context.Context, dryRun bool) (json.RawMessage, error)
+
+	// Scenario
+	ScenarioList  func(ctx context.Context) (json.RawMessage, error)
+	ScenarioApply func(ctx context.Context, name string, dryRun bool) (json.RawMessage, error)
 }
 
 // validConfigKeys is the whitelist for system.config get/set.
@@ -2370,6 +2374,53 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			data, err := deps.OpenClawSync(ctx, p.DryRun)
 			if err != nil {
 				return nil, fmt.Errorf("openclaw sync: %w", err)
+			}
+			return TextResult(string(data)), nil
+		},
+	})
+
+	// scenario.list
+	s.RegisterTool(&Tool{
+		Name:        "scenario.list",
+		Description: "List available deployment scenarios from the catalog. Each scenario is a pre-defined multi-model deployment recipe.",
+		InputSchema: schema(""),
+		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
+			if deps.ScenarioList == nil {
+				return ErrorResult("scenario.list not available"), nil
+			}
+			data, err := deps.ScenarioList(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("scenario list: %w", err)
+			}
+			return TextResult(string(data)), nil
+		},
+	})
+
+	// scenario.apply
+	s.RegisterTool(&Tool{
+		Name:        "scenario.apply",
+		Description: "Deploy all models defined in a deployment scenario. Iterates through each deployment in order, calling deploy.apply for each, auto-approving when needed. After all deploys, runs post-deploy actions (e.g. openclaw sync). Use dry_run to preview without executing.",
+		InputSchema: schema(
+			`"name":{"type":"string","description":"Scenario name, e.g. 'openclaw-multi'. Call scenario.list to see available scenarios."},`+
+				`"dry_run":{"type":"boolean","description":"If true, preview deployment plans without executing (default false)"}`,
+			"name"),
+		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
+			if deps.ScenarioApply == nil {
+				return ErrorResult("scenario.apply not available"), nil
+			}
+			var p struct {
+				Name   string `json:"name"`
+				DryRun bool   `json:"dry_run"`
+			}
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, fmt.Errorf("parse params: %w", err)
+			}
+			if p.Name == "" {
+				return ErrorResult("name is required"), nil
+			}
+			data, err := deps.ScenarioApply(ctx, p.Name, p.DryRun)
+			if err != nil {
+				return nil, fmt.Errorf("scenario apply: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},

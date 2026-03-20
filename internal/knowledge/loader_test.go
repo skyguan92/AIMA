@@ -287,6 +287,9 @@ func TestLoadCatalogFromEmbedFS(t *testing.T) {
 	if len(cat.PartitionStrategies) == 0 {
 		t.Error("expected at least one partition strategy from real catalog")
 	}
+	if len(cat.DeploymentScenarios) == 0 {
+		t.Error("expected at least one deployment scenario from real catalog")
+	}
 }
 
 func TestLoadCatalogInvalidYAML(t *testing.T) {

@@ -1,0 +1,91 @@
+kind: deployment_scenario
+metadata:
+  name: openclaw-multi
+  description: "OpenClaw multimodal stack: LLM/VLM + TTS + ASR + ImageGen on single device"
+
+target:
+  hardware_profile: nvidia-gb10-arm64
+  partition_strategy: ""  # no HAMi partition — each model uses engine-level gmu
+
+deployments:
+  - model: qwen3.5-9b
+    engine: vllm-nightly-blackwell
+    slot: ""
+    role: primary
+    modalities: [text, vision]
+    config:
+      gpu_memory_utilization: 0.25
+      max_model_len: 65536
+      dtype: bfloat16
+      port: 8000
+    notes: "Dense 9B, native multimodal (text+vision). gmu=0.25 on 120GB ~ 30GB headroom."
+
+  - model: qwen3-tts-0.6b
+    engine: qwen-tts-fastapi-cuda-blackwell
+    slot: ""
+    role: auxiliary
+    modalities: [tts]
+    config:
+      port: 8002
+    notes: "0.6B TTS, minimal VRAM (~2GB). FastAPI wrapper with streaming WAV output."
+
+  - model: qwen3-asr-1.7b
+    engine: vllm-nightly-audio-blackwell
+    slot: ""
+    role: auxiliary
+    modalities: [asr]
+    config:
+      port: 8003
+    notes: "1.7B ASR via vllm[audio]. Requires vllm-asr-audio image (not standard vllm-openai)."
+
+  - model: z-image
+    engine: z-image-diffusers
+    slot: ""
+    role: auxiliary
+    modalities: [image_gen]
+    config:
+      port: 8188
+    notes: "Diffusers-based image generation. Returns base64 PNG via OpenAI images/generations API."
+
+post_deploy:
+  - action: openclaw_sync
+    description: "Sync all deployed models to ~/.openclaw/openclaw.json as AIMA providers"
+
+integrations:
+  openclaw:
+    enabled: true
+    auto_sync: true
+    proxy_port: 6188
+    routes:
+      - path: /v1/chat/completions
+        models: [qwen3.5-9b]
+        note: "LLM text + VLM vision requests"
+      - path: /v1/audio/speech
+        models: [qwen3-tts-0.6b]
+        note: "TTS synthesis"
+      - path: /v1/audio/transcriptions
+        models: [qwen3-asr-1.7b]
+        note: "ASR transcription"
+      - path: /v1/images/generations
+        models: [z-image]
+        note: "Image generation"
+
+verified:
+  date: "2026-03-20"
+  hardware: nvidia-gb10-arm64
+  results:
+    llm_chat: pass
+    tts: pass
+    asr: pass
+    image_gen: pass
+    vlm: pass
+    tts_asr_roundtrip: pass
+  notes: "All 6/6 routing tests passed. TTS+ASR round-trip 100% character match."
+
+open_questions:
+  - question: "GB10 120GB unified memory 下 4 模型同时运行的 VRAM 实际分布？"
+    hypothesis: "qwen3.5-9b ~18GB + TTS ~2GB + ASR ~4GB + z-image ~8GB = ~32GB, 余 ~88GB"
+    test_method: "nvidia-smi 或 tegrastats 采集各容器 VRAM 占用"
+  - question: "高并发下 4 模型是否互相抢占统一内存带宽？"
+    hypothesis: "273 GB/s 带宽足够，瓶颈在 GPU 计算而非内存带宽"
+    test_method: "并发压测各模态，观察延迟变化"
