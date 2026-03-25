@@ -48,7 +48,7 @@ func newAskForHelpCmd(app *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "askforhelp [request]",
 		Short: "Connect to the support service and optionally create a remote help task",
-		Long:  "Register this AIMA instance as a support device for aima-service-new, then optionally create a help task from a natural-language request.",
+		Long:  "Register this AIMA instance as a support device (https://aimaserver.com/platform), then optionally create a help task from a natural-language request.",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if app.ToolDeps == nil || app.ToolDeps.SupportAskForHelp == nil {
@@ -178,8 +178,17 @@ func renderAskForHelpLinked(out io.Writer, result support.AskResult) {
 	if result.DeviceID != "" {
 		fmt.Fprintf(out, "Device ID: %s\n", result.DeviceID)
 	}
-	if result.MaxTasks > 0 {
+	if result.BudgetUSD > 0 {
+		fmt.Fprintf(out, "Budget 额度: $%.2f/$%.2f USD", result.SpentUSD, result.BudgetUSD)
+		if result.MaxTasks > 0 {
+			fmt.Fprintf(out, " (%d/%d tasks 任务)", result.UsedTasks, result.MaxTasks)
+		}
+		fmt.Fprintln(out)
+	} else if result.MaxTasks > 0 {
 		fmt.Fprintf(out, "Budget 额度: %d/%d tasks 任务\n", result.UsedTasks, result.MaxTasks)
+	}
+	if result.IsBound {
+		fmt.Fprintln(out, "Account bound 已绑定账户")
 	}
 	if result.ReferralCode != "" {
 		fmt.Fprintf(out, "Your referral code 你的推荐码: %s\n", result.ReferralCode)
@@ -258,8 +267,10 @@ func supportNotify(ui *askForHelpUI) support.NotifyFunc {
 			switch {
 			case notification.TaskID != "":
 				fmt.Fprintf(ui.out, "\nSupport task %s finished: %s\n", notification.TaskID, displayOr(notification.TaskStatus, "finished"))
-				if notification.BudgetTasksRemaining > 0 {
-					fmt.Fprintf(ui.out, "Tasks remaining 剩余额度: %d\n", notification.BudgetTasksRemaining)
+				if notification.BudgetUSDTotal > 0 {
+					fmt.Fprintf(ui.out, "Budget remaining 剩余额度: $%.2f/$%.2f USD\n", notification.BudgetUSDRemaining, notification.BudgetUSDTotal)
+				} else if notification.BudgetTasksRemaining > 0 || notification.BudgetTasksTotal > 0 {
+					fmt.Fprintf(ui.out, "Tasks remaining 剩余额度: %d/%d\n", notification.BudgetTasksRemaining, notification.BudgetTasksTotal)
 				}
 				if notification.ReferralCode != "" {
 					fmt.Fprintf(ui.out, "Referral code 推荐码: %s\n", notification.ReferralCode)

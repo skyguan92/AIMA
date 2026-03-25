@@ -1557,7 +1557,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// support.askforhelp
 	s.RegisterTool(&Tool{
 		Name:        "support.askforhelp",
-		Description: "Connect this AIMA instance to the configured aima-service-new support service as a regular device, and optionally create a remote help task from a natural-language description. This is the shared backend for CLI `aima askforhelp` and UI `/askforhelp`. First-time registration supports invite_code, worker_code, or referral_code; stale registrations may require recovery_code.",
+		Description: "Connect this AIMA instance to the support service (https://aimaserver.com/platform) as a device, and optionally create a remote help task from a natural-language description. Shared backend for CLI `aima askforhelp` and UI `/askforhelp`. First-time registration supports invite_code, worker_code, or referral_code; stale registrations may require recovery_code.",
 		InputSchema: schema(
 			`"description":{"type":"string","description":"Optional natural-language request to create a support task immediately"},` +
 				`"endpoint":{"type":"string","description":"Optional override for support.endpoint; persisted when provided"},` +

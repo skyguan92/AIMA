@@ -314,20 +314,7 @@ func run() error {
 		}
 	}
 
-	deps.SupportAskForHelp = func(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error) {
-		result, err := supportSvc.AskForHelp(ctx, support.AskRequest{
-			Description:  description,
-			Endpoint:     endpoint,
-			InviteCode:   inviteCode,
-			WorkerCode:   workerCode,
-			RecoveryCode: recoveryCode,
-			ReferralCode: referralCode,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(result)
-	}
+	deps.SupportAskForHelp = supportSvc.AskForHelpJSON
 	// 9e. Fleet management: registry + client + REST routes + MCP tools
 	fleetRegistry := fleet.NewRegistry(proxy.DefaultPort)
 	fleetClient := fleet.NewClient(os.Getenv("AIMA_API_KEY"))

@@ -27,7 +27,7 @@ const (
 	ConfigInviteCode = "support.invite_code"
 	ConfigWorkerCode = "support.worker_code"
 
-	DefaultEndpoint = "http://121.37.119.185/platform"
+	DefaultEndpoint = "https://aimaserver.com/platform"
 
 	configStateDeviceID             = "support.state.device_id"
 	configStateToken                = "support.state.token"
@@ -81,6 +81,9 @@ type Notification struct {
 	ReferralCode         string
 	ShareText            string
 	BudgetTasksRemaining int
+	BudgetTasksTotal     int
+	BudgetUSDRemaining   float64
+	BudgetUSDTotal       float64
 }
 
 // PromptFunc answers interactive prompts from the support service.
@@ -101,19 +104,24 @@ type AskRequest struct {
 
 // AskResult is returned by CLI, MCP, and UI support entrypoints.
 type AskResult struct {
-	Enabled             bool   `json:"enabled"`
-	Endpoint            string `json:"endpoint"`
-	DeviceID            string `json:"device_id"`
-	PollIntervalSeconds int    `json:"poll_interval_seconds,omitempty"`
-	Created             bool   `json:"created"`
-	ReusedActiveTask    bool   `json:"reused_active_task"`
-	TaskID              string `json:"task_id,omitempty"`
-	TaskStatus          string `json:"task_status,omitempty"`
-	TaskTarget          string `json:"task_target,omitempty"`
-	ReferralCode        string `json:"referral_code,omitempty"`
-	ShareText           string `json:"share_text,omitempty"`
-	MaxTasks            int    `json:"max_tasks,omitempty"`
-	UsedTasks           int    `json:"used_tasks,omitempty"`
+	Enabled             bool    `json:"enabled"`
+	Endpoint            string  `json:"endpoint"`
+	DeviceID            string  `json:"device_id"`
+	PollIntervalSeconds int     `json:"poll_interval_seconds,omitempty"`
+	Created             bool    `json:"created"`
+	ReusedActiveTask    bool    `json:"reused_active_task"`
+	TaskID              string  `json:"task_id,omitempty"`
+	TaskStatus          string  `json:"task_status,omitempty"`
+	TaskTarget          string  `json:"task_target,omitempty"`
+	ReferralCode        string  `json:"referral_code,omitempty"`
+	ShareText           string  `json:"share_text,omitempty"`
+	MaxTasks            int     `json:"max_tasks,omitempty"`
+	UsedTasks           int     `json:"used_tasks,omitempty"`
+	BudgetUSD           float64 `json:"budget_usd,omitempty"`
+	SpentUSD            float64 `json:"spent_usd,omitempty"`
+	BudgetStatus        string  `json:"budget_status,omitempty"`
+	IsBound             bool    `json:"is_bound,omitempty"`
+	ReferralCount       int     `json:"referral_count,omitempty"`
 }
 
 // TaskSnapshot captures the latest persisted support task state.
@@ -254,6 +262,23 @@ func WithProgressInterval(interval time.Duration) Option {
 	}
 }
 
+// AskForHelpJSON is the MCP/CLI entrypoint — performs AskForHelp and returns
+// the result as a json.RawMessage ready for tool responses.
+func (s *Service) AskForHelpJSON(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error) {
+	result, err := s.AskForHelp(ctx, AskRequest{
+		Description:  description,
+		Endpoint:     endpoint,
+		InviteCode:   inviteCode,
+		WorkerCode:   workerCode,
+		RecoveryCode: recoveryCode,
+		ReferralCode: referralCode,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
 // AskForHelp ensures this AIMA instance is registered as a support device and
 // optionally creates a new remote help task.
 func (s *Service) AskForHelp(ctx context.Context, req AskRequest) (AskResult, error) {
@@ -287,6 +312,11 @@ func (s *Service) AskForHelp(ctx context.Context, req AskRequest) (AskResult, er
 		result.ShareText = registerResp.ShareText
 		result.MaxTasks = registerResp.Budget.MaxTasks
 		result.UsedTasks = registerResp.Budget.UsedTasks
+		result.BudgetUSD = registerResp.Budget.BudgetUSD
+		result.SpentUSD = registerResp.Budget.SpentUSD
+		result.BudgetStatus = registerResp.Budget.Status
+		result.IsBound = registerResp.Budget.IsBound
+		result.ReferralCount = registerResp.Budget.ReferralCount
 	}
 
 	if req.Description == "" {
@@ -489,14 +519,21 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) error {
 
 		if pollResp.NotifTaskID != "" || pollResp.NotifTaskStatus != "" {
 			sawActive = true
+			msg := pollResp.NotifTaskMessage
+			if msg == "" {
+				msg = fmt.Sprintf("Task %s finished with status %s", pollResp.NotifTaskID, pollResp.NotifTaskStatus)
+			}
 			notification := Notification{
-				Message:              fmt.Sprintf("Task %s finished with status %s", pollResp.NotifTaskID, pollResp.NotifTaskStatus),
+				Message:              msg,
 				Type:                 "task_completion",
 				TaskID:               pollResp.NotifTaskID,
 				TaskStatus:           pollResp.NotifTaskStatus,
 				ReferralCode:         pollResp.NotifReferralCode,
 				ShareText:            pollResp.NotifShareText,
 				BudgetTasksRemaining: pollResp.NotifBudgetTasksRemaining,
+				BudgetTasksTotal:     pollResp.NotifBudgetTasksTotal,
+				BudgetUSDRemaining:   pollResp.NotifBudgetUSDRemaining,
+				BudgetUSDTotal:       pollResp.NotifBudgetUSDTotal,
 			}
 			s.persistNotification(ctx, notification)
 			s.emitNotification(ctx, opts.Notify, notification)
@@ -566,11 +603,18 @@ type selfRegisterResponse struct {
 	Budget              budgetInfo `json:"budget"`
 	ReferralCode        string     `json:"referral_code"`
 	ShareText           string     `json:"share_text"`
+	DisplayLanguage     string     `json:"display_language,omitempty"`
 }
 
 type budgetInfo struct {
-	MaxTasks  int `json:"max_tasks"`
-	UsedTasks int `json:"used_tasks"`
+	MaxTasks      int     `json:"max_tasks"`
+	UsedTasks     int     `json:"used_tasks"`
+	BudgetUSD     float64 `json:"budget_usd"`
+	SpentUSD      float64 `json:"spent_usd"`
+	Status        string  `json:"status"`
+	IsBound       bool    `json:"is_bound"`
+	ReferralCode  string  `json:"referral_code,omitempty"`
+	ReferralCount int     `json:"referral_count"`
 }
 
 type renewTokenResponse struct {
@@ -579,22 +623,27 @@ type renewTokenResponse struct {
 }
 
 type pollResponse struct {
-	CommandID                 string `json:"command_id"`
-	Command                   string `json:"command"`
-	CommandEncoding           string `json:"command_encoding"`
-	CommandTimeoutSeconds     int    `json:"command_timeout_seconds"`
-	CommandIntent             string `json:"command_intent"`
-	InteractionID             string `json:"interaction_id"`
-	Question                  string `json:"question"`
-	InteractionType           string `json:"interaction_type"`
-	InteractionLevel          string `json:"interaction_level"`
-	InteractionPhase          string `json:"interaction_phase"`
-	PollIntervalSeconds       int    `json:"poll_interval_seconds"`
-	NotifTaskID               string `json:"notif_task_id"`
-	NotifTaskStatus           string `json:"notif_task_status"`
-	NotifReferralCode         string `json:"notif_referral_code"`
-	NotifShareText            string `json:"notif_share_text"`
-	NotifBudgetTasksRemaining int    `json:"notif_budget_tasks_remaining"`
+	CommandID                 string  `json:"command_id"`
+	Command                   string  `json:"command"`
+	CommandEncoding           string  `json:"command_encoding"`
+	CommandTimeoutSeconds     int     `json:"command_timeout_seconds"`
+	CommandIntent             string  `json:"command_intent"`
+	InteractionID             string  `json:"interaction_id"`
+	Question                  string  `json:"question"`
+	InteractionType           string  `json:"interaction_type"`
+	InteractionLevel          string  `json:"interaction_level"`
+	InteractionPhase          string  `json:"interaction_phase"`
+	PollIntervalSeconds       int     `json:"poll_interval_seconds"`
+	IsBound                   bool    `json:"is_bound"`
+	NotifTaskID               string  `json:"notif_task_id"`
+	NotifTaskStatus           string  `json:"notif_task_status"`
+	NotifTaskMessage          string  `json:"notif_task_message"`
+	NotifReferralCode         string  `json:"notif_referral_code"`
+	NotifShareText            string  `json:"notif_share_text"`
+	NotifBudgetTasksRemaining int     `json:"notif_budget_tasks_remaining"`
+	NotifBudgetTasksTotal     int     `json:"notif_budget_tasks_total"`
+	NotifBudgetUSDRemaining   float64 `json:"notif_budget_usd_remaining"`
+	NotifBudgetUSDTotal       float64 `json:"notif_budget_usd_total"`
 }
 
 type commandProgressAckResponse struct {
@@ -1342,7 +1391,7 @@ func defaultInteractionAnswer(resp pollResponse) string {
 }
 
 func buildSelfRegisterRequest(ctx context.Context) (map[string]any, error) {
-	profile, fingerprint, hardwareID, err := collectOSProfile(ctx)
+	profile, fingerprint, hardwareID, candidates, err := collectOSProfile(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1353,22 +1402,35 @@ func buildSelfRegisterRequest(ctx context.Context) (map[string]any, error) {
 	if hardwareID != "" {
 		body["hardware_id"] = hardwareID
 	}
+	if len(candidates) > 0 {
+		body["hardware_id_candidates"] = candidates
+	}
 	return body, nil
 }
 
-func collectOSProfile(ctx context.Context) (map[string]any, string, string, error) {
+func collectOSProfile(ctx context.Context) (profile map[string]any, fingerprint, hardwareID string, candidates []string, err error) {
 	hostname, err := os.Hostname()
 	if err != nil {
-		return nil, "", "", fmt.Errorf("resolve hostname: %w", err)
+		return nil, "", "", nil, fmt.Errorf("resolve hostname: %w", err)
 	}
 	hostname = strings.TrimSpace(hostname)
 	machineID := strings.TrimSpace(readMachineID(ctx))
 	if machineID == "" {
 		machineID = hostname
 	}
-	hardwareID := hashString(machineID)
+	hardwareID = hashString(machineID)
 
-	profile := map[string]any{
+	// Collect multiple hardware ID candidates for robust dedup across reinstalls.
+	seen := map[string]bool{hardwareID: true}
+	for _, raw := range collectHardwareIDCandidates(ctx) {
+		h := hashString(raw)
+		if !seen[h] {
+			candidates = append(candidates, h)
+			seen[h] = true
+		}
+	}
+
+	profile = map[string]any{
 		"os_type":          runtime.GOOS,
 		"os_version":       detectOSVersion(ctx),
 		"arch":             runtime.GOARCH,
@@ -1384,8 +1446,48 @@ func collectOSProfile(ctx context.Context) (map[string]any, string, string, erro
 			},
 		},
 	}
-	fingerprint := fmt.Sprintf("%s|%s|%s", runtime.GOOS, runtime.GOARCH, hostname)
-	return profile, fingerprint, hardwareID, nil
+	fingerprint = fmt.Sprintf("%s|%s|%s", runtime.GOOS, runtime.GOARCH, hostname)
+	return profile, fingerprint, hardwareID, candidates, nil
+}
+
+// collectHardwareIDCandidates gathers additional hardware identifiers
+// (board serial, disk serial, MAC addresses) for server-side dedup.
+func collectHardwareIDCandidates(ctx context.Context) []string {
+	var ids []string
+	switch runtime.GOOS {
+	case "darwin":
+		if out, err := exec.CommandContext(ctx, "ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.Contains(line, "IOPlatformSerialNumber") {
+					parts := strings.Split(line, "\"")
+					if len(parts) >= 4 && strings.TrimSpace(parts[3]) != "" {
+						ids = append(ids, "serial:"+strings.TrimSpace(parts[3]))
+					}
+				}
+			}
+		}
+	case "linux":
+		for _, path := range []string{"/sys/class/dmi/id/board_serial", "/sys/class/dmi/id/product_serial"} {
+			if data, err := os.ReadFile(path); err == nil {
+				v := strings.TrimSpace(string(data))
+				if v != "" && v != "None" && v != "Default string" {
+					ids = append(ids, "serial:"+v)
+				}
+			}
+		}
+	}
+	// Primary MAC address as fallback candidate.
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagLoopback != 0 || len(iface.HardwareAddr) == 0 {
+				continue
+			}
+			ids = append(ids, "mac:"+iface.HardwareAddr.String())
+			break
+		}
+	}
+	return ids
 }
 
 func readMachineID(ctx context.Context) string {
