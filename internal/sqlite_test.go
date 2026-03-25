@@ -278,6 +278,50 @@ func TestKnowledgeNoteCRUD(t *testing.T) {
 	})
 }
 
+func TestUpsertOpenQuestion_SeedsCatalogStatusAndPreservesRuntimeResolution(t *testing.T) {
+	db := mustOpen(t)
+	ctx := context.Background()
+
+	if err := db.UpsertOpenQuestion(ctx, "oq-001", "stack:hami", "question", "test", "hypothesis", "untested", ""); err != nil {
+		t.Fatalf("UpsertOpenQuestion initial: %v", err)
+	}
+	if err := db.UpsertOpenQuestion(ctx, "oq-001", "stack:hami", "question", "test", "hypothesis", "confirmed_incompatible", "known finding"); err != nil {
+		t.Fatalf("UpsertOpenQuestion catalog update: %v", err)
+	}
+
+	q, err := db.GetOpenQuestion(ctx, "oq-001")
+	if err != nil {
+		t.Fatalf("GetOpenQuestion: %v", err)
+	}
+	if q.Status != "confirmed_incompatible" {
+		t.Fatalf("status = %q, want confirmed_incompatible", q.Status)
+	}
+	if q.ActualResult != "known finding" {
+		t.Fatalf("actual_result = %q, want known finding", q.ActualResult)
+	}
+
+	if err := db.ResolveOpenQuestion(ctx, "oq-001", "tested", "runtime result", "apple-m4-arm64"); err != nil {
+		t.Fatalf("ResolveOpenQuestion: %v", err)
+	}
+	if err := db.UpsertOpenQuestion(ctx, "oq-001", "stack:hami", "question", "test", "hypothesis", "untested", ""); err != nil {
+		t.Fatalf("UpsertOpenQuestion preserve runtime: %v", err)
+	}
+
+	q, err = db.GetOpenQuestion(ctx, "oq-001")
+	if err != nil {
+		t.Fatalf("GetOpenQuestion after resolve: %v", err)
+	}
+	if q.Status != "tested" {
+		t.Fatalf("status after resolve = %q, want tested", q.Status)
+	}
+	if q.ActualResult != "runtime result" {
+		t.Fatalf("actual_result after resolve = %q, want runtime result", q.ActualResult)
+	}
+	if q.Hardware != "apple-m4-arm64" {
+		t.Fatalf("hardware = %q, want apple-m4-arm64", q.Hardware)
+	}
+}
+
 func TestConfig(t *testing.T) {
 	db := mustOpen(t)
 	ctx := context.Background()
@@ -394,4 +438,78 @@ func TestDuplicateInsert(t *testing.T) {
 	if err := db.InsertModel(ctx, m); err == nil {
 		t.Fatal("expected error on duplicate insert")
 	}
+}
+
+func TestFindGoldenBenchmark(t *testing.T) {
+	db := mustOpen(t)
+	ctx := context.Background()
+
+	// Insert a golden config
+	cfg := &Configuration{
+		ID: "cfg-golden-1", HardwareID: "hw1", EngineID: "eng1", ModelID: "model1",
+		Config: `{"concurrency":4}`, ConfigHash: "hash-golden-1",
+		Status: "golden", Source: "benchmark",
+	}
+	if err := db.InsertConfiguration(ctx, cfg); err != nil {
+		t.Fatalf("InsertConfiguration: %v", err)
+	}
+
+	// Insert a benchmark for it
+	br := &BenchmarkResult{
+		ID: "bench-1", ConfigID: "cfg-golden-1", Concurrency: 4,
+		ThroughputTPS: 100.0, Modality: "text",
+	}
+	if err := db.InsertBenchmarkResult(ctx, br); err != nil {
+		t.Fatalf("InsertBenchmarkResult: %v", err)
+	}
+
+	t.Run("finds golden with benchmark", func(t *testing.T) {
+		c, b, err := db.FindGoldenBenchmark(ctx, "hw1", "eng1", "model1")
+		if err != nil {
+			t.Fatalf("FindGoldenBenchmark: %v", err)
+		}
+		if c == nil {
+			t.Fatal("expected non-nil config")
+		}
+		if c.ID != "cfg-golden-1" {
+			t.Errorf("config ID = %q, want cfg-golden-1", c.ID)
+		}
+		if b == nil {
+			t.Fatal("expected non-nil benchmark")
+		}
+		if b.ThroughputTPS != 100.0 {
+			t.Errorf("ThroughputTPS = %f, want 100.0", b.ThroughputTPS)
+		}
+	})
+
+	t.Run("no golden for different triple", func(t *testing.T) {
+		c, b, err := db.FindGoldenBenchmark(ctx, "hw2", "eng1", "model1")
+		if err != nil {
+			t.Fatalf("FindGoldenBenchmark: %v", err)
+		}
+		if c != nil || b != nil {
+			t.Error("expected nil config and benchmark for non-matching triple")
+		}
+	})
+
+	t.Run("golden without benchmark", func(t *testing.T) {
+		cfg2 := &Configuration{
+			ID: "cfg-golden-2", HardwareID: "hw2", EngineID: "eng2", ModelID: "model2",
+			Config: `{}`, ConfigHash: "hash-golden-2",
+			Status: "golden", Source: "benchmark",
+		}
+		if err := db.InsertConfiguration(ctx, cfg2); err != nil {
+			t.Fatalf("InsertConfiguration: %v", err)
+		}
+		c, b, err := db.FindGoldenBenchmark(ctx, "hw2", "eng2", "model2")
+		if err != nil {
+			t.Fatalf("FindGoldenBenchmark: %v", err)
+		}
+		if c == nil {
+			t.Fatal("expected non-nil config")
+		}
+		if b != nil {
+			t.Error("expected nil benchmark for golden config without benchmarks")
+		}
+	})
 }

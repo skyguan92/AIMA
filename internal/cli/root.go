@@ -8,6 +8,7 @@ import (
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/proxy"
+	"github.com/jguan/aima/internal/support"
 )
 
 // App holds all wired dependencies for CLI commands.
@@ -19,14 +20,15 @@ type App struct {
 	ToolDeps      *mcp.ToolDeps
 	FleetRegistry *fleet.Registry
 	FleetClient   *fleet.Client
+	Support       *support.Service
 }
 
 // NewRootCmd creates the root aima command with all subcommands.
 func NewRootCmd(app *App) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "aima",
-		Short: "AI-Inference-Managed-by-AI",
-		Long:  "AIMA manages AI inference on edge devices — hardware detection, knowledge-driven config, multi-model deployment.",
+		Use:           "aima",
+		Short:         "AI-Inference-Managed-by-AI",
+		Long:          "AIMA manages AI inference on edge devices — hardware detection, knowledge-driven config, multi-model deployment.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -42,12 +44,19 @@ func NewRootCmd(app *App) *cobra.Command {
 		newKnowledgeCmd(app),
 		newCatalogCmd(app),
 		newBenchmarkCmd(app),
+		newAskForHelpCmd(app),
 		newAskCmd(app),
 		newAgentCmd(app),
 		newConfigCmd(app),
 		newServeCmd(app),
 		newDiscoverCmd(app),
 		newFleetCmd(app),
+		newTUICmd(app),
+		newExploreCmd(app),
+		newTuningCmd(app),
+		newAppCmd(app),
+		newOpenClawCmd(app),
+		newScenarioCmd(app),
 		newVersionCmd(),
 	)
 

@@ -16,6 +16,7 @@
 | HAL | [hal.md](hal.md) | 硬件检测、能力向量 |
 | K3S | [k3s.md](k3s.md) | K8s 集成、Pod 管理、HAMi |
 | Stack | [stack.md](stack.md) | 基础设施（K3S, HAMi） |
+| Scenario | — | 多模型部署方案（见 [knowledge.md §6](knowledge.md#6-deployment-scenario)） |
 | MCP | [mcp.md](mcp.md) | MCP 服务器、工具定义 |
 | CLI | [cli.md](cli.md) | 命令行接口 |
 | Agent | [agent.md](agent.md) | Go Agent、ZeroClaw Sidecar |

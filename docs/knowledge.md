@@ -184,6 +184,60 @@ slots:
 
 详见 [stack.md](stack.md)。
 
+### 6. Deployment Scenario
+
+描述在特定硬件上部署一组模型的完整方案，包括每个模型使用的引擎、配置参数、
+部署后动作（如 OpenClaw 同步）和集成路由。
+
+```yaml
+kind: deployment_scenario
+metadata:
+  name: openclaw-multi
+  description: "OpenClaw multimodal stack: LLM/VLM + TTS + ASR + ImageGen on single device"
+target:
+  hardware_profile: nvidia-gb10-arm64
+deployments:
+  - model: qwen3.5-9b
+    engine: vllm-nightly-blackwell
+    role: primary
+    modalities: [text, vision]
+    config:
+      gpu_memory_utilization: 0.25
+      max_model_len: 65536
+  - model: qwen3-tts-0.6b
+    engine: qwen-tts-fastapi-cuda-blackwell
+    modalities: [tts]
+  - model: qwen3-asr-1.7b
+    engine: vllm-nightly-audio
+    modalities: [asr]
+  - model: z-image
+    engine: z-image-diffusers
+    modalities: [image_gen]
+post_deploy:
+  - action: openclaw_sync
+integrations:
+  openclaw:
+    enabled: true
+    routes:
+      - path: /v1/chat/completions
+        models: [qwen3.5-9b]
+      - path: /v1/audio/speech
+        models: [qwen3-tts-0.6b]
+      - path: /v1/audio/transcriptions
+        models: [qwen3-asr-1.7b]
+      - path: /v1/images/generations
+        models: [z-image]
+verified:
+  date: "2026-03-20"
+  results: {llm_chat: pass, tts: pass, asr: pass, image_gen: pass, vlm: pass}
+```
+
+**设计意图**：partition_strategy 描述"如何分资源"，deployment_scenario 描述"部署什么、怎么部署"。
+两者正交组合：同一硬件可有多个 scenario（如纯 LLM、多模态、开发用等），
+同一 scenario 在不同硬件上可搭配不同 partition_strategy。
+
+存放于 `catalog/scenarios/`，未来可通过 `aima scenario apply <name>` 一键部署。
+
 ---
 
 ## L0 → L3b 知识解析
@@ -358,7 +412,8 @@ Agent 探索 (L3a/L3b)
 - `internal/knowledge/similarity.go` - 向量相似度
 - `internal/knowledge/podgen.go` - Pod YAML 生成（厂商无关模板，含 imagePullPolicy:IfNotPresent）
 - `catalog/embed.go` - go:embed 入口
+- `catalog/scenarios/` - Deployment Scenario YAML（多模型部署方案）
 
 ---
 
-*最后更新：2026-02-28*
+*最后更新：2026-03-20*

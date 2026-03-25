@@ -252,14 +252,28 @@ func GeneratePod(resolved *ResolvedConfig) ([]byte, error) {
 
 	// Append resolved config values as CLI flags.
 	// Config keys use underscore (e.g. "gpu_memory_utilization") → "--gpu-memory-utilization".
-	// "port" is excluded: it is mapped to containerPort in the pod spec.
+	// "model_path" is excluded (handled by volume mount).
+	// Other keys (including "port") are passed as flags unless the startup command
+	// already contains the flag (e.g. engine has --port hardcoded in startup.command).
 	// String values support {{.ModelName}} and {{.ModelPath}} templates.
 	if len(resolved.Config) > 0 {
+		// Build set of flags already present in the startup command for exact dedup.
+		existingFlags := make(map[string]bool, len(args))
+		for _, a := range args {
+			if strings.HasPrefix(a, "--") {
+				existingFlags[a] = true
+			}
+		}
 		keys := make([]string, 0, len(resolved.Config))
 		for k := range resolved.Config {
-			if k != "port" && k != "model_path" {
-				keys = append(keys, k)
+			if k == "model_path" {
+				continue
 			}
+			flagName := "--" + strings.ReplaceAll(k, "_", "-")
+			if existingFlags[flagName] {
+				continue // already present in startup command
+			}
+			keys = append(keys, k)
 		}
 		sort.Strings(keys) // deterministic ordering for reproducible pod specs
 		for _, k := range keys {

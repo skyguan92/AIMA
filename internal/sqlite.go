@@ -2,7 +2,9 @@ package state
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,6 +128,55 @@ type BenchmarkResult struct {
 	Notes           string    `json:"notes"`
 }
 
+type ExplorationRun struct {
+	ID           string    `json:"id"`
+	Kind         string    `json:"kind"`
+	Goal         string    `json:"goal"`
+	RequestedBy  string    `json:"requested_by"`
+	Executor     string    `json:"executor"`
+	Planner      string    `json:"planner"`
+	Status       string    `json:"status"`
+	HardwareID   string    `json:"hardware_id,omitempty"`
+	EngineID     string    `json:"engine_id,omitempty"`
+	ModelID      string    `json:"model_id,omitempty"`
+	SourceRef    string    `json:"source_ref,omitempty"`
+	ApprovalMode string    `json:"approval_mode"`
+	ApprovedAt   time.Time `json:"approved_at,omitempty"`
+	StartedAt    time.Time `json:"started_at,omitempty"`
+	CompletedAt  time.Time `json:"completed_at,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	PlanJSON     string    `json:"plan_json"`
+	SummaryJSON  string    `json:"summary_json,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type OpenQuestion struct {
+	ID           string    `json:"id"`
+	SourceAsset  string    `json:"source_asset"`
+	Question     string    `json:"question"`
+	TestCommand  string    `json:"test_command,omitempty"`
+	Expected     string    `json:"expected,omitempty"`
+	Status       string    `json:"status"`
+	ActualResult string    `json:"actual_result,omitempty"`
+	TestedAt     time.Time `json:"tested_at,omitempty"`
+	Hardware     string    `json:"hardware,omitempty"`
+}
+
+type ExplorationEvent struct {
+	ID           int64     `json:"id"`
+	RunID        string    `json:"run_id"`
+	StepIndex    int       `json:"step_index"`
+	StepKind     string    `json:"step_kind"`
+	Status       string    `json:"status"`
+	ToolName     string    `json:"tool_name,omitempty"`
+	RequestJSON  string    `json:"request_json,omitempty"`
+	ResponseJSON string    `json:"response_json,omitempty"`
+	ArtifactType string    `json:"artifact_type,omitempty"`
+	ArtifactID   string    `json:"artifact_id,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 func Open(ctx context.Context, dbPath string) (*DB, error) {
 	sqlDB, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -232,6 +283,14 @@ func (d *DB) migrate(ctx context.Context) error {
 	// v6: rollback snapshots for agent safety guardrails
 	if err := d.migrateV6(ctx); err != nil {
 		return fmt.Errorf("migrate v6: %w", err)
+	}
+	// v7: patrol alerts, power samples, validation results, tuning sessions
+	if err := d.migrateV7(ctx); err != nil {
+		return fmt.Errorf("migrate v7: %w", err)
+	}
+	// v8: exploration runs and events
+	if err := d.migrateV8(ctx); err != nil {
+		return fmt.Errorf("migrate v8: %w", err)
 	}
 	if _, err := d.db.ExecContext(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
@@ -662,6 +721,298 @@ func (d *DB) migrateV6(ctx context.Context) error {
 	return nil
 }
 
+func (d *DB) migrateV7(ctx context.Context) error {
+	var version int
+	_ = d.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	if version >= 7 {
+		return nil
+	}
+
+	ddl := `
+CREATE TABLE IF NOT EXISTS patrol_alerts (
+    id TEXT PRIMARY KEY,
+    severity TEXT NOT NULL,
+    type TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at DATETIME,
+    resolved BOOLEAN NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS power_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    gpu_index INTEGER NOT NULL DEFAULT 0,
+    power_watts REAL,
+    temperature_c REAL,
+    utilization_pct REAL,
+    vram_used_mib INTEGER,
+    vram_total_mib INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_power_samples_ts ON power_samples(timestamp);
+
+CREATE TABLE IF NOT EXISTS validation_results (
+    id TEXT PRIMARY KEY,
+    config_id TEXT NOT NULL,
+    hardware TEXT NOT NULL,
+    engine TEXT NOT NULL,
+    model TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    predicted_value REAL,
+    actual_value REAL,
+    deviation_pct REAL,
+    validated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (config_id) REFERENCES configurations(id)
+);
+
+CREATE TABLE IF NOT EXISTS tuning_sessions (
+    id TEXT PRIMARY KEY,
+    model TEXT NOT NULL,
+    engine TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    progress INTEGER DEFAULT 0,
+    total INTEGER DEFAULT 0,
+    best_config TEXT,
+    best_score REAL DEFAULT 0,
+    results TEXT,
+    started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS apps (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    spec TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS app_dependencies (
+    app_id TEXT NOT NULL REFERENCES apps(id),
+    need_type TEXT NOT NULL,
+    model TEXT,
+    deploy_name TEXT,
+    satisfied BOOLEAN DEFAULT 0,
+    PRIMARY KEY (app_id, need_type)
+);
+
+CREATE TABLE IF NOT EXISTS open_questions (
+    id TEXT PRIMARY KEY,
+    source_asset TEXT NOT NULL,
+    question TEXT NOT NULL,
+    test_command TEXT,
+    expected TEXT,
+    status TEXT NOT NULL DEFAULT 'untested',
+    actual_result TEXT,
+    tested_at DATETIME,
+    hardware TEXT
+);`
+	if _, err := d.db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create v7 tables: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, "PRAGMA user_version = 7"); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) migrateV8(ctx context.Context) error {
+	var version int
+	_ = d.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	if version >= 8 {
+		return nil
+	}
+
+	ddl := `
+CREATE TABLE IF NOT EXISTS exploration_runs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    executor TEXT NOT NULL,
+    planner TEXT NOT NULL,
+    status TEXT NOT NULL,
+    hardware_id TEXT,
+    engine_id TEXT,
+    model_id TEXT,
+    source_ref TEXT,
+    approval_mode TEXT NOT NULL DEFAULT 'none',
+    approved_at DATETIME,
+    started_at DATETIME,
+    completed_at DATETIME,
+    error TEXT,
+    plan_json TEXT NOT NULL,
+    summary_json TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_er_status ON exploration_runs(status);
+CREATE INDEX IF NOT EXISTS idx_er_kind ON exploration_runs(kind);
+CREATE INDEX IF NOT EXISTS idx_er_lookup ON exploration_runs(hardware_id, engine_id, model_id);
+
+CREATE TABLE IF NOT EXISTS exploration_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES exploration_runs(id),
+    step_index INTEGER NOT NULL,
+    step_kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    tool_name TEXT,
+    request_json TEXT,
+    response_json TEXT,
+    artifact_type TEXT,
+    artifact_id TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ee_run ON exploration_events(run_id, step_index);`
+	if _, err := d.db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create v8 tables: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, "PRAGMA user_version = 8"); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
+}
+
+// InsertPatrolAlert persists a patrol alert.
+func (d *DB) InsertPatrolAlert(ctx context.Context, id, severity, typ, message string) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO patrol_alerts (id, severity, type, message) VALUES (?, ?, ?, ?)`,
+		id, severity, typ, message)
+	return err
+}
+
+// ListPatrolAlerts returns alerts, optionally filtering by resolved status.
+func (d *DB) ListPatrolAlerts(ctx context.Context, onlyActive bool) ([]map[string]any, error) {
+	query := `SELECT id, severity, type, message, created_at, resolved_at, resolved FROM patrol_alerts`
+	if onlyActive {
+		query += ` WHERE resolved = 0`
+	}
+	query += ` ORDER BY created_at DESC LIMIT 100`
+	rows, err := d.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	alerts := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, severity, typ, message, createdAt string
+		var resolvedAt sql.NullString
+		var resolved bool
+		if err := rows.Scan(&id, &severity, &typ, &message, &createdAt, &resolvedAt, &resolved); err != nil {
+			continue
+		}
+		a := map[string]any{
+			"id": id, "severity": severity, "type": typ, "message": message,
+			"created_at": createdAt, "resolved": resolved,
+		}
+		if resolvedAt.Valid {
+			a["resolved_at"] = resolvedAt.String
+		}
+		alerts = append(alerts, a)
+	}
+	return alerts, rows.Err()
+}
+
+// InsertPowerSample records a power/temp/util snapshot.
+func (d *DB) InsertPowerSample(ctx context.Context, gpuIndex int, powerW, tempC, utilPct float64, vramUsed, vramTotal int) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO power_samples (gpu_index, power_watts, temperature_c, utilization_pct, vram_used_mib, vram_total_mib) VALUES (?, ?, ?, ?, ?, ?)`,
+		gpuIndex, powerW, tempC, utilPct, vramUsed, vramTotal)
+	return err
+}
+
+// QueryPowerHistory returns aggregated power samples in a time range.
+func (d *DB) QueryPowerHistory(ctx context.Context, fromTime, toTime string, intervalS int) ([]map[string]any, error) {
+	// Group by interval buckets using strftime
+	query := `SELECT
+		strftime('%Y-%m-%dT%H:%M:00', timestamp) as bucket,
+		AVG(power_watts) as avg_power,
+		MAX(power_watts) as max_power,
+		AVG(temperature_c) as avg_temp,
+		AVG(utilization_pct) as avg_util,
+		AVG(vram_used_mib) as avg_vram_used
+	FROM power_samples
+	WHERE timestamp >= ? AND timestamp <= ?
+	GROUP BY bucket
+	ORDER BY bucket`
+	rows, err := d.db.QueryContext(ctx, query, fromTime, toTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	results := make([]map[string]any, 0)
+	for rows.Next() {
+		var bucket string
+		var avgPower, maxPower, avgTemp, avgUtil, avgVRAM float64
+		if err := rows.Scan(&bucket, &avgPower, &maxPower, &avgTemp, &avgUtil, &avgVRAM); err != nil {
+			continue
+		}
+		results = append(results, map[string]any{
+			"timestamp": bucket, "avg_power_watts": avgPower, "max_power_watts": maxPower,
+			"avg_temperature_c": avgTemp, "avg_utilization_pct": avgUtil, "avg_vram_used_mib": int(avgVRAM),
+		})
+	}
+	return results, rows.Err()
+}
+
+// PrunePowerSamples removes samples older than retentionDays.
+func (d *DB) PrunePowerSamples(ctx context.Context, retentionDays int) error {
+	_, err := d.db.ExecContext(ctx,
+		`DELETE FROM power_samples WHERE timestamp < datetime('now', ? || ' days')`,
+		fmt.Sprintf("-%d", retentionDays))
+	return err
+}
+
+// InsertValidation records a predicted vs actual comparison.
+func (d *DB) InsertValidation(ctx context.Context, id, configID, hardware, engine, model, metric string, predicted, actual, deviation float64) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO validation_results (id, config_id, hardware, engine, model, metric, predicted_value, actual_value, deviation_pct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, configID, hardware, engine, model, metric, predicted, actual, deviation)
+	return err
+}
+
+// ListValidations returns validation results for a hardware/engine/model combo.
+func (d *DB) ListValidations(ctx context.Context, hardware, engine, model string) ([]map[string]any, error) {
+	query := `SELECT id, config_id, hardware, engine, model, metric, predicted_value, actual_value, deviation_pct, validated_at FROM validation_results WHERE 1=1`
+	var args []any
+	if hardware != "" {
+		query += ` AND hardware = ?`
+		args = append(args, hardware)
+	}
+	if engine != "" {
+		query += ` AND engine = ?`
+		args = append(args, engine)
+	}
+	if model != "" {
+		query += ` AND model = ?`
+		args = append(args, model)
+	}
+	query += ` ORDER BY validated_at DESC LIMIT 50`
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	results := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, configID, hw, eng, mdl, metric, validatedAt string
+		var predicted, actual, deviation float64
+		if err := rows.Scan(&id, &configID, &hw, &eng, &mdl, &metric, &predicted, &actual, &deviation, &validatedAt); err != nil {
+			continue
+		}
+		status := "accurate"
+		if deviation > 20 || deviation < -20 {
+			status = "divergent"
+		}
+		results = append(results, map[string]any{
+			"id": id, "config_id": configID, "hardware": hw, "engine": eng, "model": mdl,
+			"metric": metric, "predicted": predicted, "actual": actual, "deviation_pct": deviation,
+			"status": status, "validated_at": validatedAt,
+		})
+	}
+	return results, rows.Err()
+}
+
 // RollbackSnapshot stores pre-deletion state for agent safety recovery.
 type RollbackSnapshot struct {
 	ID           int64     `json:"id"`
@@ -1029,6 +1380,13 @@ func (d *DB) DeleteEngine(ctx context.Context, id string) error {
 // Knowledge Notes CRUD
 
 func (d *DB) InsertNote(ctx context.Context, n *KnowledgeNote) error {
+	if n.ID == "" {
+		var buf [8]byte
+		if _, err := rand.Read(buf[:]); err != nil {
+			return fmt.Errorf("generate note id: %w", err)
+		}
+		n.ID = hex.EncodeToString(buf[:])
+	}
 	tagsJSON, err := json.Marshal(n.Tags)
 	if err != nil {
 		return fmt.Errorf("marshal tags for note %s: %w", n.ID, err)
@@ -1194,6 +1552,50 @@ func (d *DB) FindConfigByHash(ctx context.Context, hash string) (*Configuration,
 	return c, nil
 }
 
+// FindGoldenBenchmark returns the golden configuration and its best benchmark result
+// for the given hardware/engine/model triple. Uses a single JOIN query to avoid
+// MaxOpenConns(1) deadlocks. Returns (nil, nil, nil) if no golden config exists.
+func (d *DB) FindGoldenBenchmark(ctx context.Context, hardware, engine, model string) (*Configuration, *BenchmarkResult, error) {
+	row := d.db.QueryRowContext(ctx,
+		`SELECT c.id, c.hardware_id, c.engine_id, c.model_id, COALESCE(c.partition_slot,''),
+		        c.config, c.config_hash, c.derived_from, c.status,
+		        COALESCE(c.tags,'[]'), COALESCE(c.source,'local'), COALESCE(c.device_id,''),
+		        c.created_at, c.updated_at,
+		        b.id, b.throughput_tps
+		 FROM configurations c
+		 LEFT JOIN benchmark_results b ON b.config_id = c.id
+		 WHERE c.status = 'golden'
+		   AND c.hardware_id = ? AND c.engine_id = ? AND c.model_id = ?
+		 ORDER BY b.throughput_tps DESC
+		 LIMIT 1`,
+		hardware, engine, model)
+
+	cfg := &Configuration{}
+	var tagsStr, derivedFrom, benchID sql.NullString
+	var throughput sql.NullFloat64
+	err := row.Scan(
+		&cfg.ID, &cfg.HardwareID, &cfg.EngineID, &cfg.ModelID, &cfg.Slot,
+		&cfg.Config, &cfg.ConfigHash, &derivedFrom, &cfg.Status,
+		&tagsStr, &cfg.Source, &cfg.DeviceID, &cfg.CreatedAt, &cfg.UpdatedAt,
+		&benchID, &throughput)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("find golden benchmark: %w", err)
+	}
+	if derivedFrom.Valid {
+		cfg.DerivedFrom = derivedFrom.String
+	}
+	_ = json.Unmarshal([]byte(tagsStr.String), &cfg.Tags)
+
+	var bench *BenchmarkResult
+	if benchID.Valid {
+		bench = &BenchmarkResult{ID: benchID.String, ConfigID: cfg.ID, ThroughputTPS: throughput.Float64}
+	}
+	return cfg, bench, nil
+}
+
 func (d *DB) InsertBenchmarkResult(ctx context.Context, b *BenchmarkResult) error {
 	_, err := d.db.ExecContext(ctx,
 		`INSERT INTO benchmark_results (id, config_id, concurrency, input_len_bucket, output_len_bucket, modality,
@@ -1248,9 +1650,499 @@ func (d *DB) LogAction(ctx context.Context, entry *AuditEntry) error {
 	return nil
 }
 
+// ListConfigurations returns configurations matching optional filters.
+// Empty filter values are ignored.
+func (d *DB) ListConfigurations(ctx context.Context, hardware, model, engine string) ([]*Configuration, error) {
+	query := `SELECT id, hardware_id, engine_id, model_id, COALESCE(partition_slot,''),
+	                 config, config_hash, derived_from, COALESCE(status,'experiment'),
+	                 COALESCE(tags,'[]'), COALESCE(source,'local'), COALESCE(device_id,''),
+	                 created_at, updated_at
+	          FROM configurations WHERE 1=1`
+	var args []any
+	if hardware != "" {
+		query += ` AND hardware_id = ?`
+		args = append(args, hardware)
+	}
+	if model != "" {
+		query += ` AND model_id = ?`
+		args = append(args, model)
+	}
+	if engine != "" {
+		query += ` AND engine_id = ?`
+		args = append(args, engine)
+	}
+	query += ` ORDER BY updated_at DESC`
+
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list configurations: %w", err)
+	}
+	defer rows.Close()
+
+	configs := make([]*Configuration, 0)
+	for rows.Next() {
+		c := &Configuration{}
+		var tagsStr, derivedFrom sql.NullString
+		if err := rows.Scan(&c.ID, &c.HardwareID, &c.EngineID, &c.ModelID, &c.Slot,
+			&c.Config, &c.ConfigHash, &derivedFrom, &c.Status,
+			&tagsStr, &c.Source, &c.DeviceID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan configuration row: %w", err)
+		}
+		if derivedFrom.Valid {
+			c.DerivedFrom = derivedFrom.String
+		}
+		_ = json.Unmarshal([]byte(tagsStr.String), &c.Tags)
+		configs = append(configs, c)
+	}
+	return configs, rows.Err()
+}
+
+// ListBenchmarkResults returns benchmark results, optionally filtered by config IDs.
+func (d *DB) ListBenchmarkResults(ctx context.Context, configIDs []string, limit int) ([]*BenchmarkResult, error) {
+	query := `SELECT id, config_id, concurrency, COALESCE(input_len_bucket,''),
+	                 COALESCE(output_len_bucket,''), COALESCE(modality,'text'),
+	                 ttft_ms_p50, ttft_ms_p95, COALESCE(ttft_ms_p99,0),
+	                 COALESCE(tpot_ms_p50,0), COALESCE(tpot_ms_p95,0),
+	                 throughput_tps, COALESCE(qps,0),
+	                 COALESCE(vram_usage_mib,0), COALESCE(ram_usage_mib,0),
+	                 COALESCE(power_draw_watts,0), COALESCE(gpu_utilization_pct,0),
+	                 COALESCE(error_rate,0), COALESCE(oom_occurred,0),
+	                 COALESCE(stability,''), COALESCE(duration_s,0), COALESCE(sample_count,0),
+	                 tested_at, COALESCE(agent_model,''), COALESCE(notes,'')
+	          FROM benchmark_results WHERE 1=1`
+	var args []any
+	if len(configIDs) > 0 {
+		placeholders := strings.Repeat("?,", len(configIDs))
+		placeholders = placeholders[:len(placeholders)-1]
+		query += fmt.Sprintf(` AND config_id IN (%s)`, placeholders)
+		for _, id := range configIDs {
+			args = append(args, id)
+		}
+	}
+	query += ` ORDER BY tested_at DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list benchmark results: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]*BenchmarkResult, 0)
+	for rows.Next() {
+		b := &BenchmarkResult{}
+		if err := rows.Scan(&b.ID, &b.ConfigID, &b.Concurrency, &b.InputLenBucket,
+			&b.OutputLenBucket, &b.Modality,
+			&b.TTFTP50ms, &b.TTFTP95ms, &b.TTFTP99ms, &b.TPOTP50ms, &b.TPOTP95ms,
+			&b.ThroughputTPS, &b.QPS,
+			&b.VRAMUsageMiB, &b.RAMUsageMiB, &b.PowerDrawWatts, &b.GPUUtilPct,
+			&b.ErrorRate, &b.OOMOccurred, &b.Stability, &b.DurationS, &b.SampleCount,
+			&b.TestedAt, &b.AgentModel, &b.Notes); err != nil {
+			return nil, fmt.Errorf("scan benchmark row: %w", err)
+		}
+		results = append(results, b)
+	}
+	return results, rows.Err()
+}
+
 func nullStr(s string) sql.NullString {
 	if s == "" {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: s, Valid: true}
+}
+
+func nullTime(t time.Time) sql.NullTime {
+	if t.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: t, Valid: true}
+}
+
+// --- Open Questions ---
+
+// UpsertOpenQuestion inserts or updates an open question.
+func (d *DB) UpsertOpenQuestion(ctx context.Context, id, sourceAsset, question, testCommand, expected, status, actualResult string) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO open_questions (id, source_asset, question, test_command, expected, status, actual_result)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		     source_asset = excluded.source_asset,
+		     question = excluded.question,
+		     test_command = excluded.test_command,
+		     expected = excluded.expected,
+		     status = CASE
+		       WHEN open_questions.status IN ('tested', 'confirmed', 'confirmed_incompatible', 'rejected') THEN open_questions.status
+		       WHEN excluded.status <> '' AND excluded.status <> 'untested' THEN excluded.status
+		       ELSE open_questions.status
+		     END,
+		     actual_result = CASE
+		       WHEN open_questions.status IN ('tested', 'confirmed', 'confirmed_incompatible', 'rejected')
+		            AND COALESCE(open_questions.actual_result, '') <> '' THEN open_questions.actual_result
+		       WHEN excluded.status <> '' AND excluded.status <> 'untested'
+		            AND COALESCE(excluded.actual_result, '') <> '' THEN excluded.actual_result
+		       ELSE open_questions.actual_result
+		     END`,
+		id, sourceAsset, question, testCommand, expected, status, actualResult)
+	return err
+}
+
+// GetOpenQuestion returns a single open question by ID.
+func (d *DB) GetOpenQuestion(ctx context.Context, id string) (*OpenQuestion, error) {
+	row := d.db.QueryRowContext(ctx,
+		`SELECT id, source_asset, question, test_command, expected, status, actual_result, tested_at, hardware
+		   FROM open_questions
+		  WHERE id = ?`,
+		id)
+
+	var q OpenQuestion
+	var testCmd, expected, actualResult, testedAt, hardware sql.NullString
+	if err := row.Scan(&q.ID, &q.SourceAsset, &q.Question, &testCmd, &expected, &q.Status, &actualResult, &testedAt, &hardware); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("open question %s not found", id)
+		}
+		return nil, fmt.Errorf("get open question %s: %w", id, err)
+	}
+	if testCmd.Valid {
+		q.TestCommand = testCmd.String
+	}
+	if expected.Valid {
+		q.Expected = expected.String
+	}
+	if actualResult.Valid {
+		q.ActualResult = actualResult.String
+	}
+	if testedAt.Valid {
+		if ts, err := time.Parse("2006-01-02 15:04:05", testedAt.String); err == nil {
+			q.TestedAt = ts
+		}
+	}
+	if hardware.Valid {
+		q.Hardware = hardware.String
+	}
+	return &q, nil
+}
+
+// ListOpenQuestions returns open questions, optionally filtering by status.
+func (d *DB) ListOpenQuestions(ctx context.Context, status string) ([]map[string]any, error) {
+	query := `SELECT id, source_asset, question, test_command, expected, status, actual_result, tested_at, hardware FROM open_questions`
+	var args []any
+	if status != "" {
+		query += ` WHERE status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY CASE status
+		WHEN 'untested' THEN 0
+		WHEN 'tested' THEN 1
+		WHEN 'confirmed' THEN 2
+		WHEN 'confirmed_incompatible' THEN 3
+		ELSE 4 END`
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	results := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, source, question, status string
+		var testCmd, expected, actualResult, testedAt, hardware sql.NullString
+		if err := rows.Scan(&id, &source, &question, &testCmd, &expected, &status, &actualResult, &testedAt, &hardware); err != nil {
+			continue
+		}
+		r := map[string]any{
+			"id": id, "source_asset": source, "question": question, "status": status,
+		}
+		if testCmd.Valid {
+			r["test_command"] = testCmd.String
+		}
+		if expected.Valid {
+			r["expected"] = expected.String
+		}
+		if actualResult.Valid {
+			r["actual_result"] = actualResult.String
+		}
+		if testedAt.Valid {
+			r["tested_at"] = testedAt.String
+		}
+		if hardware.Valid {
+			r["hardware"] = hardware.String
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+// ResolveOpenQuestion marks a question as confirmed or rejected with the actual result.
+func (d *DB) ResolveOpenQuestion(ctx context.Context, id, status, actualResult, hardware string) error {
+	_, err := d.db.ExecContext(ctx,
+		`UPDATE open_questions SET status = ?, actual_result = ?, tested_at = datetime('now'), hardware = ? WHERE id = ?`,
+		status, actualResult, hardware, id)
+	return err
+}
+
+// --- Exploration Runs ---
+
+func (d *DB) InsertExplorationRun(ctx context.Context, run *ExplorationRun) error {
+	if run == nil {
+		return fmt.Errorf("exploration run is nil")
+	}
+	_, err := d.db.ExecContext(ctx, `
+INSERT INTO exploration_runs (
+    id, kind, goal, requested_by, executor, planner, status,
+    hardware_id, engine_id, model_id, source_ref, approval_mode,
+    approved_at, started_at, completed_at, error, plan_json, summary_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.ID, run.Kind, run.Goal, run.RequestedBy, run.Executor, run.Planner, run.Status,
+		nullStr(run.HardwareID), nullStr(run.EngineID), nullStr(run.ModelID), nullStr(run.SourceRef), run.ApprovalMode,
+		nullTime(run.ApprovedAt), nullTime(run.StartedAt), nullTime(run.CompletedAt), nullStr(run.Error), run.PlanJSON, nullStr(run.SummaryJSON))
+	if err != nil {
+		return fmt.Errorf("insert exploration run %s: %w", run.ID, err)
+	}
+	return nil
+}
+
+func (d *DB) UpdateExplorationRun(ctx context.Context, run *ExplorationRun) error {
+	if run == nil {
+		return fmt.Errorf("exploration run is nil")
+	}
+	_, err := d.db.ExecContext(ctx, `
+UPDATE exploration_runs
+SET kind = ?, goal = ?, requested_by = ?, executor = ?, planner = ?, status = ?,
+    hardware_id = ?, engine_id = ?, model_id = ?, source_ref = ?, approval_mode = ?,
+    approved_at = ?, started_at = ?, completed_at = ?, error = ?, plan_json = ?, summary_json = ?,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?`,
+		run.Kind, run.Goal, run.RequestedBy, run.Executor, run.Planner, run.Status,
+		nullStr(run.HardwareID), nullStr(run.EngineID), nullStr(run.ModelID), nullStr(run.SourceRef), run.ApprovalMode,
+		nullTime(run.ApprovedAt), nullTime(run.StartedAt), nullTime(run.CompletedAt), nullStr(run.Error), run.PlanJSON, nullStr(run.SummaryJSON),
+		run.ID)
+	if err != nil {
+		return fmt.Errorf("update exploration run %s: %w", run.ID, err)
+	}
+	return nil
+}
+
+func (d *DB) GetExplorationRun(ctx context.Context, id string) (*ExplorationRun, error) {
+	var run ExplorationRun
+	var hardwareID, engineID, modelID, sourceRef, errStr, summary sql.NullString
+	var approvedAt, startedAt, completedAt sql.NullTime
+	err := d.db.QueryRowContext(ctx, `
+SELECT id, kind, goal, requested_by, executor, planner, status,
+       COALESCE(hardware_id,''), COALESCE(engine_id,''), COALESCE(model_id,''), COALESCE(source_ref,''),
+       approval_mode, approved_at, started_at, completed_at, error,
+       plan_json, summary_json, created_at, updated_at
+FROM exploration_runs
+WHERE id = ?`, id).Scan(
+		&run.ID, &run.Kind, &run.Goal, &run.RequestedBy, &run.Executor, &run.Planner, &run.Status,
+		&hardwareID, &engineID, &modelID, &sourceRef,
+		&run.ApprovalMode, &approvedAt, &startedAt, &completedAt, &errStr,
+		&run.PlanJSON, &summary, &run.CreatedAt, &run.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("exploration run %s not found", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get exploration run %s: %w", id, err)
+	}
+	run.HardwareID = hardwareID.String
+	run.EngineID = engineID.String
+	run.ModelID = modelID.String
+	run.SourceRef = sourceRef.String
+	run.Error = errStr.String
+	run.SummaryJSON = summary.String
+	if approvedAt.Valid {
+		run.ApprovedAt = approvedAt.Time
+	}
+	if startedAt.Valid {
+		run.StartedAt = startedAt.Time
+	}
+	if completedAt.Valid {
+		run.CompletedAt = completedAt.Time
+	}
+	return &run, nil
+}
+
+func (d *DB) ListExplorationRuns(ctx context.Context, status string, limit int) ([]*ExplorationRun, error) {
+	query := `
+SELECT id, kind, goal, requested_by, executor, planner, status,
+       COALESCE(hardware_id,''), COALESCE(engine_id,''), COALESCE(model_id,''), COALESCE(source_ref,''),
+       approval_mode, approved_at, started_at, completed_at, error,
+       plan_json, summary_json, created_at, updated_at
+FROM exploration_runs`
+	var args []any
+	if status != "" {
+		query += ` WHERE status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list exploration runs: %w", err)
+	}
+	defer rows.Close()
+
+	runs := make([]*ExplorationRun, 0)
+	for rows.Next() {
+		var run ExplorationRun
+		var hardwareID, engineID, modelID, sourceRef, errStr, summary sql.NullString
+		var approvedAt, startedAt, completedAt sql.NullTime
+		if err := rows.Scan(
+			&run.ID, &run.Kind, &run.Goal, &run.RequestedBy, &run.Executor, &run.Planner, &run.Status,
+			&hardwareID, &engineID, &modelID, &sourceRef,
+			&run.ApprovalMode, &approvedAt, &startedAt, &completedAt, &errStr,
+			&run.PlanJSON, &summary, &run.CreatedAt, &run.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan exploration run: %w", err)
+		}
+		run.HardwareID = hardwareID.String
+		run.EngineID = engineID.String
+		run.ModelID = modelID.String
+		run.SourceRef = sourceRef.String
+		run.Error = errStr.String
+		run.SummaryJSON = summary.String
+		if approvedAt.Valid {
+			run.ApprovedAt = approvedAt.Time
+		}
+		if startedAt.Valid {
+			run.StartedAt = startedAt.Time
+		}
+		if completedAt.Valid {
+			run.CompletedAt = completedAt.Time
+		}
+		cp := run
+		runs = append(runs, &cp)
+	}
+	return runs, rows.Err()
+}
+
+func (d *DB) CountActiveExplorationRuns(ctx context.Context) (int, error) {
+	var count int
+	err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM exploration_runs WHERE status IN ('planning', 'needs_approval', 'queued', 'running')`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count active exploration runs: %w", err)
+	}
+	return count, nil
+}
+
+func (d *DB) InsertExplorationEvent(ctx context.Context, event *ExplorationEvent) error {
+	if event == nil {
+		return fmt.Errorf("exploration event is nil")
+	}
+	res, err := d.db.ExecContext(ctx, `
+INSERT INTO exploration_events (
+    run_id, step_index, step_kind, status, tool_name, request_json, response_json, artifact_type, artifact_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.RunID, event.StepIndex, event.StepKind, event.Status,
+		nullStr(event.ToolName), nullStr(event.RequestJSON), nullStr(event.ResponseJSON), nullStr(event.ArtifactType), nullStr(event.ArtifactID))
+	if err != nil {
+		return fmt.Errorf("insert exploration event for run %s: %w", event.RunID, err)
+	}
+	if id, err := res.LastInsertId(); err == nil {
+		event.ID = id
+	}
+	return nil
+}
+
+func (d *DB) ListExplorationEvents(ctx context.Context, runID string) ([]*ExplorationEvent, error) {
+	rows, err := d.db.QueryContext(ctx, `
+SELECT id, run_id, step_index, step_kind, status,
+       COALESCE(tool_name,''), COALESCE(request_json,''), COALESCE(response_json,''),
+       COALESCE(artifact_type,''), COALESCE(artifact_id,''), created_at
+FROM exploration_events
+WHERE run_id = ?
+ORDER BY id ASC`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list exploration events for run %s: %w", runID, err)
+	}
+	defer rows.Close()
+
+	events := make([]*ExplorationEvent, 0)
+	for rows.Next() {
+		var event ExplorationEvent
+		if err := rows.Scan(&event.ID, &event.RunID, &event.StepIndex, &event.StepKind, &event.Status,
+			&event.ToolName, &event.RequestJSON, &event.ResponseJSON, &event.ArtifactType, &event.ArtifactID, &event.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan exploration event: %w", err)
+		}
+		events = append(events, &event)
+	}
+	return events, rows.Err()
+}
+
+// --- Apps ---
+
+// InsertApp registers an app with its spec.
+func (d *DB) InsertApp(ctx context.Context, id, name, spec string) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO apps (id, name, spec, status) VALUES (?, ?, ?, 'pending')`,
+		id, name, spec)
+	return err
+}
+
+// ListApps returns all registered apps with their dependency satisfaction status.
+func (d *DB) ListApps(ctx context.Context) ([]map[string]any, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT a.id, a.name, a.spec, a.status, a.created_at,
+			COALESCE((SELECT COUNT(*) FROM app_dependencies WHERE app_id = a.id), 0) as total_deps,
+			COALESCE((SELECT COUNT(*) FROM app_dependencies WHERE app_id = a.id AND satisfied = 1), 0) as satisfied_deps
+		 FROM apps a ORDER BY a.created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	results := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, name, spec, status, createdAt string
+		var totalDeps, satisfiedDeps int
+		if err := rows.Scan(&id, &name, &spec, &status, &createdAt, &totalDeps, &satisfiedDeps); err != nil {
+			continue
+		}
+		results = append(results, map[string]any{
+			"id": id, "name": name, "spec": json.RawMessage(spec), "status": status,
+			"created_at": createdAt, "total_deps": totalDeps, "satisfied_deps": satisfiedDeps,
+		})
+	}
+	return results, rows.Err()
+}
+
+// UpsertAppDependency records a dependency for an app.
+func (d *DB) UpsertAppDependency(ctx context.Context, appID, needType, model, deployName string, satisfied bool) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO app_dependencies (app_id, need_type, model, deploy_name, satisfied) VALUES (?, ?, ?, ?, ?)`,
+		appID, needType, model, deployName, satisfied)
+	return err
+}
+
+// UpdateAppStatus updates an app's provisioning status.
+func (d *DB) UpdateAppStatus(ctx context.Context, id, status string) error {
+	_, err := d.db.ExecContext(ctx, `UPDATE apps SET status = ? WHERE id = ?`, status, id)
+	return err
+}
+
+// --- Sync Metadata ---
+
+// GetSyncTimestamp returns the last sync timestamp for a direction (push/pull).
+func (d *DB) GetSyncTimestamp(ctx context.Context, direction string) (string, error) {
+	// Store sync metadata in the config table (already exists)
+	var val string
+	err := d.db.QueryRowContext(ctx,
+		`SELECT value FROM config WHERE key = ?`, "sync_"+direction+"_at").Scan(&val)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return val, err
+}
+
+// SetSyncTimestamp records the last sync timestamp.
+func (d *DB) SetSyncTimestamp(ctx context.Context, direction string) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO config (key, value) VALUES (?, datetime('now'))`,
+		"sync_"+direction+"_at")
+	return err
 }

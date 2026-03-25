@@ -83,6 +83,14 @@ func newServeCmd(app *App) *cobra.Command {
 				go proxy.StartSyncLoop(ctx, app.Proxy, listFn, 5*time.Second)
 			}
 
+			if app.Support != nil {
+				go func() {
+					if err := app.Support.RunBackground(ctx); err != nil && !errors.Is(err, context.Canceled) {
+						slog.Warn("support supervisor stopped", "error", err)
+					}
+				}()
+			}
+
 			errCh := make(chan error, 2)
 
 			// Start HTTP proxy server

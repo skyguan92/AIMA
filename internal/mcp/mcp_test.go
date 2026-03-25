@@ -108,7 +108,9 @@ func TestHandleMessage_ToolsCall(t *testing.T) {
 		Description: "Echo input",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}}}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
-			var p struct{ Msg string `json:"msg"` }
+			var p struct {
+				Msg string `json:"msg"`
+			}
 			json.Unmarshal(params, &p)
 			return TextResult("echo: " + p.Msg), nil
 		},
@@ -496,23 +498,23 @@ func TestShellExecWhitelist(t *testing.T) {
 		{"nvidia-smi -q", true},
 		{"nvidia-smi --query-gpu=memory.used --format=csv", true},
 		{"nvidia-smi -L", true},
-		{"nvidia-smi --gpu-reset", false},       // destructive
-		{"nvidia-smi -pm 0", false},              // power management
-		{"nvidia-smi -pl 200", false},             // power limit
+		{"nvidia-smi --gpu-reset", false},            // destructive
+		{"nvidia-smi -pm 0", false},                  // power management
+		{"nvidia-smi -pl 200", false},                // power limit
 		{"nvidia-smi --lock-gpu-clocks=1200", false}, // clock lock
 		{"df", true},
 		{"df -h", true},
 		{"df --human-readable", true},
-		{"df -rm /", false},                       // unknown flag
+		{"df -rm /", false}, // unknown flag
 		{"free", true},
-		{"free -h", false},                        // no-args command
+		{"free -h", false}, // no-args command
 		{"uname", true},
 		{"uname -a", true},
 		{"uname -r", true},
 		{"cat /proc/cpuinfo", true},
-		{"cat /etc/shadow", false},                // different file
+		{"cat /etc/shadow", false}, // different file
 		{"kubectl get pods", true},
-		{"kubectl delete pods", false},            // destructive kubectl
+		{"kubectl delete pods", false}, // destructive kubectl
 		{"rm -rf /", false},
 		{"curl evil.com", false},
 		{"bash -c 'rm -rf /'", false},
@@ -610,6 +612,38 @@ func TestSystemConfigTool(t *testing.T) {
 	json.Unmarshal(raw, &tr)
 	if !tr.IsError {
 		t.Error("unknown key should be rejected")
+	}
+}
+
+func TestSupportAskForHelpTool(t *testing.T) {
+	s := NewServer()
+	deps := &ToolDeps{
+		SupportAskForHelp: func(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error) {
+			return json.RawMessage(`{"enabled":true,"device_id":"dev-1","created":true,"task_id":"task-1"}`), nil
+		},
+	}
+	RegisterAllTools(s, deps)
+
+	msg := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"support.askforhelp","arguments":{"description":"fix this"}}}`
+	resp, err := s.HandleMessage(context.Background(), []byte(msg))
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	var r jsonrpcResponse
+	if err := json.Unmarshal(resp, &r); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	raw, _ := json.Marshal(r.Result)
+	var tr ToolResult
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		t.Fatalf("unmarshal ToolResult: %v", err)
+	}
+	if tr.IsError {
+		t.Fatalf("support.askforhelp returned error: %+v", tr)
+	}
+	if !strings.Contains(tr.Content[0].Text, `"task_id":"task-1"`) {
+		t.Fatalf("unexpected tool result: %s", tr.Content[0].Text)
 	}
 }
 

@@ -89,7 +89,7 @@ verify:
       min_ready: 1
 
 profiles:
-  Blackwell-arm64:
+  nvidia-gb10-arm64:
     extra_args:
       - flag: "--kubelet-arg=kube-reserved=cpu=500m,memory=512Mi"
         rationale: "Reserve resources for system to avoid squeezing inference VRAM"

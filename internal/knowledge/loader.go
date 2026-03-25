@@ -18,12 +18,13 @@ import (
 
 // Catalog holds all knowledge assets loaded from embedded YAML files.
 type Catalog struct {
-	mu                  sync.Mutex
-	HardwareProfiles    []HardwareProfile
-	PartitionStrategies []PartitionStrategy
-	EngineAssets        []EngineAsset
-	ModelAssets         []ModelAsset
-	StackComponents     []StackComponent
+	mu                   sync.Mutex
+	HardwareProfiles     []HardwareProfile
+	PartitionStrategies  []PartitionStrategy
+	EngineAssets         []EngineAsset
+	ModelAssets          []ModelAsset
+	StackComponents      []StackComponent
+	DeploymentScenarios  []DeploymentScenario
 }
 
 // --- Hardware Profile ---
@@ -148,6 +149,7 @@ type EngineAsset struct {
 	Runtime          EngineRuntime    `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 	Patterns         []string         `yaml:"patterns,omitempty" json:"patterns,omitempty"`
 	Source           *EngineSource    `yaml:"source,omitempty"  json:"source,omitempty"`
+	OpenQuestions    []StackQuestion  `yaml:"open_questions,omitempty" json:"open_questions,omitempty"`
 }
 
 type EngineMetadata struct {
@@ -220,9 +222,13 @@ type EngineAPI struct {
 }
 
 type EngineAmplifier struct {
-	Features          []string        `yaml:"features"           json:"features"`
-	PerformanceGain   string          `yaml:"performance_gain"   json:"performance_gain"`
-	ResourceExpansion map[string]bool `yaml:"resource_expansion" json:"resource_expansion"`
+	Features                []string        `yaml:"features"                    json:"features"`
+	PerformanceGain         string          `yaml:"performance_gain"            json:"performance_gain"`
+	ResourceExpansion       map[string]bool `yaml:"resource_expansion"          json:"resource_expansion"`
+	PerformanceMultiplier   float64         `yaml:"performance_multiplier"      json:"performance_multiplier"`
+	ExtendsResourceBoundary bool            `yaml:"extends_resource_boundary"   json:"extends_resource_boundary"`
+	EffectiveVRAMMultiplier float64         `yaml:"effective_vram_multiplier"   json:"effective_vram_multiplier"`
+	OffloadConfigKey        string          `yaml:"offload_config_key"          json:"offload_config_key,omitempty"`
 }
 
 type PartitionHints struct {
@@ -278,8 +284,43 @@ type ModelVariant struct {
 	ExpectedPerformance map[string]any `yaml:"expected_performance"`
 }
 
+// ExpectedPerf holds structured performance estimates extracted from a variant's
+// ExpectedPerformance map. Zero-valued fields mean "not specified".
+type ExpectedPerf struct {
+	StartupTimeS   int        // model loading time (seconds)
+	ColdStartTimeS int        // full cold start time (seconds)
+	TokensPerSecond [2]float64 // [min, max] throughput estimate
+	VRAMMiB        int        // expected VRAM usage
+	RAMMiB         int        // engine process RAM overhead
+	CPUCores       int        // recommended CPU allocation
+	DiskMiB        int        // model file size on disk
+}
+
+// ParsedExpectedPerf extracts structured performance fields from the variant's
+// ExpectedPerformance map. Missing or non-numeric fields produce zero values.
+func (v *ModelVariant) ParsedExpectedPerf() ExpectedPerf {
+	var p ExpectedPerf
+	if v.ExpectedPerformance == nil {
+		return p
+	}
+	p.StartupTimeS = int(toFloat64(v.ExpectedPerformance["startup_time_s"]))
+	p.ColdStartTimeS = int(toFloat64(v.ExpectedPerformance["cold_start_time_s"]))
+	p.VRAMMiB = int(toFloat64(v.ExpectedPerformance["vram_mib"]))
+	p.RAMMiB = int(toFloat64(v.ExpectedPerformance["ram_mib"]))
+	p.CPUCores = int(toFloat64(v.ExpectedPerformance["cpu_cores"]))
+	p.DiskMiB = int(toFloat64(v.ExpectedPerformance["disk_mib"]))
+	if tps, ok := v.ExpectedPerformance["tokens_per_second"]; ok {
+		if arr, ok := tps.([]any); ok && len(arr) >= 2 {
+			p.TokensPerSecond[0] = toFloat64(arr[0])
+			p.TokensPerSecond[1] = toFloat64(arr[1])
+		}
+	}
+	return p
+}
+
 type ModelVariantHardware struct {
 	GPUArch       string `yaml:"gpu_arch"`
+	GPUModel      string `yaml:"gpu_model,omitempty"`
 	VRAMMinMiB    int    `yaml:"vram_min_mib"`
 	UnifiedMemory *bool  `yaml:"unified_memory,omitempty"`
 }
@@ -386,6 +427,8 @@ type StackQuestion struct {
 	Question   string `yaml:"question"`
 	Hypothesis string `yaml:"hypothesis"`
 	TestMethod string `yaml:"test_method"`
+	Status     string `yaml:"status,omitempty"`
+	Finding    string `yaml:"finding,omitempty"`
 }
 
 // --- Partition Strategy ---
@@ -429,11 +472,56 @@ type SlotRAM struct {
 	MiB int `yaml:"mib"`
 }
 
+// --- Deployment Scenario ---
+
+type DeploymentScenario struct {
+	Kind         string                 `yaml:"kind"`
+	Metadata     ScenarioMetadata       `yaml:"metadata"`
+	Target       ScenarioTarget         `yaml:"target"`
+	Deployments  []ScenarioDeployment   `yaml:"deployments"`
+	PostDeploy   []ScenarioAction       `yaml:"post_deploy,omitempty"`
+	Integrations map[string]any         `yaml:"integrations,omitempty"`
+	Verified     *ScenarioVerification  `yaml:"verified,omitempty"`
+	OpenQuestions []StackQuestion       `yaml:"open_questions,omitempty"`
+}
+
+type ScenarioMetadata struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+}
+
+type ScenarioTarget struct {
+	HardwareProfile   string `yaml:"hardware_profile"`
+	PartitionStrategy string `yaml:"partition_strategy,omitempty"`
+}
+
+type ScenarioDeployment struct {
+	Model      string         `yaml:"model"`
+	Engine     string         `yaml:"engine"`
+	Slot       string         `yaml:"slot,omitempty"`
+	Role       string         `yaml:"role,omitempty"`
+	Modalities []string       `yaml:"modalities,omitempty"`
+	Config     map[string]any `yaml:"config,omitempty"`
+	Notes      string         `yaml:"notes,omitempty"`
+}
+
+type ScenarioAction struct {
+	Action      string `yaml:"action"`
+	Description string `yaml:"description,omitempty"`
+}
+
+type ScenarioVerification struct {
+	Date     string            `yaml:"date"`
+	Hardware string            `yaml:"hardware"`
+	Results  map[string]string `yaml:"results,omitempty"`
+	Notes    string            `yaml:"notes,omitempty"`
+}
+
 // LoadCatalog loads and parses all YAML knowledge assets from an fs.FS.
 func LoadCatalog(fsys fs.FS) (*Catalog, error) {
 	cat := &Catalog{}
 
-	dirs := []string{"hardware", "engines", "models", "partitions", "stack"}
+	dirs := []string{"hardware", "engines", "models", "partitions", "stack", "scenarios"}
 	for _, dir := range dirs {
 		entries, err := fs.ReadDir(fsys, dir)
 		if err != nil {
@@ -540,6 +628,15 @@ func (cat *Catalog) parseAsset(data []byte, path string) error {
 			return fmt.Errorf("parse stack component %s: %w", path, err)
 		}
 		cat.StackComponents = append(cat.StackComponents, sc)
+	case "deployment_scenario":
+		var ds DeploymentScenario
+		if err := yaml.Unmarshal(data, &ds); err != nil {
+			return fmt.Errorf("parse deployment scenario %s: %w", path, err)
+		}
+		for i := range ds.Deployments {
+			ds.Deployments[i].Config = normalizeMap(ds.Deployments[i].Config)
+		}
+		cat.DeploymentScenarios = append(cat.DeploymentScenarios, ds)
 	default:
 		// Unknown kind: skip silently
 	}
@@ -570,6 +667,9 @@ func (cat *Catalog) ParsedKind() string {
 	if len(cat.StackComponents) > 0 {
 		kinds = append(kinds, "stack_component")
 	}
+	if len(cat.DeploymentScenarios) > 0 {
+		kinds = append(kinds, "deployment_scenario")
+	}
 	if len(kinds) == 1 {
 		return kinds[0]
 	}
@@ -583,7 +683,7 @@ func LoadCatalogLenient(fsys fs.FS) (*Catalog, []string) {
 	cat := &Catalog{}
 	var warnings []string
 
-	dirs := []string{"hardware", "engines", "models", "partitions", "stack"}
+	dirs := []string{"hardware", "engines", "models", "partitions", "stack", "scenarios"}
 	for _, dir := range dirs {
 		entries, err := fs.ReadDir(fsys, dir)
 		if err != nil {
@@ -618,7 +718,7 @@ type overlayProbe struct {
 // keyed by the asset's metadata.name. Used to detect overlay staleness.
 func ComputeDigests(fsys fs.FS) map[string]string {
 	digests := make(map[string]string)
-	dirs := []string{"hardware", "engines", "models", "partitions", "stack"}
+	dirs := []string{"hardware", "engines", "models", "partitions", "stack", "scenarios"}
 	for _, dir := range dirs {
 		entries, err := fs.ReadDir(fsys, dir)
 		if err != nil {
@@ -667,6 +767,7 @@ func MergeCatalog(base, overlay *Catalog) *Catalog {
 	base.ModelAssets = mergeSlice(base.ModelAssets, overlay.ModelAssets, func(v ModelAsset) string { return v.Metadata.Name })
 	base.PartitionStrategies = mergeSlice(base.PartitionStrategies, overlay.PartitionStrategies, func(v PartitionStrategy) string { return v.Metadata.Name })
 	base.StackComponents = mergeSlice(base.StackComponents, overlay.StackComponents, func(v StackComponent) string { return v.Metadata.Name })
+	base.DeploymentScenarios = mergeSlice(base.DeploymentScenarios, overlay.DeploymentScenarios, func(v DeploymentScenario) string { return v.Metadata.Name })
 	return base
 }
 
@@ -722,6 +823,9 @@ func CollectNames(cat *Catalog) map[string]bool {
 	for _, v := range cat.StackComponents {
 		names[v.Metadata.Name] = true
 	}
+	for _, v := range cat.DeploymentScenarios {
+		names[v.Metadata.Name] = true
+	}
 	return names
 }
 
@@ -730,7 +834,7 @@ func extractOverlayDigests(fsys fs.FS) map[string]string {
 		return nil
 	}
 	digests := make(map[string]string)
-	dirs := []string{"hardware", "engines", "models", "partitions", "stack"}
+	dirs := []string{"hardware", "engines", "models", "partitions", "stack", "scenarios"}
 	for _, dir := range dirs {
 		entries, err := fs.ReadDir(fsys, dir)
 		if err != nil {
@@ -798,6 +902,8 @@ func KindToDir(kind string) string {
 		return "partitions"
 	case "stack_component":
 		return "stack"
+	case "deployment_scenario":
+		return "scenarios"
 	default:
 		return ""
 	}

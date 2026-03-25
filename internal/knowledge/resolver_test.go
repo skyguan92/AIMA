@@ -202,6 +202,58 @@ func TestResolveAutoEngine(t *testing.T) {
 	})
 }
 
+func TestResolvePrefersExactEngineAssetVariant(t *testing.T) {
+	cat := mustLoadCatalog(t)
+	cat.RegisterModel(ModelAsset{
+		Metadata: ModelMetadata{
+			Name: "named-engine-model",
+			Type: "llm",
+		},
+		Variants: []ModelVariant{
+			{
+				Name:     "named-engine-exact",
+				Hardware: ModelVariantHardware{GPUArch: "TestArch"},
+				Engine:   "testengine-1.0",
+				Format:   "safetensors",
+				DefaultConfig: map[string]any{
+					"ctx_size": 8192,
+				},
+			},
+			{
+				Name:     "named-engine-generic",
+				Hardware: ModelVariantHardware{GPUArch: "*"},
+				Engine:   "testengine",
+				Format:   "safetensors",
+				DefaultConfig: map[string]any{
+					"ctx_size": 4096,
+				},
+			},
+		},
+	})
+
+	hw := HardwareInfo{
+		GPUArch:    "TestArch",
+		CPUArch:    "x86_64",
+		GPUVRAMMiB: 8192,
+	}
+
+	resolved, err := cat.Resolve(hw, "named-engine-model", "testengine", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.Config["ctx_size"] != 8192 {
+		t.Fatalf("ctx_size = %v, want 8192 from exact engine asset variant", resolved.Config["ctx_size"])
+	}
+
+	engine, err := cat.InferEngineType("named-engine-model", hw)
+	if err != nil {
+		t.Fatalf("InferEngineType: %v", err)
+	}
+	if engine != "testengine-1.0" {
+		t.Fatalf("InferEngineType = %q, want %q", engine, "testengine-1.0")
+	}
+}
+
 func TestBuildSyntheticModelAsset(t *testing.T) {
 	// Build a catalog with engines that declare supported_formats.
 	// This mirrors the real catalog: llamacpp supports gguf, vllm supports safetensors.
@@ -290,10 +342,10 @@ func TestFormatToEngine(t *testing.T) {
 		want   string
 	}{
 		{"gguf", "llamacpp"},
-		{"GGUF", "llamacpp"},        // case insensitive
+		{"GGUF", "llamacpp"}, // case insensitive
 		{"safetensors", "vllm"},
 		{"Safetensors", "vllm"},
-		{"awq", ""},                 // unknown
+		{"awq", ""}, // unknown
 		{"", ""},
 	}
 	for _, tt := range tests {
@@ -858,14 +910,332 @@ func TestResolveVariantForPull(t *testing.T) {
 	}
 }
 
+func TestParsedExpectedPerf(t *testing.T) {
+	tests := []struct {
+		name   string
+		perf   map[string]any
+		wantS  int     // StartupTimeS
+		wantCS int     // ColdStartTimeS
+		wantV  int     // VRAMMiB
+		wantT0 float64 // TokensPerSecond[0]
+		wantT1 float64 // TokensPerSecond[1]
+	}{
+		{"nil map", nil, 0, 0, 0, 0, 0},
+		{"empty map", map[string]any{}, 0, 0, 0, 0, 0},
+		{"full fields", map[string]any{
+			"startup_time_s":    30,
+			"cold_start_time_s": 45,
+			"vram_mib":          16000,
+			"tokens_per_second": []any{10.5, 20.0},
+		}, 30, 45, 16000, 10.5, 20.0},
+		{"partial fields", map[string]any{
+			"startup_time_s": 15,
+		}, 15, 0, 0, 0, 0},
+		{"float values", map[string]any{
+			"startup_time_s": 12.7,
+			"vram_mib":       8192.0,
+		}, 12, 0, 8192, 0, 0},
+		{"tokens_per_second short array", map[string]any{
+			"tokens_per_second": []any{5.0},
+		}, 0, 0, 0, 0, 0},
+		{"non-numeric startup", map[string]any{
+			"startup_time_s": "not-a-number",
+		}, 0, 0, 0, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := &ModelVariant{ExpectedPerformance: tt.perf}
+			p := v.ParsedExpectedPerf()
+			if p.StartupTimeS != tt.wantS {
+				t.Errorf("StartupTimeS = %d, want %d", p.StartupTimeS, tt.wantS)
+			}
+			if p.ColdStartTimeS != tt.wantCS {
+				t.Errorf("ColdStartTimeS = %d, want %d", p.ColdStartTimeS, tt.wantCS)
+			}
+			if p.VRAMMiB != tt.wantV {
+				t.Errorf("VRAMMiB = %d, want %d", p.VRAMMiB, tt.wantV)
+			}
+			if p.TokensPerSecond[0] != tt.wantT0 {
+				t.Errorf("TokensPerSecond[0] = %f, want %f", p.TokensPerSecond[0], tt.wantT0)
+			}
+			if p.TokensPerSecond[1] != tt.wantT1 {
+				t.Errorf("TokensPerSecond[1] = %f, want %f", p.TokensPerSecond[1], tt.wantT1)
+			}
+		})
+	}
+}
+
+func TestResolveTimeAndPowerFields(t *testing.T) {
+	cat := mustLoadCatalog(t)
+
+	hw := HardwareInfo{GPUArch: "TestArch", CPUArch: "x86_64", GPUVRAMMiB: 8192}
+	resolved, err := cat.Resolve(hw, "test-model-8b", "testengine", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// testengine has cold_start_s: [10, 30] and typical_draw_watts: [50, 100]
+	if resolved.ColdStartSMin != 10 || resolved.ColdStartSMax != 30 {
+		t.Errorf("ColdStartS = [%d, %d], want [10, 30]", resolved.ColdStartSMin, resolved.ColdStartSMax)
+	}
+	if resolved.EnginePowerWattsMin != 50 || resolved.EnginePowerWattsMax != 100 {
+		t.Errorf("EnginePowerWatts = [%d, %d], want [50, 100]", resolved.EnginePowerWattsMin, resolved.EnginePowerWattsMax)
+	}
+
+	// TestArch variant has vram_min_mib: 4096, no expected_performance.vram_mib
+	if resolved.EstimatedVRAMMiB != 4096 {
+		t.Errorf("EstimatedVRAMMiB = %d, want 4096 (from vram_min_mib fallback)", resolved.EstimatedVRAMMiB)
+	}
+}
+
+func TestResolveTimeFieldsZeroWhenMissing(t *testing.T) {
+	// Engine with no time/power constraints should produce zero values
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{{
+			Metadata: EngineMetadata{Name: "bare-engine", Type: "bare", Version: "1.0"},
+			Image:    EngineImage{Name: "bare/engine", Tag: "v1"},
+			Hardware: EngineHardware{GPUArch: "*"},
+			Startup:  EngineStartup{Command: []string{"serve"}, DefaultArgs: map[string]any{}, HealthCheck: HealthCheck{Path: "/health", TimeoutS: 60}},
+		}},
+		ModelAssets: []ModelAsset{{
+			Kind:     "model_asset",
+			Metadata: ModelMetadata{Name: "bare-model"},
+			Variants: []ModelVariant{{
+				Name:     "bare-v",
+				Hardware: ModelVariantHardware{GPUArch: "*"},
+				Engine:   "bare",
+			}},
+		}},
+	}
+	hw := HardwareInfo{GPUArch: "any"}
+	resolved, err := cat.Resolve(hw, "bare-model", "bare", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.ColdStartSMin != 0 || resolved.ColdStartSMax != 0 {
+		t.Errorf("ColdStartS = [%d, %d], want [0, 0]", resolved.ColdStartSMin, resolved.ColdStartSMax)
+	}
+	if resolved.EnginePowerWattsMin != 0 || resolved.EnginePowerWattsMax != 0 {
+		t.Errorf("EnginePowerWatts = [%d, %d], want [0, 0]", resolved.EnginePowerWattsMin, resolved.EnginePowerWattsMax)
+	}
+	if resolved.EstimatedVRAMMiB != 0 {
+		t.Errorf("EstimatedVRAMMiB = %d, want 0", resolved.EstimatedVRAMMiB)
+	}
+}
+
+func TestCheckFitPowerBudget(t *testing.T) {
+	tests := []struct {
+		name        string
+		tdpWatts    int
+		powerMin    int
+		powerMax    int
+		wantWarning string // substring, "" = no warning expected
+	}{
+		{"TDP=450, power [80,200] → no warning", 450, 80, 200, ""},
+		{"TDP=22, power [80,200] → min exceeds", 22, 80, 200, "minimum power draw (80 W) exceeds"},
+		{"TDP=150, power [80,200] → may reach", 150, 80, 200, "may reach 200 W"},
+		{"TDP=0 → skip", 0, 80, 200, ""},
+		{"power=0 → skip", 150, 0, 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolved := &ResolvedConfig{
+				Config:              map[string]any{},
+				EnginePowerWattsMin: tt.powerMin,
+				EnginePowerWattsMax: tt.powerMax,
+			}
+			hw := HardwareInfo{TDPWatts: tt.tdpWatts}
+			fit := CheckFit(resolved, hw)
+			if !fit.Fit {
+				t.Fatalf("expected Fit=true, got Reason=%q", fit.Reason)
+			}
+			if tt.wantWarning == "" {
+				for _, w := range fit.Warnings {
+					if strings.Contains(w, "power") {
+						t.Errorf("unexpected power warning: %q", w)
+					}
+				}
+			} else {
+				var found bool
+				for _, w := range fit.Warnings {
+					if strings.Contains(w, tt.wantWarning) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected warning containing %q, got %v", tt.wantWarning, fit.Warnings)
+				}
+			}
+		})
+	}
+}
+
+func TestFindHardwareTDP(t *testing.T) {
+	cat := mustLoadCatalog(t)
+	// test-gpu has tdp_watts: 300
+	if tdp := cat.FindHardwareTDP(HardwareInfo{GPUArch: "TestArch"}); tdp != 300 {
+		t.Errorf("FindHardwareTDP(TestArch) = %d, want 300", tdp)
+	}
+	// Unknown arch → 0
+	if tdp := cat.FindHardwareTDP(HardwareInfo{GPUArch: "Unknown"}); tdp != 0 {
+		t.Errorf("FindHardwareTDP(Unknown) = %d, want 0", tdp)
+	}
+}
+
+// --- P0 Feature A: L2c Golden Config injection tests ---
+
+func TestResolveWithGoldenConfig(t *testing.T) {
+	cat := mustLoadCatalog(t)
+	hw := HardwareInfo{GPUArch: "TestArch", CPUArch: "x86_64", GPUVRAMMiB: 8192}
+
+	goldenFn := func(hardware, engine, model string) map[string]any {
+		// Only return golden config for the expected triple
+		if hardware == "TestArch" && engine == "testengine" && model == "test-model-8b" {
+			return map[string]any{
+				"max_batch_size": 64,    // override L0 engine default (32) and variant default (16)
+				"golden_param":   "yes", // new key only in L2c
+			}
+		}
+		return nil
+	}
+
+	resolved, err := cat.Resolve(hw, "test-model-8b", "testengine", nil, WithGoldenConfig(goldenFn))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// L2c should override L0 defaults
+	if resolved.Config["max_batch_size"] != 64 {
+		t.Errorf("Config[max_batch_size] = %v, want 64 (L2c golden)", resolved.Config["max_batch_size"])
+	}
+	if resolved.Provenance["max_batch_size"] != "L2c" {
+		t.Errorf("Provenance[max_batch_size] = %q, want L2c", resolved.Provenance["max_batch_size"])
+	}
+
+	// New L2c key should be present
+	if resolved.Config["golden_param"] != "yes" {
+		t.Errorf("Config[golden_param] = %v, want yes", resolved.Config["golden_param"])
+	}
+	if resolved.Provenance["golden_param"] != "L2c" {
+		t.Errorf("Provenance[golden_param] = %q, want L2c", resolved.Provenance["golden_param"])
+	}
+
+	// L0 keys not overridden by L2c should remain at L0
+	if resolved.Config["port"] != 8000 {
+		t.Errorf("Config[port] = %v, want 8000 (L0 engine default)", resolved.Config["port"])
+	}
+	if resolved.Provenance["port"] != "L0" {
+		t.Errorf("Provenance[port] = %q, want L0", resolved.Provenance["port"])
+	}
+}
+
+func TestResolveGoldenConfigOverriddenByUser(t *testing.T) {
+	cat := mustLoadCatalog(t)
+	hw := HardwareInfo{GPUArch: "TestArch", CPUArch: "x86_64", GPUVRAMMiB: 8192}
+
+	goldenFn := func(hardware, engine, model string) map[string]any {
+		return map[string]any{"max_batch_size": 64}
+	}
+	userOverrides := map[string]any{"max_batch_size": 128}
+
+	resolved, err := cat.Resolve(hw, "test-model-8b", "testengine", userOverrides, WithGoldenConfig(goldenFn))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// L1 (user) must override L2c (golden)
+	if resolved.Config["max_batch_size"] != 128 {
+		t.Errorf("Config[max_batch_size] = %v, want 128 (L1 user override wins over L2c)", resolved.Config["max_batch_size"])
+	}
+	if resolved.Provenance["max_batch_size"] != "L1" {
+		t.Errorf("Provenance[max_batch_size] = %q, want L1", resolved.Provenance["max_batch_size"])
+	}
+}
+
+func TestResolveGoldenConfigNil(t *testing.T) {
+	cat := mustLoadCatalog(t)
+	hw := HardwareInfo{GPUArch: "TestArch", CPUArch: "x86_64", GPUVRAMMiB: 8192}
+
+	// GoldenConfigFunc returns nil — should not affect resolution
+	goldenFn := func(hardware, engine, model string) map[string]any {
+		return nil
+	}
+
+	resolved, err := cat.Resolve(hw, "test-model-8b", "testengine", nil, WithGoldenConfig(goldenFn))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// Should still have L0 defaults
+	if resolved.Config["max_batch_size"] != 16 {
+		t.Errorf("Config[max_batch_size] = %v, want 16 (variant L0)", resolved.Config["max_batch_size"])
+	}
+	if resolved.Provenance["max_batch_size"] != "L0" {
+		t.Errorf("Provenance[max_batch_size] = %q, want L0", resolved.Provenance["max_batch_size"])
+	}
+}
+
+// --- P0 Feature B: Time constraint filtering tests ---
+
+func TestInferEngineWithMaxColdStart(t *testing.T) {
+	cat := mustLoadCatalog(t)
+	hw := HardwareInfo{GPUArch: "TestArch", CPUArch: "x86_64", GPUVRAMMiB: 8192}
+
+	t.Run("cold start within limit picks testengine", func(t *testing.T) {
+		// testengine cold_start_s: [10, 30], limit=60 → testengine OK
+		engine, err := cat.InferEngineType("test-model-8b", hw, WithMaxColdStart(60))
+		if err != nil {
+			t.Fatalf("InferEngineType: %v", err)
+		}
+		if engine != "testengine" {
+			t.Errorf("engine = %q, want testengine (cold start 30 <= 60)", engine)
+		}
+	})
+
+	t.Run("cold start exceeds limit falls back to universal", func(t *testing.T) {
+		// testengine cold_start_s max=30, universal cold_start_s max=10
+		// limit=15 → testengine filtered, universal passes
+		engine, err := cat.InferEngineType("test-model-8b", hw, WithMaxColdStart(15))
+		if err != nil {
+			t.Fatalf("InferEngineType: %v", err)
+		}
+		if engine != "universal" {
+			t.Errorf("engine = %q, want universal (testengine cold_start 30 > 15)", engine)
+		}
+	})
+
+	t.Run("all exceed limit degrades gracefully", func(t *testing.T) {
+		// limit=1 → both testengine(30) and universal(10) exceed → graceful degradation keeps all
+		engine, err := cat.InferEngineType("test-model-8b", hw, WithMaxColdStart(1))
+		if err != nil {
+			t.Fatalf("InferEngineType: %v", err)
+		}
+		// Should still pick testengine (best amplifier for TestArch, graceful degradation)
+		if engine != "testengine" {
+			t.Errorf("engine = %q, want testengine (graceful degradation when all filtered)", engine)
+		}
+	})
+
+	t.Run("zero limit means no constraint", func(t *testing.T) {
+		engine, err := cat.InferEngineType("test-model-8b", hw, WithMaxColdStart(0))
+		if err != nil {
+			t.Fatalf("InferEngineType: %v", err)
+		}
+		if engine != "testengine" {
+			t.Errorf("engine = %q, want testengine (0 = no constraint)", engine)
+		}
+	})
+}
+
 func TestFindEngineByName(t *testing.T) {
 	cat := mustLoadCatalog(t)
 
 	tests := []struct {
-		name       string
-		query      string
-		hw         HardwareInfo
-		wantName   string // expected engine metadata.name, "" if nil
+		name     string
+		query    string
+		hw       HardwareInfo
+		wantName string // expected engine metadata.name, "" if nil
 	}{
 		{
 			name:     "exact metadata.name",

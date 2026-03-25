@@ -18,8 +18,10 @@ func TestConfigSetMasksSecrets(t *testing.T) {
 	}{
 		{"api_key", "super-secret-123", "api_key = ***"},
 		{"llm.api_key", "sk-abcdef", "llm.api_key = ***"},
+		{"support.worker_code", "worker-secret", "support.worker_code = ***"},
 		{"llm.endpoint", "http://localhost:8080/v1", "llm.endpoint = http://localhost:8080/v1"},
 		{"llm.model", "qwen3-8b", "llm.model = qwen3-8b"},
+		{"support.endpoint", "https://support.example.com", "support.endpoint = https://support.example.com"},
 	}
 
 	for _, tt := range tests {
@@ -47,7 +49,7 @@ func TestConfigSetMasksSecrets(t *testing.T) {
 				t.Errorf("stdout = %q, want substring %q", out, tt.wantOut)
 			}
 			// Verify secret value is NOT in output for sensitive keys
-			if strings.Contains(tt.key, "api_key") && strings.Contains(out, tt.value) {
+			if mcp.IsSensitiveConfigKey(tt.key) && strings.Contains(out, tt.value) {
 				t.Errorf("stdout contains raw secret %q for key %s", tt.value, tt.key)
 			}
 		})
@@ -63,8 +65,10 @@ func TestConfigGetMasksSecrets(t *testing.T) {
 	}{
 		{"api_key", "super-secret-123", "***", "super-secret-123"},
 		{"llm.api_key", "sk-abcdef", "***", "sk-abcdef"},
+		{"support.worker_code", "worker-secret", "***", "worker-secret"},
 		{"llm.endpoint", "http://localhost:8080/v1", "http://localhost:8080/v1", ""},
 		{"llm.model", "qwen3-8b", "qwen3-8b", ""},
+		{"support.endpoint", "https://support.example.com", "https://support.example.com", ""},
 	}
 
 	for _, tt := range tests {

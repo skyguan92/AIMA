@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -12,6 +14,7 @@ import (
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/proxy"
+	"github.com/jguan/aima/internal/support"
 )
 
 // Ensure cobra import is used.
@@ -54,6 +57,9 @@ func testApp(t *testing.T) *App {
 			},
 			AgentStatus: func(ctx context.Context) (json.RawMessage, error) {
 				return json.RawMessage(`{"zeroclaw_available":false,"zeroclaw_healthy":false}`), nil
+			},
+			SupportAskForHelp: func(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error) {
+				return json.RawMessage(`{"enabled":true,"device_id":"dev-test","created":false}`), nil
 			},
 		},
 	}
@@ -235,6 +241,109 @@ func TestAgentSubcommands(t *testing.T) {
 		if !subs[name] {
 			t.Errorf("agent missing subcommand %q", name)
 		}
+	}
+}
+
+func TestAskForHelpCommand(t *testing.T) {
+	app := testApp(t)
+	root := NewRootCmd(app)
+
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"askforhelp", "help", "me"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("askforhelp failed: %v", err)
+	}
+
+	if got := buf.String(); got == "" || !bytes.Contains(buf.Bytes(), []byte(`"device_id": "dev-test"`)) {
+		t.Fatalf("unexpected askforhelp output: %q", got)
+	}
+}
+
+func TestExecuteAskForHelpPromptsForInviteCode(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	uiOut := &bytes.Buffer{}
+	ui := &askForHelpUI{
+		reader:     bufio.NewReader(strings.NewReader("invite-123\n")),
+		out:        uiOut,
+		pretty:     true,
+		promptable: true,
+	}
+	call := &askForHelpCall{}
+
+	data, result, err := executeAskForHelp(context.Background(), func(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error) {
+		calls++
+		if calls == 1 {
+			return nil, &support.RegistrationPromptError{
+				Kind:   support.RegistrationPromptInviteOrWorker,
+				Detail: "invite_code or worker_enrollment_code is required for new device registration",
+			}
+		}
+		if inviteCode != "invite-123" {
+			t.Fatalf("inviteCode = %q, want invite-123", inviteCode)
+		}
+		return json.RawMessage(`{"enabled":true,"device_id":"dev-1"}`), nil
+	}, ui, call)
+	if err != nil {
+		t.Fatalf("executeAskForHelp: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if call.inviteCode != "invite-123" {
+		t.Fatalf("stored inviteCode = %q, want invite-123", call.inviteCode)
+	}
+	if result.DeviceID != "dev-1" {
+		t.Fatalf("device_id = %q, want dev-1", result.DeviceID)
+	}
+	if len(data) == 0 {
+		t.Fatal("expected response payload")
+	}
+	if !strings.Contains(uiOut.String(), "请输入邀请码或 Worker 接入码") {
+		t.Fatalf("unexpected prompt output: %q", uiOut.String())
+	}
+}
+
+func TestExecuteAskForHelpPromptsForRecoveryCode(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	uiOut := &bytes.Buffer{}
+	ui := &askForHelpUI{
+		reader:     bufio.NewReader(strings.NewReader("rec-123\n")),
+		out:        uiOut,
+		pretty:     true,
+		promptable: true,
+	}
+	call := &askForHelpCall{}
+
+	_, _, err := executeAskForHelp(context.Background(), func(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error) {
+		calls++
+		if calls == 1 {
+			return nil, &support.RegistrationPromptError{
+				Kind:   support.RegistrationPromptRecovery,
+				Detail: "valid recovery_code required to refresh existing device credentials",
+			}
+		}
+		if recoveryCode != "rec-123" {
+			t.Fatalf("recoveryCode = %q, want rec-123", recoveryCode)
+		}
+		return json.RawMessage(`{"enabled":true,"device_id":"dev-2"}`), nil
+	}, ui, call)
+	if err != nil {
+		t.Fatalf("executeAskForHelp: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if call.recoveryCode != "rec-123" {
+		t.Fatalf("stored recoveryCode = %q, want rec-123", call.recoveryCode)
+	}
+	if !strings.Contains(uiOut.String(), "请输入已保存的恢复码") {
+		t.Fatalf("unexpected prompt output: %q", uiOut.String())
 	}
 }
 
