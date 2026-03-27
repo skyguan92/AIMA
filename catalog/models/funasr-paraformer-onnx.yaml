@@ -1,0 +1,30 @@
+kind: model_asset
+metadata:
+  name: funasr-paraformer-onnx
+  type: asr
+  family: funasr
+  parameter_count: "220M"
+storage:
+  formats: [onnx]
+  default_path_pattern: "{{.DataDir}}/models/{{.Name}}"
+  sources:
+    - type: modelscope
+      repo: iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-onnx
+      format: onnx
+    - type: local_path
+      path: "/opt/mt-ai/asr/models/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-onnx"
+variants:
+  # --- CPU-only (any hardware) ---
+  # FunASR Paraformer-Large ONNX, Chinese ASR, 16kHz
+  # CPU inference via ONNX Runtime, no GPU needed
+  # Part of the FunASR pipeline: VAD → ASR → Punctuation
+  - name: funasr-paraformer-onnx-cpu
+    hardware:
+      gpu_arch: "*"
+    engine: funasr
+    format: onnx
+    default_config:
+      port: 10095
+    expected_performance:
+      vram_mib: 0
+      notes: "FunASR Paraformer-Large ONNX. CPU-only, ~500MB model. Chinese speech recognition, 16kHz input. ONNX Runtime inference. Pre-installed on AIBook at /opt/mt-ai/asr/models/. Pipeline: FSMN-VAD (495KB) → Paraformer (offline/online) → CT-Transformer punctuation. Also includes streaming online variant."

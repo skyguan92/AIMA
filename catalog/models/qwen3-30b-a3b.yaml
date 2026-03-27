@@ -58,14 +58,14 @@ variants:
   # CPU offload 无效: unified memory 下 CPU/GPU 共享物理内存池
   # 此设备当前稳定路径仍是 llamacpp + GGUF 量化 (走下方 universal variant)
 
-  # --- Moore Threads MUSA (M1000, 62GB unified, GPTQ-Int4) ---
+  # --- Moore Threads MUSA (M1000 Dev Kit, 62GB unified, GPTQ-Int4) ---
   # GPTQ-Int4 权重 ~16GB, M1000 unified memory 62GB
   # tp=1 only, enforce-eager required, GPTQ-only quantization
   # gpu_memory_utilization 0.70 on 62GB ≈ 43GB → 16GB 权重 + KV cache 充裕
   - name: qwen3-30b-a3b-musa-vllm-gptq
     hardware:
       gpu_arch: MUSA
-      vram_min_mib: 16384
+      vram_min_mib: 40960
       unified_memory: true
     engine: vllm
     format: safetensors
@@ -79,6 +79,37 @@ variants:
     expected_performance:
       tokens_per_second: [9, 13]
       latency_first_token_ms: [900, 4000]
+
+  # --- Moore Threads MUSA (M1000 SoC / AIBook, 32GB unified, GPTQ-Int4) ---
+  # GPTQ-Int4 权重 ~16GB, 32GB unified memory, tp=1 only
+  # MoE: 30B total / 3B active, 性能参考: M1000 Dev Kit ~12 tok/s
+  # gmu=0.70 on 32GB = 22.4GB → 16GB 权重 + 6.4GB KV cache
+  # 注意: 需单独下载 Qwen3-30B-A3B-GPTQ-Int4, AIBook 未预装
+  - name: qwen3-30b-a3b-musa-soc-vllm-gptq
+    hardware:
+      gpu_arch: MUSA
+      vram_min_mib: 16384
+      unified_memory: true
+    engine: vllm
+    format: safetensors
+    source:
+      type: modelscope
+      repo: Qwen/Qwen3-30B-A3B-GPTQ-Int4
+    default_config:
+      gpu_memory_utilization: 0.70
+      max_model_len: 8192
+      num_gpu_blocks_override: 256
+      max_num_seqs: 1
+      enforce_eager: true
+      quantization: gptq
+      dtype: float16
+      block_size: 32
+      swap_space: 0
+    expected_performance:
+      tokens_per_second: [9, 12]
+      latency_first_token_ms: [130, 1400]
+      vram_mib: 22528
+      notes: "AIBook M1000 SoC 32GB LPDDR5X. GPTQ-Int4, vLLM-MUSA 0.9.2. Reference from M1000 dev kit: 12.53 tok/s (32 tokens), TTFT 129-1362ms depending on input length. MoE with only 3B active params — faster decode than 8B dense. Cannot coexist with embedding (gmu=0.7 + EMB gmu=0.2 = 0.9, 28.8GB > safe limit). Needs separate download."
 
   # --- MetaX N260 (MACA, 2× 64GB HBM2e, Docker) ---
   # BF16 weights ~60GB, TP=2 → 30GB per GPU, 64GB HBM2e 余量充足

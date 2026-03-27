@@ -1,0 +1,28 @@
+kind: model_asset
+metadata:
+  name: litetts-mnn
+  type: tts
+  family: litetts
+  parameter_count: "~50M"
+storage:
+  formats: [mnn]
+  default_path_pattern: "{{.DataDir}}/models/{{.Name}}"
+  sources:
+    - type: local_path
+      path: "/opt/mt-ai/tts/litetts_serving_models/v0.4d_mnn"
+variants:
+  # --- CPU-only (ARM64, MNN runtime) ---
+  # LiteTTS v0.4d, Mobile Neural Network format
+  # Encoder (~55MB) + Decoder (~52MB) = ~107MB total
+  # CPU inference via MNN runtime, no GPU needed
+  # Part of AIBook TTS pipeline: text → G2P → LiteTTS → HiFiGAN vocoder
+  - name: litetts-mnn-cpu-arm64
+    hardware:
+      gpu_arch: "*"
+    engine: litetts
+    format: mnn
+    default_config:
+      port: 8081
+    expected_performance:
+      vram_mib: 0
+      notes: "LiteTTS v0.4d MNN. CPU-only ARM64 inference, ~107MB model (enc2z280000.mnn + dec280000.mnn). Pre-installed on AIBook at /opt/mt-ai/tts/litetts_serving_models/v0.4d_mnn/. Serves via integrated_server with HiFiGAN vocoder. Also includes G2P ONNX frontend for Chinese text processing. BLOCKED (2026-03-27): integrated_server PyInstaller binary crashes with 'RuntimeError: Device string must not be empty' — bundled Python lacks torch_musa, prosody predictor cannot find MUSA device. Requires vendor update to fix PyInstaller bundle."

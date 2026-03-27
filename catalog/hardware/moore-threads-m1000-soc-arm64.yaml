@@ -1,11 +1,11 @@
 kind: hardware_profile
 metadata:
-  name: moore-threads-m1000-arm64
-  description: "Moore Threads M1000 Dev Kit, aarch64, unified memory ~62GB"
+  name: moore-threads-m1000-soc-arm64
+  description: "Moore Threads M1000 SoC (AIBook), aarch64, 32GB unified LPDDR5X"
 hardware:
   gpu:
     arch: MUSA
-    vram_mib: 63488
+    vram_mib: 32768
     compute_id: ""
     compute_units: 0
     resource_name: ""
@@ -14,12 +14,16 @@ hardware:
     cores: 12
     freq_ghz: 2.65
   ram:
-    total_mib: 63528
-    bandwidth_gbps: 50
+    total_mib: 32768
+    bandwidth_gbps: 60
+  npu:
+    vendor: mthreads
+    cores: 2
+    tops_int8: 50
   unified_memory: true
 constraints:
-  tdp_watts: 100
-  power_modes: [100]
+  tdp_watts: 89
+  power_modes: [60, 89]
   cooling: active
 partition:
   gpu_tools: [engine_params]
