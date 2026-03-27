@@ -2437,13 +2437,34 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 	scanEnginesCore := func(ctx context.Context, runtimeFilter string, autoImport bool) (json.RawMessage, error) {
 		assetPatterns := make(map[string][]string)
 		binaryAssets := make(map[string]string)
+		// Generic interpreters — not engine binaries, skip when inferring from startup.command[0].
+		interpreters := map[string]bool{
+			"python": true, "python3": true, "python2": true,
+			"bash": true, "sh": true, "zsh": true,
+			"node": true, "java": true, "ruby": true,
+		}
 		for _, ea := range cat.EngineAssets {
 			if len(ea.Patterns) > 0 {
 				assetPatterns[ea.Metadata.Type] = append(assetPatterns[ea.Metadata.Type], ea.Patterns...)
 			}
+			// Determine native binary name: explicit source.binary, or infer from startup.command[0]
+			binName := ""
 			if ea.Source != nil && ea.Source.Binary != "" {
-				binaryAssets[ea.Source.Binary] = ea.Metadata.Type
-				binaryAssets[ea.Source.Binary+".exe"] = ea.Metadata.Type
+				binName = ea.Source.Binary
+			} else if len(ea.Startup.Command) > 0 {
+				candidate := filepath.Base(ea.Startup.Command[0])
+				if !interpreters[candidate] {
+					binName = candidate
+				}
+			}
+			if binName != "" {
+				// First registration wins — avoids variant-specific types (e.g. "vllm-spark")
+				// overwriting the generic type (e.g. "vllm") when multiple engine YAMLs share
+				// the same binary. The resolver picks the correct variant by hardware later.
+				if _, exists := binaryAssets[binName]; !exists {
+					binaryAssets[binName] = ea.Metadata.Type
+					binaryAssets[binName+".exe"] = ea.Metadata.Type
+				}
 			}
 		}
 		platform := goruntime.GOOS + "-" + goruntime.GOARCH

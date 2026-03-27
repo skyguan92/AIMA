@@ -24,7 +24,6 @@ config:
     - tokenizer
     - tokenizer_config
     - processor
-    - onnx
     - gguf-fp16
     - gguf-q4
     - gguf-q8
@@ -82,11 +81,23 @@ config:
       format: "pytorch"
       type_hint: "asr"
 
-    # ONNX
-    - name: onnx
-      config_files: ["config.json"]
+    # FunASR ONNX (ASR/VAD models with configuration.json)
+    - name: funasr_onnx
+      config_files: ["configuration.json"]
       weight_exts: [".onnx"]
       format: "onnx"
+
+    # ONNX (generic, with config.json or config.yaml)
+    - name: onnx
+      config_files: ["config.json", "config.yaml"]
+      weight_exts: [".onnx"]
+      format: "onnx"
+
+    # MNN (Mobile Neural Network, edge inference)
+    - name: mnn
+      config_files: []
+      weight_exts: [".mnn"]
+      format: "mnn"
 
     # GGUF
     - name: gguf

@@ -144,7 +144,7 @@ func (sc *ScanConfig) applyDefaults() {
 	defaultSkipNames := []string{
 		"text_encoder", "transformer", "vae", "unet", "controlnet",
 		"scheduler", "feature_extractor", "speech_tokenizer", "tokenizer",
-		"tokenizer_config", "processor", "onnx", "gguf-fp16", "gguf-q4", "gguf-q8",
+		"tokenizer_config", "processor", "gguf-fp16", "gguf-q4", "gguf-q8",
 		"fp16", "fp32", "quantized", "mmproj", "encoder", "decoder",
 		"postprocessor", "preprocessor", "vision_model", "audio_encoder", "projection",
 	}
@@ -195,10 +195,22 @@ func (sc *ScanConfig) applyDefaultPatterns() {
 			typeHint:    "asr",
 		},
 		{
-			name:        "onnx",
-			configFiles: []string{"config.json"},
+			name:        "funasr_onnx",
+			configFiles: []string{"configuration.json"},
 			weightExts:  []string{".onnx"},
 			format:      "onnx",
+		},
+		{
+			name:        "onnx",
+			configFiles: []string{"config.json", "config.yaml"},
+			weightExts:  []string{".onnx"},
+			format:      "onnx",
+		},
+		{
+			name:        "mnn",
+			configFiles: []string{},
+			weightExts:  []string{".mnn"},
+			format:      "mnn",
 		},
 		{
 			name:        "gguf",
@@ -267,8 +279,50 @@ func DefaultScanPaths() []string {
 			"/mnt/data/models",
 			filepath.Join(home, "data/models"),
 		)
+		// Discover vendor-preloaded model directories under /opt (e.g. /opt/mt-ai/llm/models).
+		paths = append(paths, discoverOptModelPaths()...)
 	}
 
+	return paths
+}
+
+// discoverOptModelPaths finds vendor-preloaded model directories under /opt.
+// Checks two levels: /opt/*/models, /opt/*/llm/models, and /opt/*/*/models
+// to cover structures like /opt/mt-ai/emb/models/, /opt/mt-ai/llm/models/.
+func discoverOptModelPaths() []string {
+	entries, err := os.ReadDir("/opt")
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var paths []string
+	add := func(p string) {
+		if !seen[p] {
+			if info, err := os.Stat(p); err == nil && info.IsDir() {
+				paths = append(paths, p)
+				seen[p] = true
+			}
+		}
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		base := filepath.Join("/opt", e.Name())
+		// Level 1: /opt/*/models
+		add(filepath.Join(base, "models"))
+		// Level 2: /opt/*/llm/models, /opt/*/emb/models, etc.
+		subEntries, err := os.ReadDir(base)
+		if err != nil {
+			continue
+		}
+		for _, sub := range subEntries {
+			if !sub.IsDir() {
+				continue
+			}
+			add(filepath.Join(base, sub.Name(), "models"))
+		}
+	}
 	return paths
 }
 
@@ -545,7 +599,11 @@ func buildModelInfo(dir string, entries []os.DirEntry, p ModelPattern, weightPat
 	if configPath != "" {
 		data, err := os.ReadFile(configPath)
 		if err == nil {
-			json.Unmarshal(data, &config)
+			if strings.HasSuffix(configPath, ".yaml") || strings.HasSuffix(configPath, ".yml") {
+				yaml.Unmarshal(data, &config)
+			} else {
+				json.Unmarshal(data, &config)
+			}
 		}
 	}
 
@@ -556,10 +614,44 @@ func buildModelInfo(dir string, entries []os.DirEntry, p ModelPattern, weightPat
 		mType = detectModelType(arch)
 	}
 
+	// FunASR/ONNX models: detect type from "task" field in configuration.json
+	if (mType == "" || mType == "llm") && config != nil {
+		if task, _ := config["task"].(string); task != "" {
+			switch {
+			case strings.Contains(task, "speech-recognition"):
+				mType = "asr"
+			case strings.Contains(task, "voice-activity-detection"):
+				mType = "vad"
+			case strings.Contains(task, "text-to-speech"):
+				mType = "tts"
+			case strings.Contains(task, "punctuation"):
+				mType = "nlp"
+			}
+		}
+	}
+
+	// Fallback: infer type from directory path for edge-inference models
+	if (mType == "" || mType == "llm") && (p.format == "onnx" || p.format == "mnn") {
+		dirLower := strings.ToLower(dir)
+		switch {
+		case strings.Contains(dirLower, "/tts/") || strings.Contains(dirLower, "_tts_"):
+			mType = "tts"
+		case strings.Contains(dirLower, "/asr/") || strings.Contains(dirLower, "_asr_"):
+			mType = "asr"
+		case strings.Contains(dirLower, "/vad/") || strings.Contains(dirLower, "_vad_"):
+			mType = "vad"
+		case strings.Contains(dirLower, "/ocr/") || strings.Contains(dirLower, "_ocr_"):
+			mType = "ocr"
+		case strings.Contains(dirLower, "/emb/") || strings.Contains(dirLower, "embedding"):
+			mType = "embedding"
+		}
+	}
+
 	sizeBytes := calculateModelSize(dir, entries, p.weightExts)
 
-	// Filter out incomplete models (below minimum size)
-	if sizeBytes < minSize {
+	// Filter out incomplete models (below minimum size).
+	// ONNX/MNN models are often small (quantized edge models) — skip size filter.
+	if sizeBytes < minSize && p.format != "onnx" && p.format != "mnn" {
 		return nil
 	}
 
