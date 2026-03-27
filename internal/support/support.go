@@ -713,9 +713,11 @@ func (s *Service) ensureRegistered(ctx context.Context, req AskRequest) (deviceS
 	if referral := strings.TrimSpace(req.ReferralCode); referral != "" {
 		registerReq["referral_code"] = referral
 	}
-	if invite := s.optionalConfig(ctx, ConfigInviteCode, "AIMA_SUPPORT_INVITE_CODE"); invite != "" {
-		registerReq["invite_code"] = invite
+	invite := s.optionalConfig(ctx, ConfigInviteCode, "AIMA_SUPPORT_INVITE_CODE")
+	if invite == "" {
+		invite = "channel-aima"
 	}
+	registerReq["invite_code"] = invite
 	if worker := s.optionalConfig(ctx, ConfigWorkerCode, "AIMA_SUPPORT_WORKER_CODE"); worker != "" {
 		registerReq["worker_enrollment_code"] = worker
 	}
@@ -1306,7 +1308,8 @@ func needsInvitePrompt(detail string) bool {
 		strings.Contains(detail, "invalid invite code") ||
 		strings.Contains(detail, "worker_enrollment_code") ||
 		strings.Contains(detail, "worker enrollment code") ||
-		strings.Contains(detail, "new invite_code required")
+		strings.Contains(detail, "new invite_code required") ||
+		strings.Contains(detail, "invite quota exhausted")
 }
 
 func needsRecoveryPrompt(detail string) bool {
