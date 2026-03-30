@@ -73,11 +73,8 @@ aima knowledge export [--output]          # 导出知识 (供离线传递)
 ### Agent
 
 ```bash
-aima ask "指令"                           # 让 Agent 执行任务 (自动路由 L3a/L3b)
-aima ask --local "指令"                   # 强制 Go Agent (L3a)
-aima ask --deep "指令"                    # 强制 ZeroClaw (L3b)
-aima ask --session <id> "指令"            # 继续 ZeroClaw 会话
-aima agent install                        # 安装 ZeroClaw
+aima ask "指令"                           # 让 Agent 执行任务
+aima ask --session <id> "指令"            # 继续会话
 aima agent status                         # 查看 Agent 状态
 ```
 
@@ -175,11 +172,11 @@ aima deploy ./models/glm-4-9b-chat
 ### Agent 查询
 
 ```bash
-# 让 Agent 回答简单问题 (Go Agent)
-aima ask --local "我有什么 GPU?"
+# 让 Agent 回答简单问题
+aima ask "我有什么 GPU?"
 
-# 让 Agent 进行复杂推理 (ZeroClaw)
-aima ask --deep "为什么我的模型推理很慢？"
+# 让 Agent 回答复杂问题
+aima ask "为什么我的模型推理很慢？"
 ```
 
 ---

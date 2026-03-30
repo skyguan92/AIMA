@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	state "github.com/jguan/aima/internal"
+	"github.com/jguan/aima/internal/agent"
 	benchpkg "github.com/jguan/aima/internal/benchmark"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
@@ -109,7 +110,7 @@ func TestFleetBlockedTools(t *testing.T) {
 	// All destructive tools must be in the fleet denylist
 	mustBlock := []string{
 		"model.remove", "engine.remove", "deploy.delete",
-		"explore.start", "agent.install", "stack.init", "agent.rollback", "shell.exec",
+		"explore.start", "stack.init", "agent.rollback", "shell.exec",
 	}
 	for _, tool := range mustBlock {
 		if _, ok := fleetBlockedTools[tool]; !ok {
@@ -126,6 +127,38 @@ func TestFleetBlockedTools(t *testing.T) {
 			t.Errorf("fleetBlockedTools should not block %q", tool)
 		}
 	}
+}
+
+func TestAgentAvailable(t *testing.T) {
+	t.Run("nil client is unavailable", func(t *testing.T) {
+		if agentAvailable(context.Background(), nil) {
+			t.Fatal("expected nil client to be unavailable")
+		}
+	})
+
+	t.Run("unreachable endpoint is unavailable", func(t *testing.T) {
+		client := agent.NewOpenAIClient("http://127.0.0.1:1/v1")
+		if agentAvailable(context.Background(), client) {
+			t.Fatal("expected unreachable endpoint to be unavailable")
+		}
+	})
+
+	t.Run("reachable models endpoint is available", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"qwen3-8b"}]}`))
+		}))
+		defer server.Close()
+
+		client := agent.NewOpenAIClient(server.URL + "/v1")
+		if !agentAvailable(context.Background(), client) {
+			t.Fatal("expected reachable endpoint to be available")
+		}
+	})
 }
 
 func TestQueryGoldenOverrides(t *testing.T) {
@@ -326,80 +359,6 @@ func TestLoadLLMSettings_Defaults(t *testing.T) {
 	}
 	if settings.APIKey != "" {
 		t.Fatalf("APIKey = %q, want empty", settings.APIKey)
-	}
-}
-
-func TestSyncZeroClawConfig_WritesManagedConfig(t *testing.T) {
-	ctx := context.Background()
-	db, err := state.Open(ctx, ":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer db.Close()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data": []map[string]string{{"id": "test-model"}},
-		})
-	}))
-	defer server.Close()
-
-	if err := db.SetConfig(ctx, "llm.endpoint", server.URL+"/v1"); err != nil {
-		t.Fatalf("SetConfig llm.endpoint: %v", err)
-	}
-
-	dataDir := t.TempDir()
-	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "zeroclaw")
-	script := `#!/bin/sh
-if [ "$1" != "config" ]; then
-  exit 1
-fi
-shift
-if [ "$1" != "--config-dir" ]; then
-  exit 1
-fi
-cfgdir="$2"
-mkdir -p "$cfgdir"
-cat > "$cfgdir/config.toml" <<'EOF'
-default_provider = "openrouter"
-default_model = "old-model"
-default_temperature = 0.7
-
-[transcription]
-enabled = false
-api_url = "https://example.invalid/v1"
-api_key = "old-secret"
-EOF
-echo '{}'
-`
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake zeroclaw: %v", err)
-	}
-
-	if err := syncZeroClawConfig(ctx, db, dataDir, binPath); err != nil {
-		t.Fatalf("syncZeroClawConfig: %v", err)
-	}
-
-	configPath := filepath.Join(dataDir, "zeroclaw", "config.toml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read zeroclaw config: %v", err)
-	}
-	text := string(data)
-	for _, want := range []string{
-		`default_provider = "openai"`,
-		`default_model = "test-model"`,
-		`api_url = "` + server.URL + `/v1"`,
-		`api_key = "aima-local"`,
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("config missing %q:\n%s", want, text)
-		}
 	}
 }
 

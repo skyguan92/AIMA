@@ -24,7 +24,6 @@ func newExploreCmd(app *App) *cobra.Command {
 			engine, _ := cmd.Flags().GetString("engine")
 			hardware, _ := cmd.Flags().GetString("hardware")
 			endpoint, _ := cmd.Flags().GetString("endpoint")
-			planner, _ := cmd.Flags().GetString("planner")
 			sourceRef, _ := cmd.Flags().GetString("source-ref")
 			requestedBy, _ := cmd.Flags().GetString("requested-by")
 			maxCandidates, _ := cmd.Flags().GetInt("max-candidates")
@@ -50,9 +49,6 @@ func newExploreCmd(app *App) *cobra.Command {
 			}
 			if goal != "" {
 				params["goal"] = goal
-			}
-			if planner != "" {
-				params["planner"] = planner
 			}
 			if sourceRef != "" {
 				params["source_ref"] = sourceRef
@@ -86,7 +82,6 @@ func newExploreCmd(app *App) *cobra.Command {
 	startCmd.Flags().String("engine", "", "Target engine")
 	startCmd.Flags().String("hardware", "", "Target hardware")
 	startCmd.Flags().String("endpoint", "", "Inference endpoint override")
-	startCmd.Flags().String("planner", "", "Planner identity (none or zeroclaw)")
 	startCmd.Flags().String("source-ref", "", "Source reference such as open question ID")
 	startCmd.Flags().String("requested-by", "", "Requester identity")
 	startCmd.Flags().Int("max-candidates", 20, "Maximum candidate configs")
