@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/proxy"
 )
 
@@ -25,6 +26,7 @@ func newServeCmd(app *App) *cobra.Command {
 		addr            string
 		mcpAddr         string
 		mcpMod          bool
+		mcpProfile      string
 		apiKey          string
 		mdnsEnabled     bool
 		discoverEnabled bool
@@ -124,6 +126,14 @@ func newServeCmd(app *App) *cobra.Command {
 
 			// Start MCP server if requested (on a separate port)
 			if mcpMod {
+				if mcpProfile != "" {
+					p := mcp.Profile(mcpProfile)
+					if !mcp.IsValidProfile(p) {
+						return fmt.Errorf("unknown MCP profile %q; valid profiles: operator, patrol, explorer", mcpProfile)
+					}
+					app.MCP.SetProfile(p)
+					slog.Info("MCP tool profile active", "profile", mcpProfile)
+				}
 				go func() {
 					slog.Info("starting MCP server (HTTP)", "addr", mcpAddr)
 					mux := http.NewServeMux()
@@ -167,6 +177,7 @@ func newServeCmd(app *App) *cobra.Command {
 	cmd.Flags().StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", proxy.DefaultPort), "Proxy server listen address")
 	cmd.Flags().StringVar(&mcpAddr, "mcp-addr", "127.0.0.1:9090", "MCP server listen address")
 	cmd.Flags().BoolVar(&mcpMod, "mcp", false, "Also serve MCP protocol over HTTP")
+	cmd.Flags().StringVar(&mcpProfile, "mcp-profile", "", "MCP tool profile: operator, patrol, explorer (default: all tools)")
 	cmd.Flags().StringVar(&apiKey, "api-key", defaultKey, "API key for authentication (or set AIMA_API_KEY env)")
 	cmd.Flags().BoolVar(&mdnsEnabled, "mdns", true, "Enable mDNS service broadcast")
 	cmd.Flags().BoolVar(&discoverEnabled, "discover", false, "Discover remote inference services via mDNS")

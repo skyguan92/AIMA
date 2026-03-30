@@ -157,6 +157,81 @@ type ToolDeps struct {
 	ScenarioApply func(ctx context.Context, name string, dryRun bool) (json.RawMessage, error)
 }
 
+// Profile controls which tools are visible in tools/list responses.
+// Profile only affects discovery (tools/list); tools/call can still invoke any registered tool.
+type Profile string
+
+const (
+	// ProfileFull exposes all registered tools (default, backward compatible).
+	ProfileFull Profile = ""
+	// ProfileOperator exposes tools needed by external AI agents for day-to-day operations.
+	ProfileOperator Profile = "operator"
+	// ProfilePatrol exposes the minimal set used by the internal patrol/healer loop.
+	ProfilePatrol Profile = "patrol"
+	// ProfileExplorer exposes tools for exploration and tuning agents.
+	ProfileExplorer Profile = "explorer"
+)
+
+// profileIncludes maps each profile to its include patterns.
+// Strings ending with "." are prefix matches; others are exact matches.
+var profileIncludes = map[Profile][]string{
+	ProfileOperator: {
+		// Full categories
+		"hardware.", "model.", "engine.", "deploy.",
+		"system.", "scenario.", "fleet.", "discover.",
+		"stack.", "catalog.", "openclaw.", "support.",
+		// Selective knowledge tools (skip deep analytics, sync, internals)
+		"knowledge.resolve", "knowledge.search", "knowledge.list",
+		"knowledge.list_profiles", "knowledge.list_engines", "knowledge.list_models",
+		"knowledge.generate_pod", "knowledge.validate",
+		"knowledge.export", "knowledge.import",
+		// Selective agent tools (skip patrol internals)
+		"agent.ask", "agent.guide", "agent.status",
+	},
+	ProfilePatrol: {
+		"hardware.metrics",
+		"deploy.list", "deploy.status", "deploy.logs", "deploy.apply", "deploy.dry_run",
+		"knowledge.resolve",
+		"benchmark.run",
+		"agent.patrol_status", "agent.alerts", "agent.patrol_config", "agent.patrol_actions",
+	},
+	ProfileExplorer: {
+		"deploy.apply", "deploy.dry_run", "deploy.status", "deploy.list", "deploy.logs",
+		"benchmark.", "explore.", "tuning.",
+		"knowledge.resolve", "knowledge.search_configs", "knowledge.promote",
+		"knowledge.save", "knowledge.validate",
+		"hardware.detect", "hardware.metrics",
+	},
+}
+
+// IsValidProfile returns true if p is a recognized profile name.
+func IsValidProfile(p Profile) bool {
+	switch p {
+	case ProfileFull, ProfileOperator, ProfilePatrol, ProfileExplorer:
+		return true
+	}
+	return false
+}
+
+// ProfileMatches reports whether the given tool name is included in the profile.
+// Returns true for ProfileFull (empty string) — all tools match.
+func ProfileMatches(p Profile, toolName string) bool {
+	patterns, ok := profileIncludes[p]
+	if !ok {
+		return true // unknown or empty profile = show all
+	}
+	for _, pat := range patterns {
+		if strings.HasSuffix(pat, ".") {
+			if strings.HasPrefix(toolName, pat) {
+				return true
+			}
+		} else if toolName == pat {
+			return true
+		}
+	}
+	return false
+}
+
 // validConfigKeys is the whitelist for system.config get/set.
 var supportedConfigKeys = []string{
 	"api_key",
@@ -322,7 +397,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// hardware.detect
 	s.RegisterTool(&Tool{
 		Name:        "hardware.detect",
-		Description: "Detect this device's hardware capabilities: GPU model, VRAM, compute SDK, CPU cores, total RAM, and NPU if present. Returns a structured hardware profile. Use when you need to understand what this device can run before deploying a model. Do not use for real-time GPU utilization or temperature (use hardware.metrics) or for a combined system overview (use system.status).",
+		Description: "Detect this device's hardware capabilities: GPU model, VRAM, compute SDK, CPU cores, total RAM, and NPU if present.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.DetectHardware == nil {
@@ -339,7 +414,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// hardware.metrics
 	s.RegisterTool(&Tool{
 		Name:        "hardware.metrics",
-		Description: "Collect real-time hardware metrics: GPU utilization percentage, GPU memory used/total, temperature, and power draw. Use when monitoring a running deployment's resource usage or diagnosing performance issues. Do not use for static hardware capability detection (use hardware.detect).",
+		Description: "Collect real-time hardware metrics: GPU utilization, memory used/total, temperature, and power draw.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.CollectMetrics == nil {
@@ -356,7 +431,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// model.scan
 	s.RegisterTool(&Tool{
 		Name:        "model.scan",
-		Description: "Scan the local filesystem for model files (GGUF, SafeTensors) and register newly discovered ones in the database. Use when models were manually downloaded or copied to disk and need to be registered. Do not use for listing already-registered models (use model.list) or browsing the YAML catalog of all supported models (use knowledge.list_models).",
+		Description: "Scan the local filesystem for model files (GGUF, SafeTensors) and register newly discovered ones in the database.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ScanModels == nil {
@@ -373,7 +448,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// model.list
 	s.RegisterTool(&Tool{
 		Name:        "model.list",
-		Description: "List models registered in the local database (previously found by model.scan or model.import). Returns names, file paths, sizes, and statuses. Use when checking what models are locally available for deployment. Do not use for browsing YAML catalog definitions of supported models (use knowledge.list_models) or discovering new files on disk (use model.scan).",
+		Description: "List models registered in the local database with names, file paths, sizes, and statuses.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ListModels == nil {
@@ -390,7 +465,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// model.pull
 	s.RegisterTool(&Tool{
 		Name:        "model.pull",
-		Description: "Download a model by name from a remote source and register it in the database. Use when the user wants a model that is not yet on disk. Call model.list first to check if it is already available locally.",
+		Description: "Download a model by name from a remote source and register it in the database.",
 		InputSchema: schema(`"name":{"type":"string","description":"Model name to download, e.g. 'qwen3-0.6b', 'qwen3.5-35b-a3b'. Must match a name in the knowledge base (call knowledge.list_models to see available names)."}`, "name"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.PullModel == nil {
@@ -415,7 +490,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// model.import
 	s.RegisterTool(&Tool{
 		Name:        "model.import",
-		Description: "Import a model from a local file path and register it in the database. Use when a model file exists on disk but is not yet registered. Do not use for downloading from remote sources (use model.pull).",
+		Description: "Import a model from a local file path and register it in the database.",
 		InputSchema: schema(`"path":{"type":"string","description":"Absolute path to a model file (e.g. '/data/models/qwen3-0.6b.gguf') or directory containing model files"}`, "path"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ImportModel == nil {
@@ -441,7 +516,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// model.info
 	s.RegisterTool(&Tool{
 		Name:        "model.info",
-		Description: "Get detailed information about a specific model: file path, size, format, quantization, and knowledge base metadata. Use when you need specifics about one model before deployment or troubleshooting. Call model.list first if you do not know the exact name.",
+		Description: "Get detailed information about a specific model: file path, size, format, quantization, and knowledge base metadata.",
 		InputSchema: schema(`"name":{"type":"string","description":"Model name as registered in the database, e.g. 'qwen3-0.6b'. Call model.list to see available names."}`, "name"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.GetModelInfo == nil {
@@ -496,7 +571,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// engine.scan
 	s.RegisterTool(&Tool{
 		Name:        "engine.scan",
-		Description: "Scan this device for locally available inference engines (container images and native binaries) and register newly found ones in the database. Use after pulling or importing an engine to ensure it is detected. Do not use for listing already-registered engines (use engine.list) or browsing YAML catalog engine definitions (use knowledge.list_engines).",
+		Description: "Scan this device for locally available inference engines (container images and native binaries) and register newly found ones.",
 		InputSchema: schema(`"runtime":{"type":"string","enum":["auto","container","native"],"description":"Runtime filter: 'auto' scans both container and native (default), 'container' scans only K3S/Docker images, 'native' scans only local binaries"}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ScanEngines == nil {
@@ -524,7 +599,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// engine.info
 	s.RegisterTool(&Tool{
 		Name:        "engine.info",
-		Description: "Get full information about a specific engine: live availability from database plus knowledge base details (hardware requirements, startup config, supported features, constraints). Use when you need specifics about an engine before deployment. Call engine.list first if you do not know the exact name.",
+		Description: "Get full information about a specific engine: availability, hardware requirements, startup config, supported features, and constraints.",
 		InputSchema: schema(`"name":{"type":"string","description":"Engine type (e.g. 'llamacpp', 'vllm', 'sglang'), image name, or engine ID. Call engine.list to see available names."}`, "name"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.GetEngineInfo == nil {
@@ -550,7 +625,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// engine.list
 	s.RegisterTool(&Tool{
 		Name:        "engine.list",
-		Description: "List inference engines registered in the local database (previously found by engine.scan or engine.import). Returns engine names, types, runtime (container/native), and statuses. Use when checking what engines are locally available. Do not use for browsing YAML catalog definitions of all supported engines (use knowledge.list_engines) or detecting new engines on disk (use engine.scan).",
+		Description: "List inference engines registered in the local database with names, types, runtime (container/native), and statuses.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ListEngines == nil {
@@ -567,7 +642,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// engine.pull
 	s.RegisterTool(&Tool{
 		Name:        "engine.pull",
-		Description: "Download an inference engine image or binary from its configured source. Downloads a container image or native binary depending on this device's platform. If name is omitted, pulls the catalog's default engine for this hardware. Run engine.scan after pulling to register it.",
+		Description: "Download an inference engine image or binary from its configured source. If name is omitted, pulls the default engine for this hardware.",
 		InputSchema: schema(`"name":{"type":"string","description":"Engine type to pull, e.g. 'llamacpp', 'vllm', 'sglang'. Omit to pull the default engine for this hardware."}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.PullEngine == nil {
@@ -593,7 +668,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// engine.import
 	s.RegisterTool(&Tool{
 		Name:        "engine.import",
-		Description: "Import an engine container image from a local OCI tar file and register it. Use when an engine image was transferred offline (airgap). Do not use for downloading from a registry (use engine.pull).",
+		Description: "Import an engine container image from a local OCI tar file and register it (airgap use case).",
 		InputSchema: schema(`"path":{"type":"string","description":"Absolute path to the OCI tar file, e.g. '/data/images/vllm-cuda.tar'"}`, "path"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ImportEngine == nil {
@@ -643,7 +718,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// deploy.apply
 	s.RegisterTool(&Tool{
 		Name:        "deploy.apply",
-		Description: "Deploy a model as an inference service. Auto-detects hardware, resolves the optimal engine and config from the knowledge base, and creates a K3S Pod or native process. Returns NEEDS_APPROVAL with a deployment plan — present it to the user, then call deploy.approve with the approval ID to execute. If engine is omitted, the best engine is auto-selected. Do not use for previewing without executing (use deploy.dry_run) or checking existing deployment status (use deploy.status).",
+		Description: "Deploy a model as an inference service. Auto-detects hardware, resolves optimal config, creates K3S Pod or native process. Returns NEEDS_APPROVAL — present the plan to the user, then call deploy.approve with the approval ID.",
 		InputSchema: schema(
 			`"model":{"type":"string","description":"Model to deploy, e.g. 'qwen3-0.6b'. Call model.list to verify it is available locally."},`+
 				`"engine":{"type":"string","description":"Engine type, e.g. 'vllm', 'llamacpp'. Omit to auto-select the best engine for this hardware."},`+
@@ -685,7 +760,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// deploy.dry_run
 	s.RegisterTool(&Tool{
 		Name:        "deploy.dry_run",
-		Description: "Preview a deployment without executing it. Returns the resolved config, hardware fitness report, generated Pod YAML, and any warnings. Use before deploy.apply to verify the configuration is correct. No side effects — nothing is deployed.",
+		Description: "Preview a deployment without executing it. Returns resolved config, hardware fitness report, generated Pod YAML, and warnings. No side effects.",
 		InputSchema: schema(
 			`"model":{"type":"string","description":"Model to deploy, e.g. 'qwen3-0.6b'"},`+
 				`"engine":{"type":"string","description":"Engine type, e.g. 'vllm', 'llamacpp'. Omit to auto-select."},`+
@@ -727,7 +802,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// deploy.approve
 	s.RegisterTool(&Tool{
 		Name:        "deploy.approve",
-		Description: "Approve and execute a pending deployment. Call this only after presenting the NEEDS_APPROVAL plan from deploy.apply to the user and receiving their confirmation. Do not call without user approval.",
+		Description: "Approve and execute a pending deployment. Call only after presenting the plan from deploy.apply to the user and receiving confirmation.",
 		InputSchema: schema(`"id":{"type":"integer","description":"Approval ID from the deploy.apply NEEDS_APPROVAL response, e.g. 1"}`, "id"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.DeployApprove == nil {
@@ -775,7 +850,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// deploy.status
 	s.RegisterTool(&Tool{
 		Name:        "deploy.status",
-		Description: "Check the health of a specific deployment: phase (Running/Pending/Failed), ready state, restart count, and exit code. Accepts either the deployment name or model name. Use after deploy.apply to verify the service started correctly, or when diagnosing issues.",
+		Description: "Check deployment health: phase (Running/Pending/Failed), ready state, restart count, exit code. Accepts deployment name or model name.",
 		InputSchema: schema(`"name":{"type":"string","description":"Deployment name (e.g. 'aima-vllm-qwen3-0-6b') or model name (e.g. 'qwen3-0.6b'). Call deploy.list if unsure."}`, "name"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.DeployStatus == nil {
@@ -801,7 +876,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// deploy.list
 	s.RegisterTool(&Tool{
 		Name:        "deploy.list",
-		Description: "List all active deployments on this device with their names, models, engines, and statuses. Use as the first step when checking what is currently running, or to get deployment names for deploy.status or deploy.logs.",
+		Description: "List all active deployments on this device with names, models, engines, and statuses.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.DeployList == nil {
@@ -818,7 +893,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// deploy.logs
 	s.RegisterTool(&Tool{
 		Name:        "deploy.logs",
-		Description: "Get recent log output from a deployment. Use when diagnosing startup failures, crashes, or runtime errors. Accepts deployment name or model name.",
+		Description: "Get recent log output from a deployment. Accepts deployment name or model name.",
 		InputSchema: schema(
 			`"name":{"type":"string","description":"Deployment name (e.g. 'aima-vllm-qwen3-0-6b') or model name. Call deploy.list if unsure."},`+
 				`"tail":{"type":"integer","description":"Number of log lines to return, e.g. 50. Default: 100."}`,
@@ -851,7 +926,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.resolve
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.resolve",
-		Description: "Find the optimal engine and configuration for deploying a model on this hardware. Merges YAML defaults (L0), golden configs from the database (L2), and user overrides (L1) into a final resolved config. Use before deploy.apply to understand what configuration will be used, or when the user asks 'what engine should I use for model X'. If engine is omitted, the best available engine is auto-selected.",
+		Description: "Find the optimal engine and configuration for deploying a model on this hardware. Merges YAML defaults, golden configs, and user overrides into a final resolved config.",
 		InputSchema: schema(
 			`"model":{"type":"string","description":"Model name to resolve, e.g. 'qwen3-0.6b'. Call model.list or knowledge.list_models to see available names."},`+
 				`"engine":{"type":"string","description":"Engine type, e.g. 'vllm', 'llamacpp'. Omit to auto-select the best engine."},`+
@@ -883,7 +958,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.search
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.search",
-		Description: "Search knowledge notes (agent exploration records containing trial results and recommendations) by hardware, model, or engine filter. Returns matching notes with titles, tags, and content summaries. Use when looking for past exploration or experiment notes. Do not use for querying tested configurations with performance metrics (use knowledge.search_configs) or browsing YAML catalog assets (use knowledge.list).",
+		Description: "Search knowledge notes (agent exploration records) by hardware, model, or engine filter. Returns matching notes with titles, tags, and content.",
 		InputSchema: schema(
 			`"hardware":{"type":"string","description":"Filter by hardware profile, e.g. 'nvidia-rtx4060'"},` +
 				`"model":{"type":"string","description":"Filter by model name, e.g. 'qwen3-0.6b'"},` +
@@ -921,7 +996,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.save
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.save",
-		Description: "Save a knowledge note recording exploration results, experiment findings, or recommendations. Use after completing a benchmark or deployment experiment to preserve the findings for future reference.",
+		Description: "Save a knowledge note recording exploration results, experiment findings, or recommendations.",
 		InputSchema: schema(
 			`"note":{"type":"object","description":"Knowledge note to save","properties":{`+
 				`"title":{"type":"string","description":"Short descriptive title for the note"},`+
@@ -955,7 +1030,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.generate_pod
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.generate_pod",
-		Description: "Generate K3S Pod YAML manifest for a model/engine deployment without applying it. Use for inspecting or customizing the Pod YAML. For normal deployments, use deploy.apply which generates and applies the Pod automatically.",
+		Description: "Generate K3S Pod YAML manifest for a model/engine deployment without applying it.",
 		InputSchema: schema(
 			`"model":{"type":"string","description":"Model name, e.g. 'qwen3-0.6b'"},`+
 				`"engine":{"type":"string","description":"Engine type, e.g. 'vllm'"},`+
@@ -987,7 +1062,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.list_profiles
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.list_profiles",
-		Description: "List all hardware profiles defined in the YAML knowledge base. Each profile describes a GPU/CPU/RAM capability vector with container access settings and resource names. Use when exploring what hardware types AIMA knows about. For this device's actual hardware, use hardware.detect instead.",
+		Description: "List all hardware profiles defined in the YAML knowledge base with GPU/CPU/RAM capability vectors and resource names.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ListProfiles == nil {
@@ -1004,7 +1079,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.list_engines
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.list_engines",
-		Description: "List all engine assets defined in the YAML knowledge base (catalog). Shows every engine type AIMA supports with their hardware requirements, image sources, and features. Use when browsing what engines are available in the catalog. Do not use for listing engines that are actually installed locally (use engine.list).",
+		Description: "List all engine assets in the YAML catalog with hardware requirements, image sources, and features.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ListEngineAssets == nil {
@@ -1021,7 +1096,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.list_models
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.list_models",
-		Description: "List all model assets defined in the YAML knowledge base (catalog). Shows every model AIMA supports with their variants, download sources, and compatible engines. Use when browsing what models are available for download or to check model compatibility. Do not use for listing models already installed locally (use model.list).",
+		Description: "List all model assets in the YAML catalog with variants, download sources, and compatible engines.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ListModelAssets == nil {
@@ -1038,7 +1113,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// stack.preflight
 	s.RegisterTool(&Tool{
 		Name:        "stack.preflight",
-		Description: "Check which infrastructure stack components need files downloaded before installation. Returns a checklist of components and their download status. Use before stack.init to see what is missing. Tier controls scope: 'docker' (default) = Docker + nvidia-ctk + aima-serve; 'k3s' = all components including K3S + HAMi.",
+		Description: "Check which infrastructure stack components need downloads. Tier: 'docker' (default) or 'k3s' (full stack).",
 		InputSchema: schema(`"tier":{"type":"string","description":"Init tier: 'docker' (default) or 'k3s' (includes K3S + HAMi)","enum":["docker","k3s"]}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.StackPreflight == nil {
@@ -1064,7 +1139,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// stack.init
 	s.RegisterTool(&Tool{
 		Name:        "stack.init",
-		Description: "Install and configure the infrastructure stack on this device. Tier controls scope: 'docker' (default) = Docker + nvidia-ctk + aima-serve; 'k3s' = all components including K3S + HAMi. Run stack.preflight first to check prerequisites. This is a significant operation that modifies the system. Blocked for agent-initiated calls.",
+		Description: "Install and configure the infrastructure stack. Tier: 'docker' (default) or 'k3s' (full). Blocked for agent-initiated calls.",
 		InputSchema: schema(`"tier":{"type":"string","description":"Init tier: 'docker' (default) or 'k3s' (includes K3S + HAMi)","enum":["docker","k3s"]},"allow_download":{"type":"boolean","description":"Auto-download missing component files (default false)"}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.StackInit == nil {
@@ -1093,7 +1168,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// stack.status
 	s.RegisterTool(&Tool{
 		Name:        "stack.status",
-		Description: "Check the installation status of infrastructure stack components (K3S, HAMi). Shows whether each component is installed, its version, and health. Use to verify the infrastructure is ready for container-based deployments.",
+		Description: "Check installation status of infrastructure stack components (K3S, HAMi) with versions and health.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.StackStatus == nil {
@@ -1110,7 +1185,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// shell.exec
 	s.RegisterTool(&Tool{
 		Name:        "shell.exec",
-		Description: "Execute a whitelisted shell command on this device. Only the following commands are allowed: nvidia-smi, df, free, uname, cat /proc/cpuinfo, and read-only kubectl subcommands (get, describe, logs, top, version). Use when you need raw system information not available through other tools.",
+		Description: "Execute a whitelisted shell command (nvidia-smi, df, free, uname, cat /proc/cpuinfo, read-only kubectl).",
 		InputSchema: schema(`"command":{"type":"string","description":"Shell command to run. Must be one of: 'nvidia-smi', 'df -h', 'free -h', 'uname -a', 'cat /proc/cpuinfo', 'kubectl get pods', etc."}`, "command"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ExecShell == nil {
@@ -1139,7 +1214,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.search_configs (enhanced — multi-dimensional search with SQL preprocessing)
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.search_configs",
-		Description: "Search tested Configuration records (Hardware x Engine x Model combos) in the database with multi-dimensional filtering and sorting. Returns configurations with benchmark results and performance metrics. Use when comparing proven setups or finding the best config for specific hardware. Do not use for searching YAML catalog assets (use knowledge.list) or agent exploration notes (use knowledge.search).",
+		Description: "Search tested Configuration records (Hardware x Engine x Model) with filtering, sorting, and benchmark performance metrics.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"hardware":{"type":"string","description":"Hardware profile ID or GPU architecture"},"model":{"type":"string","description":"Model ID or model family"},"engine":{"type":"string","description":"Engine type"},"engine_features":{"type":"array","items":{"type":"string"},"description":"Required engine features"},"constraints":{"type":"object","properties":{"ttft_ms_p95_max":{"type":"number"},"throughput_tps_min":{"type":"number"},"vram_mib_max":{"type":"integer"},"power_watts_max":{"type":"number"}}},"concurrency":{"type":"integer"},"status":{"type":"string","enum":["golden","experiment","archived"]},"sort_by":{"type":"string","enum":["throughput","latency","vram","power","created"]},"sort_order":{"type":"string","enum":["asc","desc"]},"limit":{"type":"integer"}}}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SearchConfigs == nil {
@@ -1156,7 +1231,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.compare
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.compare",
-		Description: "Compare multiple Configuration records side-by-side on performance metrics (throughput, latency, VRAM). Returns a formatted comparison table. Use when the user wants to compare specific tested configurations. Requires config_ids from knowledge.search_configs.",
+		Description: "Compare multiple Configuration records side-by-side on throughput, latency, and VRAM. Requires config_ids.",
 		InputSchema: schema(
 			`"config_ids":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":10,"description":"Configuration IDs to compare"},`+
 				`"metrics":{"type":"array","items":{"type":"string"},"description":"Metrics to compare (default: throughput, latency, vram)"},`+
@@ -1177,7 +1252,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.similar
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.similar",
-		Description: "Find Configuration records with similar performance profiles using vector distance in 6-dimensional performance space. Useful for cross-hardware migration — find equivalent setups on different hardware. Requires a config_id from knowledge.search_configs.",
+		Description: "Find configurations with similar performance profiles using 6D vector distance. Useful for cross-hardware migration.",
 		InputSchema: schema(
 			`"config_id":{"type":"string","description":"Reference configuration ID"},`+
 				`"weights":{"type":"object","description":"Custom metric weights (throughput, latency, vram, power, qps)"},`+
@@ -1200,7 +1275,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.lineage
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.lineage",
-		Description: "Trace the evolution chain of a Configuration — find all ancestor and descendant configs with their performance progression over time. Use when investigating how a configuration was derived or how performance changed across iterations.",
+		Description: "Trace the derivation chain of a Configuration — all ancestor and descendant configs with performance progression.",
 		InputSchema: schema(`"config_id":{"type":"string","description":"Configuration ID to trace"}`, "config_id"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.LineageConfigs == nil {
@@ -1226,7 +1301,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.gaps
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.gaps",
-		Description: "Identify untested Hardware x Engine x Model combinations that lack benchmark data. Use when planning what to benchmark next or assessing coverage completeness.",
+		Description: "Identify untested Hardware x Engine x Model combinations that lack benchmark data.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"hardware":{"type":"string","description":"Limit to specific hardware"},"min_benchmarks":{"type":"integer","default":3,"description":"Threshold below which a combination is considered a gap"}}}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.GapsKnowledge == nil {
@@ -1243,7 +1318,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.aggregate
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.aggregate",
-		Description: "Aggregate benchmark statistics grouped by engine, hardware, or model. Returns averages, min/max, and sample counts for throughput, latency, and VRAM. Use for high-level performance summaries and trend analysis.",
+		Description: "Aggregate benchmark statistics grouped by engine, hardware, or model with averages, min/max, and sample counts.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"hardware":{"type":"string","description":"Filter by hardware"},"model":{"type":"string","description":"Filter by model"},"group_by":{"type":"string","enum":["engine","hardware","model"],"default":"engine","description":"Dimension to group by"}}}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.AggregateKnowledge == nil {
@@ -1260,7 +1335,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.promote
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.promote",
-		Description: "Change a Configuration's status: 'experiment' (default for new), 'golden' (battle-tested, auto-injected as L2 defaults on future deployments), or 'archived' (deprecated). Use after confirming a configuration performs well to promote it to golden status.",
+		Description: "Change a Configuration's status to 'experiment', 'golden' (auto-injected as L2 defaults), or 'archived'.",
 		InputSchema: schema(
 			`"config_id":{"type":"string","description":"Configuration ID to promote"},`+
 				`"status":{"type":"string","enum":["golden","experiment","archived"],"description":"Target status"}`,
@@ -1290,7 +1365,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// benchmark.record
 	s.RegisterTool(&Tool{
 		Name:        "benchmark.record",
-		Description: "Record a benchmark result with performance metrics. Auto-creates a Configuration record (Hardware x Engine x Model) if one does not exist. Use after running inference tests to store throughput, latency, and resource usage data.",
+		Description: "Record a benchmark result with performance metrics. Auto-creates a Configuration record if needed.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{
 			"hardware":{"type":"string","description":"Hardware profile ID (e.g. nvidia-gb10-arm64)"},
 			"engine":{"type":"string","description":"Engine type (e.g. vllm-nightly)"},
@@ -1326,7 +1401,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// benchmark.run
 	s.RegisterTool(&Tool{
 		Name:        "benchmark.run",
-		Description: "Run a performance benchmark against a deployed model. Sends streaming inference requests and measures TTFT, TPOT, and throughput. Results are automatically saved to the knowledge database. Use after deploying a model to establish performance baselines or compare configurations.",
+		Description: "Run a performance benchmark against a deployed model. Measures TTFT, TPOT, and throughput. Results auto-saved to database.",
 		InputSchema: schema(
 			`"model":{"type":"string","description":"Model name (must match a deployed model)"},`+
 				`"endpoint":{"type":"string","description":"OpenAI-compatible endpoint URL. Auto-detected from proxy if omitted."},`+
@@ -1358,7 +1433,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// benchmark.matrix
 	s.RegisterTool(&Tool{
 		Name:        "benchmark.matrix",
-		Description: "Run a benchmark test matrix across multiple concurrency levels and input/output length combinations. Runs benchmark.run for each combination sequentially. Use when you need comprehensive performance characterization of a deployment.",
+		Description: "Run a benchmark matrix across multiple concurrency levels and input/output length combinations.",
 		InputSchema: schema(
 			`"model":{"type":"string","description":"Model name"},`+
 				`"endpoint":{"type":"string","description":"OpenAI-compatible endpoint URL. Auto-detected from proxy if omitted."},`+
@@ -1388,7 +1463,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// benchmark.list
 	s.RegisterTool(&Tool{
 		Name:        "benchmark.list",
-		Description: "List benchmark results from the knowledge database. Filter by model, hardware, or configuration ID. Use to review historical performance data or compare configurations.",
+		Description: "List benchmark results from the database. Filter by model, hardware, or configuration ID.",
 		InputSchema: schema(
 			`"config_id":{"type":"string","description":"Filter by configuration ID"},` +
 				`"hardware":{"type":"string","description":"Filter by hardware profile ID"},` +
@@ -1410,7 +1485,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.export
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.export",
-		Description: "Export knowledge data (configurations, benchmark results, knowledge notes) to a JSON file. Filter by hardware, model, or engine. Use to share tuning results with other devices or create backups. If output_path is omitted, returns JSON directly.",
+		Description: "Export knowledge data (configurations, benchmarks, notes) to JSON. Filter by hardware, model, or engine.",
 		InputSchema: schema(
 			`"hardware":{"type":"string","description":"Filter by hardware profile ID"},` +
 				`"model":{"type":"string","description":"Filter by model name"},` +
@@ -1431,7 +1506,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.import
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.import",
-		Description: "Import knowledge data from a JSON file exported by knowledge.export. Supports conflict resolution: 'skip' (default) skips existing records, 'overwrite' replaces them. Use --dry-run to preview without writing. Runs in a single transaction for atomicity.",
+		Description: "Import knowledge data from a JSON file. Conflict resolution: 'skip' (default) or 'overwrite'. Supports dry-run. Atomic transaction.",
 		InputSchema: schema(
 			`"input_path":{"type":"string","description":"Path to JSON file to import"},`+
 				`"conflict":{"type":"string","enum":["skip","overwrite"],"description":"Conflict resolution (default: skip)"},`+
@@ -1452,7 +1527,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// discover.lan
 	s.RegisterTool(&Tool{
 		Name:        "discover.lan",
-		Description: "Low-level mDNS scan for AIMA instances on the local network. Returns raw service entries. For most use cases, prefer fleet.list_devices which performs mDNS discovery automatically and returns structured device information.",
+		Description: "Low-level mDNS scan for AIMA instances on the local network. Returns raw service entries.",
 		InputSchema: schema(`"timeout_s":{"type":"integer","description":"Scan timeout in seconds (default 3)"}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.DiscoverLAN == nil {
@@ -1478,7 +1553,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// catalog.override
 	s.RegisterTool(&Tool{
 		Name:        "catalog.override",
-		Description: "Write a YAML asset to the runtime overlay catalog (~/.aima/catalog/). Overrides the factory-embedded asset with the same metadata.name, or adds a new one. Takes effect on next restart. Use for customizing engine or model definitions without recompiling. Agent calls are restricted to engine_asset and model_asset kinds only.",
+		Description: "Write a YAML asset to the runtime overlay catalog (~/.aima/catalog/). Overrides factory-embedded asset or adds new one.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","enum":["engine_asset","model_asset","hardware_profile","partition_strategy","stack_component"],"description":"Asset kind"},"name":{"type":"string","description":"metadata.name of the asset"},"content":{"type":"string","description":"Full YAML content of the asset"}},"required":["kind","name","content"]}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.CatalogOverride == nil {
@@ -1506,7 +1581,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// catalog.status
 	s.RegisterTool(&Tool{
 		Name:        "catalog.status",
-		Description: "Show catalog asset counts: factory (compiled-in) vs overlay (runtime) for each asset type (hardware profiles, engines, models, partitions, stack). Use to check if any runtime overrides are active.",
+		Description: "Show catalog asset counts: factory (compiled-in) vs overlay (runtime) for each asset type.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.CatalogStatus == nil {
@@ -1523,7 +1598,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// system.status
 	s.RegisterTool(&Tool{
 		Name:        "system.status",
-		Description: "Get a combined system overview in one call: hardware summary, all active deployments, and current GPU metrics. Use as a quick first step to understand the overall state of this device. For detailed hardware info use hardware.detect; for detailed deployment info use deploy.list + deploy.status.",
+		Description: "Get a combined system overview: hardware summary, active deployments, and GPU metrics in one call.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SystemStatus == nil {
@@ -1540,7 +1615,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// knowledge.list
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.list",
-		Description: "List a summary of all YAML knowledge base assets: counts and names of hardware profiles, engine assets, model assets, and partition strategies. Use as a quick overview of the catalog contents. For detailed listing of a specific asset type, use knowledge.list_profiles, knowledge.list_engines, or knowledge.list_models.",
+		Description: "List a summary of all YAML knowledge base assets: counts and names of hardware profiles, engines, models, and partitions.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ListKnowledgeSummary == nil {
@@ -1557,7 +1632,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// support.askforhelp
 	s.RegisterTool(&Tool{
 		Name:        "support.askforhelp",
-		Description: "Connect this AIMA instance to the configured aima-service-new support service as a regular device, and optionally create a remote help task from a natural-language description. This is the shared backend for CLI `aima askforhelp` and UI `/askforhelp`. First-time registration supports invite_code, worker_code, or referral_code; stale registrations may require recovery_code.",
+		Description: "Register this device with the configured support service and optionally create a remote help task from a natural-language description.",
 		InputSchema: schema(
 			`"description":{"type":"string","description":"Optional natural-language request to create a support task immediately"},` +
 				`"endpoint":{"type":"string","description":"Optional override for support.endpoint; persisted when provided"},` +
@@ -1592,7 +1667,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// agent.ask
 	s.RegisterTool(&Tool{
 		Name:        "agent.ask",
-		Description: "Route a natural language query through the agent dispatcher. Auto-selects L3a (Go Agent) or L3b (ZeroClaw) based on query complexity. Returns the agent's response and a session_id for multi-turn conversations. Blocked for agent-initiated calls (prevents recursive invocation).",
+		Description: "Route a natural language query through the agent dispatcher. Auto-selects L3a or L3b. Blocked for agent-initiated calls.",
 		InputSchema: schema(
 			`"query":{"type":"string","description":"The question to ask"},`+
 				`"force_local":{"type":"boolean","description":"Force use of Go Agent (L3a)"},`+
@@ -1637,7 +1712,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// agent.install
 	s.RegisterTool(&Tool{
 		Name:        "agent.install",
-		Description: "Download and install the ZeroClaw sidecar binary (L3b agent with persistent memory and deep reasoning). Blocked for agent-initiated calls.",
+		Description: "Download and install the ZeroClaw sidecar binary (L3b agent). Blocked for agent-initiated calls.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.AgentInstall == nil {
@@ -1654,7 +1729,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// agent.status
 	s.RegisterTool(&Tool{
 		Name:        "agent.status",
-		Description: "Check agent subsystem availability: whether L3a (Go Agent) and L3b (ZeroClaw) are configured and healthy. Use to diagnose agent-related issues.",
+		Description: "Check agent subsystem availability: L3a (Go Agent) and L3b (ZeroClaw) health status.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.AgentStatus == nil {
@@ -1671,7 +1746,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// agent.guide
 	s.RegisterTool(&Tool{
 		Name:        "agent.guide",
-		Description: "Return the full AIMA Agent Usage Guide with detailed tool parameters, workflow examples, and API reference. Only call this when the system prompt does not provide enough information and you need the complete reference.",
+		Description: "Return the full AIMA Agent Usage Guide with tool parameters, workflow examples, and API reference.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.AgentGuide == nil {
@@ -1688,7 +1763,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// agent.rollback_list
 	s.RegisterTool(&Tool{
 		Name:        "agent.rollback_list",
-		Description: "List available rollback snapshots. Snapshots are auto-created before destructive operations (model.remove, engine.remove, deploy.delete). Use to see what can be restored with agent.rollback.",
+		Description: "List available rollback snapshots created before destructive operations.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.RollbackList == nil {
@@ -1705,7 +1780,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// agent.rollback
 	s.RegisterTool(&Tool{
 		Name:        "agent.rollback",
-		Description: "Restore a resource from a rollback snapshot. For models/engines, restores the database record. For deployments, redeploys with the original config. Call agent.rollback_list first to get the snapshot ID. Blocked for agent-initiated calls.",
+		Description: "Restore a resource from a rollback snapshot. Blocked for agent-initiated calls.",
 		InputSchema: schema(`"id":{"type":"integer","description":"Snapshot ID from agent.rollback_list"}`, "id"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.RollbackRestore == nil {
@@ -1731,7 +1806,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// system.config
 	s.RegisterTool(&Tool{
 		Name:        "system.config",
-		Description: "Get or set a persistent system configuration value. Supported keys: api_key, llm.endpoint, llm.model, llm.api_key, llm.user_agent, llm.extra_params, support.enabled, support.endpoint, support.invite_code, support.worker_code. Sensitive keys are masked in responses. Setting api_key hot-reloads auth; setting llm.* hot-swaps the Agent LLM client. Omit value to read, provide value to write.",
+		Description: "Get or set a persistent system configuration value. Omit value to read, provide value to write. Sensitive keys are masked.",
 		InputSchema: schema(
 			`"key":{"type":"string","description":"Configuration key: `+SupportedConfigKeysString()+`"},`+
 				`"value":{"type":"string","description":"Value to set. Omit this field to read the current value."}`,
@@ -1784,7 +1859,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// fleet.list_devices
 	s.RegisterTool(&Tool{
 		Name:        "fleet.list_devices",
-		Description: "List all AIMA devices discovered on the LAN via mDNS. Performs a fresh scan each time. Returns device IDs, hostnames, addresses, and ports. Use as the first step when managing remote devices. Prefer this over discover.lan for structured results.",
+		Description: "List all AIMA devices discovered on the LAN via mDNS with device IDs, hostnames, addresses, and ports.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.FleetListDevices == nil {
@@ -1801,7 +1876,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// fleet.device_info
 	s.RegisterTool(&Tool{
 		Name:        "fleet.device_info",
-		Description: "Get detailed information about a specific remote device: hardware capabilities, installed models, running deployments. Use after fleet.list_devices to drill into a specific device.",
+		Description: "Get detailed information about a remote device: hardware, installed models, and running deployments.",
 		InputSchema: schema(`"device_id":{"type":"string","description":"Device ID from fleet.list_devices, e.g. 'gb10', 'mac-m4'"}`, "device_id"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.FleetDeviceInfo == nil {
@@ -1827,7 +1902,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// fleet.device_tools
 	s.RegisterTool(&Tool{
 		Name:        "fleet.device_tools",
-		Description: "List the MCP tools available on a specific remote device. Use to check what operations a remote device supports before calling fleet.exec_tool.",
+		Description: "List the MCP tools available on a specific remote device.",
 		InputSchema: schema(`"device_id":{"type":"string","description":"Device ID from fleet.list_devices, e.g. 'gb10'"}`, "device_id"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.FleetDeviceTools == nil {
@@ -1853,7 +1928,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// fleet.exec_tool
 	s.RegisterTool(&Tool{
 		Name:        "fleet.exec_tool",
-		Description: "Execute any MCP tool on a remote fleet device. Sends the tool call over HTTP and returns the remote result. Use after fleet.list_devices to identify the device and fleet.device_tools to verify the tool is available. Do not use for local tools — call them directly instead. Agent guardrails apply to the inner tool_name — blocked and confirmable tools are enforced consistently with local calls.",
+		Description: "Execute any MCP tool on a remote fleet device. Agent guardrails apply to the inner tool_name.",
 		InputSchema: schema(
 			`"device_id":{"type":"string","description":"Device ID from fleet.list_devices, e.g. 'gb10', 'linux-1'. Call fleet.list_devices first if unsure."},`+
 				`"tool_name":{"type":"string","description":"MCP tool name to execute remotely, e.g. 'hardware.detect', 'model.list', 'deploy.status'. Call fleet.device_tools first to see available tools."},`+
@@ -1886,7 +1961,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 
 	s.RegisterTool(&Tool{
 		Name:        "agent.patrol_status",
-		Description: "Get the current patrol loop state: whether running, last run time, next scheduled run, and active alert count.",
+		Description: "Get patrol loop state: running status, last run time, next run, and alert count.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.PatrolStatus == nil {
@@ -1902,7 +1977,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 
 	s.RegisterTool(&Tool{
 		Name:        "agent.alerts",
-		Description: "List active patrol alerts with severity, type, and message. Alerts are generated by the patrol loop when GPU temperature exceeds threshold, deployments crash, or VRAM opportunity exists.",
+		Description: "List active patrol alerts with severity, type, and message.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.PatrolAlerts == nil {
@@ -1938,7 +2013,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 
 	s.RegisterTool(&Tool{
 		Name:        "agent.patrol_actions",
-		Description: "List automated actions taken by the patrol loop (self-healing, notifications). Shows what the patrol did in response to alerts.",
+		Description: "List automated actions taken by the patrol loop (self-healing, notifications).",
 		InputSchema: schema(
 			`"limit":{"type":"integer","description":"Maximum number of actions to return (default 50)"}`,
 			""),
@@ -1965,7 +2040,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 
 	s.RegisterTool(&Tool{
 		Name:        "explore.start",
-		Description: "Start a persisted exploration run. Supports tuning, validation, and open-question validation runs, with optional ZeroClaw planning.",
+		Description: "Start a persisted exploration run (tuning, validation, or open-question). Optional ZeroClaw planning.",
 		InputSchema: schema(
 			`"kind":{"type":"string","enum":["tune","validate","open_question"],"description":"Exploration kind."},`+
 				`"goal":{"type":"string","description":"Human-readable objective for the run."},`+
@@ -1993,7 +2068,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 
 	s.RegisterTool(&Tool{
 		Name:        "explore.status",
-		Description: "Get the current status for an exploration run, including persisted events and live tuning progress when available.",
+		Description: "Get current status of an exploration run with events and tuning progress.",
 		InputSchema: schema(`"id":{"type":"string","description":"Exploration run ID."}`, "id"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ExploreStatus == nil {
@@ -2043,7 +2118,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 
 	s.RegisterTool(&Tool{
 		Name:        "explore.result",
-		Description: "Get the final or current result for an exploration run, including events and summaries.",
+		Description: "Get the final or current result of an exploration run with events and summaries.",
 		InputSchema: schema(`"id":{"type":"string","description":"Exploration run ID."}`, "id"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ExploreResult == nil {
@@ -2070,7 +2145,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 
 	s.RegisterTool(&Tool{
 		Name:        "tuning.start",
-		Description: "Start an auto-tuning session. Iterates config parameter combinations, benchmarks each, and promotes the best. Parameters: model (required), hardware/engine/endpoint (optional), parameters (list of tunable params with key/values or min/max/step).",
+		Description: "Start an auto-tuning session. Iterates config parameter combinations, benchmarks each, promotes the best.",
 		InputSchema: schema(
 			`"model":{"type":"string","description":"Model name to tune"},`+
 				`"hardware":{"type":"string","description":"Hardware profile used to persist benchmark results."},`+
@@ -2143,7 +2218,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 
 	s.RegisterTool(&Tool{
 		Name:        "device.power_history",
-		Description: "Query historical GPU power, temperature, and utilization samples over time. Returns time series data for trend analysis.",
+		Description: "Query historical GPU power, temperature, and utilization samples over time.",
 		InputSchema: schema(
 			`"from":{"type":"string","description":"Start time (ISO 8601 or 'now-1h', 'now-6h', 'now-24h')"},` +
 				`"to":{"type":"string","description":"End time (ISO 8601 or 'now')"}`,
@@ -2164,7 +2239,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.validate",
-		Description: "Compare predicted vs actual performance for a hardware/engine/model combination. Shows deviation percentage and flags divergent predictions (>20% off).",
+		Description: "Compare predicted vs actual performance. Flags divergent predictions (>20% deviation).",
 		InputSchema: schema(
 			`"hardware":{"type":"string","description":"GPU architecture"},` +
 				`"engine":{"type":"string","description":"Engine type"},` +
@@ -2186,7 +2261,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.engine_switch_cost",
-		Description: "Quantify the cost vs benefit of switching from one engine to another. Returns throughput gain, switch time (cold start), and a switch/stay recommendation.",
+		Description: "Quantify cost vs benefit of switching engines. Returns throughput gain, switch time, and recommendation.",
 		InputSchema: schema(
 			`"current_engine":{"type":"string","description":"Currently deployed engine type"},`+
 				`"target_engine":{"type":"string","description":"Engine to evaluate switching to"},`+
@@ -2208,7 +2283,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// I6: Open questions
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.open_questions",
-		Description: "List, resolve, or launch exploration runs for open questions from knowledge assets. Questions are YAML-declared uncertainties that need real-device validation.",
+		Description: "List, resolve, or launch exploration runs for open questions from knowledge assets.",
 		InputSchema: schema(
 			`"action":{"type":"string","description":"Action: list (default), resolve, run/validate to create an exploration run","enum":["list","resolve","run","validate"]},` +
 				`"status":{"type":"string","description":"Filter by status: untested, tested, confirmed, confirmed_incompatible, rejected"},` +
@@ -2238,7 +2313,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// D4: App management
 	s.RegisterTool(&Tool{
 		Name:        "app.register",
-		Description: "Register an application with its inference dependency declarations. The app spec defines what inference services (LLM, embedding, rerank, etc.) the app needs.",
+		Description: "Register an application with its inference dependency declarations (LLM, embedding, rerank, etc.).",
 		InputSchema: schema(
 			`"name":{"type":"string","description":"App name"},`+
 				`"inference_needs":{"type":"array","description":"Array of inference needs","items":{"type":"object","properties":{"type":{"type":"string"},"model":{"type":"string"},"required":{"type":"boolean"},"performance":{"type":"string"}}}},`+
@@ -2258,7 +2333,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	})
 	s.RegisterTool(&Tool{
 		Name:        "app.provision",
-		Description: "Auto-deploy all required inference services for a registered app. Checks existing deployments first, deploys missing ones, and reports satisfaction status.",
+		Description: "Auto-deploy all required inference services for a registered app.",
 		InputSchema: schema(
 			`"name":{"type":"string","description":"App name to provision"}`,
 			"name"),
@@ -2307,7 +2382,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	})
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.sync_pull",
-		Description: "Pull new knowledge from the central knowledge server. Only downloads configs/benchmarks newer than last pull.",
+		Description: "Pull new knowledge from the central server (configs/benchmarks newer than last pull).",
 		InputSchema: schema(""),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SyncPull == nil {
@@ -2339,7 +2414,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// S3: Power mode
 	s.RegisterTool(&Tool{
 		Name:        "device.power_mode",
-		Description: "List available power modes and current mode for the device. On supported hardware, can switch between performance/balanced/powersave modes.",
+		Description: "List available power modes and current mode. Switch between performance/balanced/powersave.",
 		InputSchema: schema(
 			`"action":{"type":"string","description":"Action: get (default) or set","enum":["get","set"]},` +
 				`"mode":{"type":"string","description":"Power mode to set (for set action)"}`,
@@ -2359,7 +2434,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// openclaw.sync
 	s.RegisterTool(&Tool{
 		Name:        "openclaw.sync",
-		Description: "Sync AIMA deployed models to OpenClaw config (openclaw.json). Reads all ready local backends, categorizes by modality (LLM/VLM/ASR/TTS/ImageGen), and writes them as OpenClaw providers. Use --dry-run to preview without writing.",
+		Description: "Sync AIMA deployed models to OpenClaw config. Categorizes by modality and writes as OpenClaw providers.",
 		InputSchema: schema(`"dry_run":{"type":"boolean","description":"If true, preview changes without writing to openclaw.json (default false)"}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.OpenClawSync == nil {
@@ -2399,7 +2474,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// scenario.apply
 	s.RegisterTool(&Tool{
 		Name:        "scenario.apply",
-		Description: "Deploy all models defined in a deployment scenario. Iterates through each deployment in order, calling deploy.apply for each, auto-approving when needed. After all deploys, runs post-deploy actions (e.g. openclaw sync). Use dry_run to preview without executing.",
+		Description: "Deploy all models defined in a deployment scenario. Supports dry_run to preview without executing.",
 		InputSchema: schema(
 			`"name":{"type":"string","description":"Scenario name, e.g. 'openclaw-multi'. Call scenario.list to see available scenarios."},`+
 				`"dry_run":{"type":"boolean","description":"If true, preview deployment plans without executing (default false)"}`,
