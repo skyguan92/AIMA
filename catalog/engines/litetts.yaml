@@ -9,12 +9,20 @@ hardware:
   vram_min_mib: 0
 source:
   binary: integrated_server
+  install_type: preinstalled
+  probe:
+    paths:
+      - /opt/mt-ai/tts/start_server.sh
+      - /opt/mt-ai/tts/integrated_server
+    version_command: ["./integrated_server", "--version"]
+    version_pattern: "([\\d.]+[a-z]?)"
+    fallback_version: "unknown"
 startup:
   # start_server.sh uses parse_options.sh which expects --flag_name (underscores).
   # AIMA's configToFlags converts underscores to hyphens, so we put all TTS-specific
   # args directly in the command to avoid the mismatch.
   command: ["./start_server.sh", "--target_voices", "AIBC006_lite", "--grpc_port_v1beta1", "32108", "--grpc_port", "32109", "--http_port", "32110"]
-  work_dir: /opt/mt-ai/tts  # AIBook factory image path — override via ~/.aima/catalog/
+  work_dir: /opt/mt-ai/tts  # AIBook factory image path -- override via ~/.aima/catalog/
   env:
     TARGET_DEVICE: cpu
     PROSODY_MODEL_TARGET_DEVICE: cpu
@@ -26,8 +34,8 @@ startup:
     MKL_NUM_THREADS: "2"
     NUM_FFMPEG_THREADS: "2"
     TOKENIZERS_PARALLELISM: "true"
-    TOS_ACCESS_KEY: XXX  # dummy — start.sh reads these but TOS upload is unused in offline mode
-    TOS_SECRET_KEY: XXX  # dummy — same as above
+    TOS_ACCESS_KEY: XXX  # dummy -- start.sh reads these but TOS upload is unused in offline mode
+    TOS_SECRET_KEY: XXX  # dummy -- same as above
     LOG_DIR: /tmp
     POD_NAME: latest_lite
     TZ: Asia/Shanghai
@@ -49,7 +57,7 @@ startup:
         progress: 100
     errors:
       - pattern: "Device string must not be empty"
-        message: "Missing TARGET_DEVICE=cpu env var — prosody predictor defaults to GPU"
+        message: "Missing TARGET_DEVICE=cpu env var -- prosody predictor defaults to GPU"
       - pattern: "RuntimeError"
         message: "Runtime error during TTS initialization"
 api:

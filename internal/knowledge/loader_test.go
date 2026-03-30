@@ -319,6 +319,27 @@ metadata:
 	}
 }
 
+func TestParseAssetPublicEngineProfile(t *testing.T) {
+	cat := &Catalog{}
+	err := cat.ParseAssetPublic([]byte(`kind: engine_profile
+metadata:
+  name: vllm
+startup:
+  health_check:
+    path: /health
+    timeout_s: 300
+`), "input")
+	if err != nil {
+		t.Fatalf("ParseAssetPublic: %v", err)
+	}
+	if got := cat.ParsedKind(); got != "engine_profile" {
+		t.Fatalf("ParsedKind() = %q, want engine_profile", got)
+	}
+	if _, ok := cat.EngineProfiles["vllm"]; !ok {
+		t.Fatal("expected engine profile vllm to be loaded")
+	}
+}
+
 func TestMergeCatalogOverride(t *testing.T) {
 	base := mustLoadCatalog(t)
 	if base.HardwareProfiles[0].Hardware.GPU.VRAMMiB != 8192 {
@@ -381,6 +402,127 @@ func TestMergeCatalogEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadCatalogEngineProfilePartialOverride(t *testing.T) {
+	fs := fstest.MapFS{
+		"engines/profiles/vllm.yaml": &fstest.MapFile{Data: []byte(`kind: engine_profile
+metadata:
+  name: vllm
+  version_default: "0.8.5"
+  supported_formats: [safetensors]
+startup:
+  health_check:
+    path: /health
+    timeout_s: 300
+  warmup:
+    enabled: true
+    prompt: "Hello"
+    max_tokens: 1
+    timeout_s: 60
+api:
+  protocol: openai
+  base_path: /v1
+`)},
+		"engines/vllm-musa.yaml": &fstest.MapFile{Data: []byte(`kind: engine_asset
+_profile: vllm
+metadata:
+  name: vllm-musa
+  type: vllm
+hardware:
+  gpu_arch: MUSA
+  vram_min_mib: 4096
+startup:
+  health_check:
+    timeout_s: 600
+  warmup:
+    timeout_s: 120
+`)},
+	}
+
+	cat, err := LoadCatalog(fs)
+	if err != nil {
+		t.Fatalf("LoadCatalog: %v", err)
+	}
+	if len(cat.EngineAssets) != 1 {
+		t.Fatalf("EngineAssets count = %d, want 1", len(cat.EngineAssets))
+	}
+	engine := cat.EngineAssets[0]
+	if got := engine.Startup.HealthCheck.Path; got != "/health" {
+		t.Errorf("health_check.path = %q, want /health", got)
+	}
+	if got := engine.Startup.HealthCheck.TimeoutS; got != 600 {
+		t.Errorf("health_check.timeout_s = %d, want 600", got)
+	}
+	if !engine.Startup.Warmup.Enabled {
+		t.Error("warmup.enabled = false, want true")
+	}
+	if got := engine.Startup.Warmup.Prompt; got != "Hello" {
+		t.Errorf("warmup.prompt = %q, want Hello", got)
+	}
+	if got := engine.Startup.Warmup.MaxTokens; got != 1 {
+		t.Errorf("warmup.max_tokens = %d, want 1", got)
+	}
+	if got := engine.Startup.Warmup.TimeoutS; got != 120 {
+		t.Errorf("warmup.timeout_s = %d, want 120", got)
+	}
+}
+
+func TestMergeCatalogOverlayProfileRebuildsEngineAssets(t *testing.T) {
+	baseFS := fstest.MapFS{
+		"engines/profiles/vllm.yaml": &fstest.MapFile{Data: []byte(`kind: engine_profile
+metadata:
+  name: vllm
+startup:
+  health_check:
+    path: /health
+    timeout_s: 300
+`)},
+		"engines/vllm-ada.yaml": &fstest.MapFile{Data: []byte(`kind: engine_asset
+_profile: vllm
+metadata:
+  name: vllm-ada
+  type: vllm
+hardware:
+  gpu_arch: Ada
+  vram_min_mib: 8192
+startup: {}
+`)},
+	}
+	base, err := LoadCatalog(baseFS)
+	if err != nil {
+		t.Fatalf("LoadCatalog(base): %v", err)
+	}
+	if got := base.EngineAssets[0].Startup.HealthCheck.TimeoutS; got != 300 {
+		t.Fatalf("precondition: base timeout_s = %d, want 300", got)
+	}
+
+	overlayFS := fstest.MapFS{
+		"engines/profiles/vllm.yaml": &fstest.MapFile{Data: []byte(`kind: engine_profile
+metadata:
+  name: vllm
+startup:
+  health_check:
+    path: /healthz
+    timeout_s: 999
+`)},
+	}
+	overlay, err := LoadCatalog(overlayFS)
+	if err != nil {
+		t.Fatalf("LoadCatalog(overlay): %v", err)
+	}
+
+	merged := MergeCatalog(base, overlay)
+	engine := merged.FindEngineByName("vllm-ada", HardwareInfo{})
+	if engine == nil {
+		t.Fatal("vllm-ada not found after merge")
+	}
+	if got := engine.Startup.HealthCheck.Path; got != "/healthz" {
+		t.Errorf("health_check.path = %q, want /healthz", got)
+	}
+	if got := engine.Startup.HealthCheck.TimeoutS; got != 999 {
+		t.Errorf("health_check.timeout_s = %d, want 999", got)
+	}
+}
+
 func TestLoadCatalogLenient(t *testing.T) {
 	fs := fstest.MapFS{
 		"hardware/good.yaml": &fstest.MapFile{Data: []byte(`kind: hardware_profile
@@ -438,6 +580,21 @@ func TestComputeDigests(t *testing.T) {
 		if len(d) < 10 || d[:7] != "sha256:" {
 			t.Errorf("digest for %s doesn't have sha256: prefix: %s", name, d)
 		}
+	}
+
+	profileFS := fstest.MapFS{
+		"engines/profiles/vllm.yaml": &fstest.MapFile{Data: []byte(`kind: engine_profile
+metadata:
+  name: vllm
+startup:
+  health_check:
+    path: /health
+    timeout_s: 300
+`)},
+	}
+	profileDigests := ComputeDigests(profileFS)
+	if _, ok := profileDigests["vllm"]; !ok {
+		t.Error("expected digest for engine profile vllm")
 	}
 }
 
@@ -549,11 +706,59 @@ partition:
 		}
 	})
 
+	t.Run("engine profile stale warning", func(t *testing.T) {
+		factoryFS := fstest.MapFS{
+			"engines/profiles/vllm.yaml": &fstest.MapFile{Data: []byte(`kind: engine_profile
+metadata:
+  name: vllm
+startup:
+  health_check:
+    path: /health
+    timeout_s: 300
+`)},
+		}
+		factoryCat, err := LoadCatalog(factoryFS)
+		if err != nil {
+			t.Fatalf("LoadCatalog(factoryFS): %v", err)
+		}
+		factoryDigests := ComputeDigests(factoryFS)
+		overlayFS := fstest.MapFS{
+			"engines/profiles/vllm.yaml": &fstest.MapFile{Data: []byte(`_base_digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+kind: engine_profile
+metadata:
+  name: vllm
+startup:
+  health_check:
+    path: /healthz
+    timeout_s: 999
+`)},
+		}
+		overlayCat, warnings := LoadCatalogLenient(overlayFS)
+		if len(warnings) != 0 {
+			t.Fatalf("LoadCatalogLenient(profile overlay) warnings = %v, want none", warnings)
+		}
+		baseCopy, err := LoadCatalog(factoryFS)
+		if err != nil {
+			t.Fatalf("LoadCatalog(factoryFS copy): %v", err)
+		}
+		merged, staleWarnings := MergeCatalogWithDigests(baseCopy, overlayCat, factoryDigests, overlayFS)
+		if len(staleWarnings) != 1 {
+			t.Fatalf("expected 1 staleness warning for engine profile, got %d: %v", len(staleWarnings), staleWarnings)
+		}
+		if len(factoryCat.EngineProfiles) != 1 {
+			t.Fatalf("factoryCat.EngineProfiles = %d, want 1", len(factoryCat.EngineProfiles))
+		}
+		if got := merged.EngineProfiles["vllm"].Startup.HealthCheck.TimeoutS; got != 999 {
+			t.Fatalf("merged engine profile timeout_s = %d, want 999", got)
+		}
+	})
+
 	_ = base // used for reference
 }
 
 func TestKindToDir(t *testing.T) {
 	tests := []struct{ kind, dir string }{
+		{"engine_profile", "engines/profiles"},
 		{"engine_asset", "engines"},
 		{"model_asset", "models"},
 		{"hardware_profile", "hardware"},

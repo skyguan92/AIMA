@@ -1689,6 +1689,7 @@ func toEngineBinarySource(src *knowledge.EngineSource) *engine.BinarySource {
 		Platforms: src.Platforms,
 		Download:  src.Download,
 		Mirror:    src.Mirror,
+		SHA256:    src.SHA256,
 	}
 }
 
@@ -2157,7 +2158,7 @@ func listAllRuntimes(ctx context.Context, rts ...runtime.Runtime) []*runtime.Dep
 }
 
 func catalogSize(cat *knowledge.Catalog) int {
-	return len(cat.HardwareProfiles) + len(cat.EngineAssets) + len(cat.ModelAssets) + len(cat.PartitionStrategies) + len(cat.StackComponents)
+	return len(cat.EngineProfiles) + len(cat.HardwareProfiles) + len(cat.EngineAssets) + len(cat.ModelAssets) + len(cat.PartitionStrategies) + len(cat.StackComponents)
 }
 
 const catalogDigestConfigKey = "catalog.digest.sha256"
@@ -2586,15 +2587,23 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				}
 			}
 		}
+		// Build preinstalled probes from engine assets with source.install_type == "preinstalled"
+		preinstalledProbes := make(map[string]*knowledge.EngineSourceProbe)
+		for _, ea := range cat.EngineAssets {
+			if ea.Source != nil && ea.Source.InstallType == "preinstalled" && ea.Source.Probe != nil {
+				preinstalledProbes[ea.Metadata.Name] = ea.Source.Probe
+			}
+		}
 		platform := goruntime.GOOS + "-" + goruntime.GOARCH
 		distDir := filepath.Join(dataDir, "dist", platform)
 		images, err := engine.ScanUnified(ctx, engine.ScanOptions{
-			AssetPatterns: assetPatterns,
-			Runner:        &execRunner{},
-			DistDir:       distDir,
-			Platform:      platform,
-			BinaryAssets:  binaryAssets,
-			AutoImport:    autoImport,
+			AssetPatterns:      assetPatterns,
+			Runner:             &execRunner{},
+			DistDir:            distDir,
+			Platform:           platform,
+			BinaryAssets:       binaryAssets,
+			AutoImport:         autoImport,
+			PreinstalledProbes: preinstalledProbes,
 		})
 		if err != nil {
 			return nil, err
@@ -3349,10 +3358,11 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 						slog.Info("pre-pulling engine image", "image", req.Image, "registries", len(resolved.EngineRegistries))
 						imgName, imgTag := splitImageRef(req.Image)
 						if pullErr := engine.Pull(ctx, engine.PullOptions{
-							Image:      imgName,
-							Tag:        imgTag,
-							Registries: resolved.EngineRegistries,
-							Runner:     &execRunner{},
+							Image:          imgName,
+							Tag:            imgTag,
+							Registries:     resolved.EngineRegistries,
+							Runner:         &execRunner{},
+							ExpectedDigest: resolved.EngineDigest,
 						}); pullErr != nil {
 							slog.Warn("pre-pull failed, K3S will try registries.yaml", "image", req.Image, "error", pullErr)
 						}

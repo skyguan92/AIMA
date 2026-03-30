@@ -1,9 +1,12 @@
 kind: engine_asset
+_profile: sglang
 metadata:
   name: sglang-kt-ada
   type: sglang-kt
   version: "0.5.9-kt0.5.1"
-  supported_formats: [safetensors]
+hardware:
+  gpu_arch: Ada
+  vram_min_mib: 4096
 image:
   # KTransformers + SGLang: CPU-GPU hybrid MoE inference
   # kt-kernel 0.5.1 (AMX/AVX-512 CPU expert offloading)
@@ -18,18 +21,13 @@ patterns:
   - "^sglang-kt"
   - "sglang-kt"
   - "ktransformers"
-hardware:
-  gpu_arch: Ada
-  vram_min_mib: 4096
 startup:
-  command: ["python3", "-m", "sglang.launch_server", "--model-path", "{{.ModelPath}}", "--host", "0.0.0.0"]
   env:
     KT_AVAILABLE: "1"
     OMP_NUM_THREADS: "1"
     SGLANG_DISABLE_CUDNN_CHECK: "1"
     PYTORCH_ALLOC_CONF: "expandable_segments:True"
   default_args:
-    port: 30000
     trust_remote_code: true
     # KTransformers-specific args
     kt_weight_path: "{{.ModelPath}}"
@@ -46,33 +44,22 @@ startup:
     max_running_requests: 16
     watchdog_timeout: 3000
   health_check:
-    path: /health
     timeout_s: 600
   warmup:
-    enabled: true
-    prompt: "Hello"
-    max_tokens: 1
     timeout_s: 120
-api:
-  protocol: openai
-  base_path: /v1
 amplifier:
   features:
     - cpu_gpu_hybrid_moe
     - amx_avx512_offload
-    - continuous_batching
     - radix_attention
   performance_gain: "KTransformers CPU-GPU hybrid MoE: offloads inactive experts to CPU via AMX/AVX-512, enabling large MoE models on limited GPU VRAM"
   resource_expansion:
     cpu_offload: true
-    ssd_offload: false
-    npu_offload: false
   performance_multiplier: 1.5
   extends_resource_boundary: true
   effective_vram_multiplier: 4.0
   offload_config_key: n_gpu_layers
 partition_hints:
-  min_gpu_memory_mib: 4096
   recommended_gpu_cores_percent: 100
 time_constraints:
   cold_start_s: [120, 600]
