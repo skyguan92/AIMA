@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/proxy"
 )
 
@@ -25,6 +26,7 @@ func newServeCmd(app *App) *cobra.Command {
 		addr            string
 		mcpAddr         string
 		mcpMod          bool
+		mcpProfile      string
 		apiKey          string
 		mdnsEnabled     bool
 		discoverEnabled bool
@@ -51,6 +53,10 @@ func newServeCmd(app *App) *cobra.Command {
 			}
 
 			if err := validateServeSecurity(addr, mcpAddr, mcpMod, apiKey, allowInsecure); err != nil {
+				return err
+			}
+			profile, err := resolveMCPProfile(mcpMod, mcpProfile)
+			if err != nil {
 				return err
 			}
 
@@ -124,6 +130,10 @@ func newServeCmd(app *App) *cobra.Command {
 
 			// Start MCP server if requested (on a separate port)
 			if mcpMod {
+				if profile != mcp.ProfileFull {
+					app.MCP.SetProfile(profile)
+					slog.Info("MCP tool profile active", "profile", string(profile))
+				}
 				go func() {
 					slog.Info("starting MCP server (HTTP)", "addr", mcpAddr)
 					mux := http.NewServeMux()
@@ -167,12 +177,27 @@ func newServeCmd(app *App) *cobra.Command {
 	cmd.Flags().StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", proxy.DefaultPort), "Proxy server listen address")
 	cmd.Flags().StringVar(&mcpAddr, "mcp-addr", "127.0.0.1:9090", "MCP server listen address")
 	cmd.Flags().BoolVar(&mcpMod, "mcp", false, "Also serve MCP protocol over HTTP")
+	cmd.Flags().StringVar(&mcpProfile, "mcp-profile", "", "MCP tool profile: operator, patrol, explorer (default: all tools)")
 	cmd.Flags().StringVar(&apiKey, "api-key", defaultKey, "API key for authentication (or set AIMA_API_KEY env)")
 	cmd.Flags().BoolVar(&mdnsEnabled, "mdns", true, "Enable mDNS service broadcast")
 	cmd.Flags().BoolVar(&discoverEnabled, "discover", false, "Discover remote inference services via mDNS")
 	cmd.Flags().BoolVar(&allowInsecure, "allow-insecure-no-auth", false, "Allow non-loopback listen addresses without API key (NOT recommended)")
 
 	return cmd
+}
+
+func resolveMCPProfile(mcpEnabled bool, profile string) (mcp.Profile, error) {
+	if profile == "" {
+		return mcp.ProfileFull, nil
+	}
+	if !mcpEnabled {
+		return mcp.ProfileFull, fmt.Errorf("--mcp-profile requires --mcp")
+	}
+	p := mcp.Profile(profile)
+	if !mcp.IsValidProfile(p) {
+		return mcp.ProfileFull, fmt.Errorf("unknown MCP profile %q; valid profiles: operator, patrol, explorer", profile)
+	}
+	return p, nil
 }
 
 func validateServeSecurity(addr, mcpAddr string, mcpEnabled bool, apiKey string, allowInsecure bool) error {
