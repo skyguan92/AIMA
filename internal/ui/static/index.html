@@ -2616,6 +2616,32 @@ function aimaApp() {
       return raw;
     },
 
+    async callCLI(command) {
+      const headers = { 'Content-Type': 'application/json' };
+      if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+      try {
+        const resp = await fetch('/api/v1/cli/exec', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ command: command || '' })
+        });
+        if (resp.status === 401) {
+          this.systemOnline = false;
+          this.showSettings = true;
+          return { _err: 'unauthorized' };
+        }
+        const data = await resp.json();
+        if (!resp.ok) {
+          const msg = data && data.error && data.error.message ? data.error.message : ('HTTP ' + resp.status);
+          return { _err: msg };
+        }
+        return data;
+      } catch (e) {
+        this.systemOnline = false;
+        return { _err: e.message };
+      }
+    },
+
     // Helper to get a single config value (returns string or null)
     async getConfig(key) {
       const raw = await this.callToolRaw('system.config', { key: key });
@@ -3413,130 +3439,61 @@ function aimaApp() {
     // ── CLI Mode (/cli prefix) ──
 
     async sendCLI(args) {
-      if (!args || args === 'help') {
-        await this._cliHelp();
-        return;
-      }
-
-      // Parse: first token = tool name, rest = params
-      const spaceIdx = args.indexOf(' ');
-      const toolName = spaceIdx === -1 ? args : args.slice(0, spaceIdx);
-      const paramStr = spaceIdx === -1 ? '' : args.slice(spaceIdx + 1).trim();
-      const params = this._parseCLIParams(paramStr);
+      const command = (args || '').trim() || 'help';
 
       const toolIndex = this.messages.length;
       const startTime = Date.now();
       this.messages.push({
         role: 'tool',
-        toolName: toolName,
-        args: params,
+        toolName: 'aima',
+        args: command,
         status: 'running',
         expanded: false,
         startTime: startTime
       });
       this.scrollChat();
 
-      const data = await this.callTool(toolName, Object.keys(params).length > 0 ? params : undefined);
+      const data = await this.callCLI(command);
       const duration = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
 
       if (data._err) {
-        const isUnknown = data._err.includes('not found') || data._err.includes('unknown');
         this.messages.splice(toolIndex, 1, {
           ...this.messages[toolIndex],
           status: 'error',
           result: data._err,
           duration: duration
         });
-        this.messages.push({ role: 'error', text: isUnknown ? this.t('cli_unknown_tool') + toolName : 'Error: ' + data._err });
+        this.messages.push({ role: 'error', text: 'Error: ' + data._err });
       } else {
+        const output = data.output || '';
+        const exitCode = data.exit_code || 0;
+        const resultText = output || data.error || '';
         this.messages.splice(toolIndex, 1, {
           ...this.messages[toolIndex],
-          status: 'success',
-          result: data,
+          status: exitCode === 0 ? 'success' : 'error',
+          result: resultText,
           duration: duration
         });
-        this.messages.push({ role: 'ai', text: JSON.stringify(data, null, 2) });
-
-        // Refresh dashboard after state-changing tools
-        const ns = toolName.split('.')[0];
-        if (['deploy', 'model', 'engine', 'stack', 'system', 'catalog'].includes(ns)) {
-          this.pollSystemStatus();
-          this.pollEngines();
-          this.pollModels();
-          this.pollDeployments();
+        if (output) {
+          this.messages.push({ role: exitCode === 0 ? 'ai' : 'system', text: output });
         }
-      }
-      this.scrollChat();
-    },
-
-    _parseCLIParams(str) {
-      if (!str) return {};
-      const trimmed = str.trim();
-      // Try JSON first
-      if (trimmed.startsWith('{')) {
-        try { return JSON.parse(trimmed); } catch {}
-      }
-      // key=value parsing
-      const params = {};
-      const re = /(\w+)=("([^"]*)"|'([^']*)'|(\S+))/g;
-      let m;
-      while ((m = re.exec(trimmed)) !== null) {
-        const key = m[1];
-        const val = m[3] !== undefined ? m[3] : m[4] !== undefined ? m[4] : m[5];
-        // Auto-convert booleans and numbers
-        if (val === 'true') params[key] = true;
-        else if (val === 'false') params[key] = false;
-        else if (/^\d+$/.test(val)) params[key] = parseInt(val, 10);
-        else if (/^\d+\.\d+$/.test(val)) params[key] = parseFloat(val);
-        else params[key] = val;
-      }
-      return params;
-    },
-
-    _cliToolsCache: null,
-    _cliToolsCacheTime: 0,
-
-    async _cliHelp() {
-      const now = Date.now();
-      // 60s cache
-      if (!this._cliToolsCache || now - this._cliToolsCacheTime > 60000) {
-        const headers = {};
-        if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
-        try {
-          const resp = await fetch('/api/v1/tools', { headers });
-          if (resp.ok) {
-            this._cliToolsCache = await resp.json();
-            this._cliToolsCacheTime = now;
+        if (exitCode !== 0 && data.error) {
+          this.messages.push({ role: 'error', text: data.error });
+        } else if (exitCode === 0) {
+          const head = Array.isArray(data.args) && data.args.length > 0 ? String(data.args[0]).toLowerCase() : '';
+          if (head && head !== 'help' && !head.startsWith('-')) {
+            this.pollSystemStatus();
+            this.pollEngines();
+            this.pollModels();
+            this.pollDeployments();
           }
-        } catch {}
-      }
-
-      let text = this.t('cli_help_header') + '\n' + this.t('cli_help_usage') + '\n\n';
-
-      if (this._cliToolsCache && Array.isArray(this._cliToolsCache)) {
-        // Group by namespace
-        const groups = {};
-        for (const tool of this._cliToolsCache) {
-          const name = tool.name || '';
-          const ns = name.split('.')[0] || 'other';
-          if (!groups[ns]) groups[ns] = [];
-          groups[ns].push({ name, desc: tool.description || '' });
-        }
-        for (const ns of Object.keys(groups).sort()) {
-          text += '[' + ns + ']\n';
-          for (const t of groups[ns]) {
-            const shortDesc = t.desc.length > 60 ? t.desc.slice(0, 57) + '...' : t.desc;
-            text += '  ' + t.name + (shortDesc ? '  - ' + shortDesc : '') + '\n';
-          }
-          text += '\n';
         }
       }
-
-      this.messages.push({ role: 'ai', text: text.trimEnd() });
       this.scrollChat();
     },
 
     scrollChat() {
+
       this.$nextTick(() => {
         const el = this.$refs.chatMessages;
         if (el) el.scrollTop = el.scrollHeight;
