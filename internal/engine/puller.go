@@ -46,7 +46,7 @@ func Pull(ctx context.Context, opts PullOptions) error {
 		return fmt.Errorf("pull image %s:%s: no registries configured", opts.Image, opts.Tag)
 	}
 
-	var lastErr error
+	var attemptErrs []string
 	for _, registry := range opts.Registries {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("pull image %s:%s: %w", opts.Image, opts.Tag, err)
@@ -62,15 +62,19 @@ func Pull(ctx context.Context, opts PullOptions) error {
 		}
 
 		// Try crictl first (with K3S fallback) — no streaming progress available
+		crictlErr := error(nil)
 		if _, err := runCrictl(ctx, opts.Runner, "pull", ref); err == nil {
 			if opts.OnProgress != nil {
 				opts.OnProgress(ProgressEvent{Phase: "complete", Message: "image pulled via crictl"})
 			}
 			verifyDigest(ctx, opts.Runner, ref, opts.ExpectedDigest)
 			return nil
+		} else {
+			crictlErr = err
 		}
 
 		// Fallback to docker. When progress is requested, prefer streaming output.
+		var dockerErr error
 		if opts.OnProgress != nil {
 			agg := newDockerPullAggregator(opts.OnProgress, int64(opts.SizeHintMB)*1024*1024)
 			err := opts.Runner.RunStream(ctx, agg.onLine, "docker", "pull", ref)
@@ -79,18 +83,19 @@ func Pull(ctx context.Context, opts PullOptions) error {
 				verifyDigest(ctx, opts.Runner, ref, opts.ExpectedDigest)
 				return nil
 			}
-			lastErr = err
-			continue
-		}
-		if _, err := opts.Runner.Run(ctx, "docker", "pull", ref); err == nil {
-			verifyDigest(ctx, opts.Runner, ref, opts.ExpectedDigest)
-			return nil
+			dockerErr = err
 		} else {
-			lastErr = err
+			if _, err := opts.Runner.Run(ctx, "docker", "pull", ref); err == nil {
+				verifyDigest(ctx, opts.Runner, ref, opts.ExpectedDigest)
+				return nil
+			} else {
+				dockerErr = err
+			}
 		}
+		attemptErrs = append(attemptErrs, fmt.Sprintf("%s (crictl: %v; docker: %v)", ref, crictlErr, dockerErr))
 	}
 
-	return fmt.Errorf("pull image %s:%s: all registries failed: %w", opts.Image, opts.Tag, lastErr)
+	return fmt.Errorf("pull image %s:%s: all registries failed: %s", opts.Image, opts.Tag, strings.Join(attemptErrs, "; "))
 }
 
 // ImageExistsInContainerd checks whether image exists in containerd (K3S) store only.
@@ -183,11 +188,19 @@ func verifyDigest(ctx context.Context, runner CommandRunner, ref, expectedDigest
 // For registries that include a namespace (e.g., "registry.cn-hangzhou.aliyuncs.com/aima"),
 // only the base image name is appended (not the full original path).
 func buildImageRef(registry, image, tag string) string {
-	// Extract just the base name from the image (e.g., "vllm-openai" from "vllm/vllm-openai")
+	registry = strings.TrimSuffix(registry, "/")
+	image = strings.TrimSuffix(image, "/")
 	baseName := path.Base(image)
 
-	// If registry already contains a path component (like "registry.cn/namespace"),
-	// append just the base name. Otherwise, use the full image path.
+	// Many catalog entries already carry a fully qualified repository path
+	// (for example "docker.io/vllm/vllm-openai"). In that case, don't append
+	// the image name again.
+	if registry == image || strings.HasSuffix(registry, "/"+baseName) {
+		return fmt.Sprintf("%s:%s", registry, tag)
+	}
+
+	// Namespace-style registries (for example "registry.cn-hangzhou.aliyuncs.com/aima")
+	// want only the image basename appended.
 	if strings.Contains(registry, "/") {
 		return fmt.Sprintf("%s/%s:%s", registry, baseName, tag)
 	}

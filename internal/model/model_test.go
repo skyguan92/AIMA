@@ -496,6 +496,49 @@ func TestDownloadServerError(t *testing.T) {
 	}
 }
 
+func TestDownloadHuggingFaceFallsBackToHTTPWhenCLIUnavailableToRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+
+	content := []byte("model-weights")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/models/test/model/tree/main":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `[{"type":"file","path":"weights.bin","size":%d}]`, len(content))
+		case "/test/model/resolve/main/weights.bin":
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			w.Write(content)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cliDir := t.TempDir()
+	cliPath := filepath.Join(cliDir, "huggingface-cli")
+	if err := os.WriteFile(cliPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake cli: %v", err)
+	}
+
+	t.Setenv("PATH", cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HF_ENDPOINT", server.URL)
+
+	destPath := filepath.Join(t.TempDir(), "model")
+	if err := downloadHuggingFace(context.Background(), "test/model", destPath); err != nil {
+		t.Fatalf("downloadHuggingFace fallback: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(destPath, "weights.bin"))
+	if err != nil {
+		t.Fatalf("read downloaded file: %v", err)
+	}
+	if string(data) != string(content) {
+		t.Fatalf("downloaded content = %q, want %q", data, content)
+	}
+}
+
 // --- Import tests ---
 
 func TestImportHuggingFaceModel(t *testing.T) {

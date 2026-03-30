@@ -2341,6 +2341,21 @@ func requiresRootImportForK3S(inContainerd, inDocker, isRoot bool) bool {
 	return inDocker && !inContainerd && !isRoot
 }
 
+func shouldFallbackToDockerRuntime(runtimeName string, hasPartition, inContainerd, inDocker, isRoot bool, dockerAvailable bool) bool {
+	return runtimeName == "k3s" &&
+		dockerAvailable &&
+		!hasPartition &&
+		requiresRootImportForK3S(inContainerd, inDocker, isRoot)
+}
+
+func k3sDockerImportHint(image string) string {
+	return fmt.Sprintf("engine image %s exists in Docker but not in K3S containerd; import requires root (sudo docker save %s | sudo k3s ctr -n k8s.io images import -)", image, image)
+}
+
+func k3sDockerFallbackWarning(image string) string {
+	return fmt.Sprintf("engine image %s is available in Docker but not K3S containerd; using Docker runtime because importing into containerd requires root", image)
+}
+
 func installedRuntimeTypesForEngine(installed []*state.Engine, engineName, engineType string) []string {
 	keys := map[string]bool{
 		strings.ToLower(engineName): true,
@@ -3073,7 +3088,13 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 					if rt.Name() == "k3s" && !inContainerd && inDocker {
 						if os.Getuid() != 0 {
 							_, _ = scanEnginesCore(ctx, "container", false)
-							return fmt.Errorf("engine image %s exists in Docker but not in K3S containerd; import requires root (sudo docker save %s | sudo k3s ctr -n k8s.io images import -)", fullRef, fullRef)
+							if dockerRt != nil {
+								if onProgress != nil {
+									onProgress(engine.ProgressEvent{Phase: "already_available", Message: "engine image already available in Docker; Docker runtime can use it without K3S import"})
+								}
+								return nil
+							}
+							return fmt.Errorf("%s", k3sDockerImportHint(fullRef))
 						}
 						if err := engine.ImportDockerToContainerd(ctx, fullRef, runner); err != nil {
 							return fmt.Errorf("import existing engine image %s into containerd: %w", fullRef, err)
@@ -3355,7 +3376,10 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				if !inContainerd {
 					inDocker := engine.ImageExistsInDocker(ctx, req.Image, &execRunner{})
 					if inDocker {
-						if requiresRootImportForK3S(inContainerd, inDocker, os.Getuid() == 0) {
+						if shouldFallbackToDockerRuntime(activeRt.Name(), hasPartition, inContainerd, inDocker, os.Getuid() == 0, dockerRt != nil) {
+							slog.Info("falling back to Docker runtime because K3S image import requires root", "image", req.Image)
+							activeRt = dockerRt
+						} else if requiresRootImportForK3S(inContainerd, inDocker, os.Getuid() == 0) {
 							return nil, fmt.Errorf("engine image %s is only available in Docker; K3S deployment requires importing it into containerd as root (sudo docker save %s | sudo k3s ctr -n k8s.io images import -)", req.Image, req.Image)
 						} else {
 							slog.Info("auto-importing image from Docker to containerd", "image", req.Image)
@@ -3363,7 +3387,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 								slog.Warn("auto-import failed, K3S will try registries.yaml", "image", req.Image, "error", importErr)
 							}
 						}
-					} else if len(resolved.EngineRegistries) > 0 {
+					} else if activeRt.Name() == "k3s" && len(resolved.EngineRegistries) > 0 {
 						if !allowAutoPull {
 							return nil, fmt.Errorf("engine image %s not found in K3S containerd and auto-pull is disabled", req.Image)
 						}
@@ -3441,6 +3465,20 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				return nil, rtErr
 			}
 			runtimeName := selectedRt.Name()
+			var warnings []string
+			warnings = append(warnings, rd.Fit.Warnings...)
+
+			if runtimeName == "k3s" && resolved.EngineImage != "" {
+				inContainerd := engine.ImageExistsInContainerd(ctx, resolved.EngineImage, &execRunner{})
+				inDocker := engine.ImageExistsInDocker(ctx, resolved.EngineImage, &execRunner{})
+				if shouldFallbackToDockerRuntime(runtimeName, hasPartition, inContainerd, inDocker, os.Getuid() == 0, dockerRt != nil) {
+					selectedRt = dockerRt
+					runtimeName = selectedRt.Name()
+					warnings = append(warnings, k3sDockerFallbackWarning(resolved.EngineImage))
+				} else if requiresRootImportForK3S(inContainerd, inDocker, os.Getuid() == 0) {
+					warnings = append(warnings, k3sDockerImportHint(resolved.EngineImage))
+				}
+			}
 
 			result := map[string]any{
 				"model":        rd.ModelName,
@@ -3458,8 +3496,6 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				},
 			}
 
-			var warnings []string
-			warnings = append(warnings, rd.Fit.Warnings...)
 			if !rd.Fit.Fit {
 				warnings = append(warnings, "WILL NOT DEPLOY: "+rd.Fit.Reason)
 			}

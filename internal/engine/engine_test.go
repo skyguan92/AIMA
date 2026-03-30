@@ -732,7 +732,8 @@ func TestScanPreinstalledProbeUsesDiscoveredBinaryPath(t *testing.T) {
 }
 
 func TestPullImageNameConstruction(t *testing.T) {
-	// Verify the image name is constructed properly from registry + image basename
+	// Verify image refs are built correctly for host-only registries, namespace
+	// prefixes, and fully-qualified repository overrides.
 	tests := []struct {
 		image    string
 		registry string
@@ -741,6 +742,8 @@ func TestPullImageNameConstruction(t *testing.T) {
 	}{
 		{"vllm/vllm-openai", "docker.io", "latest", "docker.io/vllm/vllm-openai:latest"},
 		{"vllm/vllm-openai", "registry.cn-hangzhou.aliyuncs.com/aima", "v0.8", "registry.cn-hangzhou.aliyuncs.com/aima/vllm-openai:v0.8"},
+		{"vllm/vllm-openai", "docker.io/vllm/vllm-openai", "v0.8.5", "docker.io/vllm/vllm-openai:v0.8.5"},
+		{"ghcr.io/ggml-org/llama.cpp", "ghcr.io/ggml-org/llama.cpp", "server", "ghcr.io/ggml-org/llama.cpp:server"},
 	}
 
 	for _, tt := range tests {

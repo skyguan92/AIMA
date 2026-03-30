@@ -159,7 +159,7 @@ func DownloadFromSource(ctx context.Context, sources []Source, destPath string) 
 	if len(sources) == 0 {
 		return fmt.Errorf("no download sources available")
 	}
-	var lastErr error
+	var attemptErrs []string
 	for _, src := range sources {
 		var err error
 		switch src.Type {
@@ -174,9 +174,35 @@ func DownloadFromSource(ctx context.Context, sources []Source, destPath string) 
 			return nil
 		}
 		slog.Warn("source failed, trying next", "type", src.Type, "repo", src.Repo, "error", err)
-		lastErr = err
+		attemptErrs = append(attemptErrs, fmt.Sprintf("%s %s: %v", src.Type, src.Repo, err))
 	}
-	return fmt.Errorf("all sources failed: %w", lastErr)
+	return fmt.Errorf("all sources failed: %s", strings.Join(attemptErrs, "; "))
+}
+
+func hasResumeFriendlyDownloadState(destPath string) bool {
+	entries, err := os.ReadDir(destPath)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == ".cache" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func huggingFaceCLIEnv(destPath, endpoint string) []string {
+	cacheRoot := filepath.Join(destPath, ".cache", "huggingface")
+	return append(
+		os.Environ(),
+		"HF_ENDPOINT="+endpoint,
+		"HF_HOME="+cacheRoot,
+		"HF_HUB_CACHE="+filepath.Join(cacheRoot, "hub"),
+		"HF_ASSETS_CACHE="+filepath.Join(cacheRoot, "assets"),
+	)
 }
 
 func downloadHuggingFace(ctx context.Context, repo, destPath string) error {
@@ -184,28 +210,40 @@ func downloadHuggingFace(ctx context.Context, repo, destPath string) error {
 		return fmt.Errorf("create dest dir %s: %w", destPath, err)
 	}
 
-	// Prefer huggingface-cli if available (handles auth, multi-file, resume).
-	if hfCLI, err := exec.LookPath("huggingface-cli"); err == nil {
-		endpoints := hfEndpoints()
-		slog.Info("downloading via huggingface-cli", "repo", repo, "dest", destPath, "endpoint", endpoints[0])
-		cmd := exec.CommandContext(ctx, hfCLI, "download", repo, "--local-dir", destPath)
-		cmd.Env = append(os.Environ(), "HF_ENDPOINT="+endpoints[0])
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+	endpoints := hfEndpoints()
+	if hasResumeFriendlyDownloadState(destPath) {
+		slog.Info("resuming HuggingFace download via HTTP", "repo", repo, "dest", destPath)
+		return downloadHFRepoViaEndpoints(ctx, endpoints, repo, destPath)
 	}
 
-	// Fallback: list files via API, then download each one.
-	endpoints := hfEndpoints()
+	// Prefer huggingface-cli if available (handles auth, multi-file, resume).
+	if hfCLI, err := exec.LookPath("huggingface-cli"); err == nil {
+		slog.Info("downloading via huggingface-cli", "repo", repo, "dest", destPath, "endpoint", endpoints[0])
+		cmd := exec.CommandContext(ctx, hfCLI, "download", repo, "--local-dir", destPath)
+		cmd.Env = huggingFaceCLIEnv(destPath, endpoints[0])
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		slog.Warn("huggingface-cli failed, falling back to HTTP repo download", "repo", repo, "error", err)
+	}
+
+	return downloadHFRepoViaEndpoints(ctx, endpoints, repo, destPath)
+}
+
+func downloadHFRepoViaEndpoints(ctx context.Context, endpoints []string, repo, destPath string) error {
+	var attemptErrs []string
 	for _, ep := range endpoints {
 		slog.Info("downloading via HuggingFace HTTP", "repo", repo, "endpoint", ep)
 		if err := downloadHFRepo(ctx, ep, repo, destPath); err != nil {
 			slog.Warn("HF endpoint failed", "endpoint", ep, "error", err)
+			attemptErrs = append(attemptErrs, fmt.Sprintf("%s: %v", ep, err))
 			continue
 		}
 		return nil
 	}
-	return fmt.Errorf("all HuggingFace endpoints failed for %s", repo)
+	return fmt.Errorf("all HuggingFace endpoints failed for %s: %s", repo, strings.Join(attemptErrs, "; "))
 }
 
 // hfRepoFile represents a file entry from the HuggingFace tree API.
@@ -365,15 +403,27 @@ func downloadModelScope(ctx context.Context, repo, destPath string) error {
 		return fmt.Errorf("create dest dir %s: %w", destPath, err)
 	}
 
+	if hasResumeFriendlyDownloadState(destPath) {
+		slog.Info("resuming ModelScope download via HTTP", "repo", repo, "dest", destPath)
+		return downloadModelScopeHTTP(ctx, repo, destPath)
+	}
+
 	// Prefer modelscope CLI if available
 	if msCLI, err := exec.LookPath("modelscope"); err == nil {
 		slog.Info("downloading via modelscope CLI", "repo", repo, "dest", destPath)
 		cmd := exec.CommandContext(ctx, msCLI, "download", repo, "--local_dir", destPath)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		slog.Warn("modelscope CLI failed, falling back to HTTP repo download", "repo", repo, "error", err)
 	}
 
+	return downloadModelScopeHTTP(ctx, repo, destPath)
+}
+
+func downloadModelScopeHTTP(ctx context.Context, repo, destPath string) error {
 	// Fallback: list files via ModelScope API, download each
 	apiURL := fmt.Sprintf("https://modelscope.cn/api/v1/models/%s/repo/tree?Revision=master&Root=&Recursive=true", repo)
 	slog.Info("downloading via ModelScope HTTP", "repo", repo)
@@ -448,4 +498,3 @@ func isSubPath(parent, child string) bool {
 	c := filepath.Clean(child)
 	return strings.HasPrefix(c, p) || c == filepath.Clean(parent)
 }
-

@@ -155,6 +155,21 @@ func TestRequiresRootImportForK3S(t *testing.T) {
 	}
 }
 
+func TestShouldFallbackToDockerRuntime(t *testing.T) {
+	if !shouldFallbackToDockerRuntime("k3s", false, false, true, false, true) {
+		t.Fatal("expected Docker fallback when K3S import requires root and Docker is available")
+	}
+	if shouldFallbackToDockerRuntime("k3s", true, false, true, false, true) {
+		t.Fatal("partitioned deployments must not fall back away from K3S")
+	}
+	if shouldFallbackToDockerRuntime("docker", false, false, true, false, true) {
+		t.Fatal("non-K3S runtime should not trigger K3S fallback logic")
+	}
+	if shouldFallbackToDockerRuntime("k3s", false, false, true, false, false) {
+		t.Fatal("fallback requires Docker runtime availability")
+	}
+}
+
 func TestInstalledRuntimeTypesForEngine(t *testing.T) {
 	installed := []*state.Engine{
 		{ID: "llamacpp-universal", Type: "llamacpp", RuntimeType: "native"},
