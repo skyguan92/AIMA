@@ -319,7 +319,9 @@ func run() error {
 		},
 	}
 	fleetRoutes := fleet.RegisterRoutes(fleetDeps)
-	uiRoutes := ui.RegisterRoutes()
+	uiRoutes := ui.RegisterRoutes(&ui.Deps{
+		SupportManifest: supportSvc.GoUXManifestJSON,
+	})
 
 	// OpenClaw integration: wire adapters + routes + sync tool
 	openclawDeps := &openclaw.Deps{

@@ -35,6 +35,17 @@ func TestServiceAskForHelpAndRun(t *testing.T) {
 			"recovery_code":         "rec-1",
 			"token_expires_at":      time.Now().Add(48 * time.Hour).Format(time.RFC3339),
 			"poll_interval_seconds": 1,
+			"referral_code":         "ref-1",
+			"share_text":            "Share AIMA-Service with your team",
+			"budget": map[string]any{
+				"max_tasks":      10,
+				"used_tasks":     1,
+				"budget_usd":     20,
+				"spent_usd":      2,
+				"status":         "active",
+				"is_bound":       false,
+				"referral_count": 3,
+			},
 		})
 	})
 	mux.HandleFunc("/api/v1/devices/dev-1/active-task", func(w http.ResponseWriter, r *http.Request) {
@@ -76,9 +87,15 @@ func TestServiceAskForHelpAndRun(t *testing.T) {
 			state.notified = true
 			writeJSON(t, w, map[string]any{
 				"poll_interval_seconds":        1,
+				"is_bound":                     true,
 				"notif_task_id":                "task-1",
 				"notif_task_status":            "succeeded",
-				"notif_budget_tasks_remaining": 9,
+				"notif_referral_code":          "ref-1",
+				"notif_share_text":             "Share AIMA-Service with your team",
+				"notif_budget_tasks_remaining": 8,
+				"notif_budget_tasks_total":     10,
+				"notif_budget_usd_remaining":   15,
+				"notif_budget_usd_total":       20,
 			})
 			return
 		}
@@ -129,6 +146,12 @@ func TestServiceAskForHelpAndRun(t *testing.T) {
 	if result.TaskID != "task-1" {
 		t.Fatalf("TaskID = %q, want task-1", result.TaskID)
 	}
+	if result.ReferralCode != "ref-1" || result.ShareText == "" {
+		t.Fatalf("expected referral summary in ask result, got %+v", result)
+	}
+	if result.MaxTasks != 10 || result.UsedTasks != 1 || result.BudgetUSD != 20 || result.SpentUSD != 2 {
+		t.Fatalf("expected budget summary in ask result, got %+v", result)
+	}
 	if got := store.mustGet(ConfigEnabled); got != "true" {
 		t.Fatalf("support.enabled = %q, want true", got)
 	}
@@ -147,6 +170,15 @@ func TestServiceAskForHelpAndRun(t *testing.T) {
 	}
 	if statusBeforeRun.ActiveTask.Target != "diagnose and fix the issue" {
 		t.Fatalf("unexpected active task target before Run: %+v", statusBeforeRun.ActiveTask)
+	}
+	if statusBeforeRun.ReferralCode != "ref-1" || statusBeforeRun.ShareText == "" {
+		t.Fatalf("expected persisted support summary before Run, got %+v", statusBeforeRun)
+	}
+	if statusBeforeRun.MaxTasks != 10 || statusBeforeRun.UsedTasks != 1 || statusBeforeRun.BudgetUSD != 20 || statusBeforeRun.SpentUSD != 2 {
+		t.Fatalf("unexpected budget summary before Run: %+v", statusBeforeRun)
+	}
+	if statusBeforeRun.IsBound {
+		t.Fatalf("expected unbound status before Run, got %+v", statusBeforeRun)
 	}
 
 	if err := svc.Run(ctx, RunOptions{StopWhenIdle: true}); err != nil {
@@ -176,6 +208,12 @@ func TestServiceAskForHelpAndRun(t *testing.T) {
 	}
 	if statusAfterRun.LastMessage == nil || !strings.Contains(statusAfterRun.LastMessage.Message, "Task task-1 finished with status succeeded") {
 		t.Fatalf("unexpected last message snapshot after Run: %+v", statusAfterRun.LastMessage)
+	}
+	if !statusAfterRun.IsBound {
+		t.Fatalf("expected bound status after Run, got %+v", statusAfterRun)
+	}
+	if statusAfterRun.MaxTasks != 10 || statusAfterRun.UsedTasks != 2 || statusAfterRun.BudgetUSD != 20 || statusAfterRun.SpentUSD != 5 {
+		t.Fatalf("unexpected budget summary after Run: %+v", statusAfterRun)
 	}
 }
 
@@ -352,6 +390,52 @@ func TestServiceAskForHelpRegistrationPromptErrors(t *testing.T) {
 				t.Fatalf("prompt detail = %q, want %q", promptErr.Detail, tc.detail)
 			}
 		})
+	}
+}
+
+func TestServiceGoUXManifestJSON(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/ux-manifests/device-go", func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.String()
+		writeJSON(t, w, map[string]any{
+			"manifest_version": "2026-03-24.1",
+			"flow_id":          "device-go",
+			"blocks": map[string]any{
+				"task_menu": map[string]any{
+					"title": map[string]any{
+						"text": "What would you like me to help you do?",
+					},
+				},
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	store := newMemoryStore()
+	if err := store.SetConfig(context.Background(), ConfigEndpoint, server.URL); err != nil {
+		t.Fatalf("set endpoint: %v", err)
+	}
+	if err := store.SetConfig(context.Background(), ConfigWorkerCode, "worker-42"); err != nil {
+		t.Fatalf("set worker code: %v", err)
+	}
+	if err := store.SetConfig(context.Background(), configStateReferralCode, "ref-99"); err != nil {
+		t.Fatalf("set referral code: %v", err)
+	}
+
+	svc := NewService(store, WithHTTPClient(server.Client()))
+	raw, err := svc.GoUXManifestJSON(context.Background())
+	if err != nil {
+		t.Fatalf("GoUXManifestJSON: %v", err)
+	}
+	if !strings.Contains(string(raw), `"flow_id":"device-go"`) {
+		t.Fatalf("unexpected manifest payload: %s", string(raw))
+	}
+	if gotPath != "/api/v1/ux-manifests/device-go?ref=ref-99&schema_version=v1&worker_code=worker-42" {
+		t.Fatalf("manifest path = %q", gotPath)
 	}
 }
 

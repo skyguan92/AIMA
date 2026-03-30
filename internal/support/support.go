@@ -13,9 +13,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +36,16 @@ const (
 	configStateToken                = "support.state.token"
 	configStateRecoveryCode         = "support.state.recovery_code"
 	configStateReferralCode         = "support.state.referral_code"
+	configStateShareText            = "support.state.share_text"
 	configStateTokenExpiresAt       = "support.state.token_expires_at"
 	configStatePollIntervalSec      = "support.state.poll_interval_seconds"
+	configStateMaxTasks             = "support.state.max_tasks"
+	configStateUsedTasks            = "support.state.used_tasks"
+	configStateBudgetUSD            = "support.state.budget_usd"
+	configStateSpentUSD             = "support.state.spent_usd"
+	configStateBudgetStatus         = "support.state.budget_status"
+	configStateIsBound              = "support.state.is_bound"
+	configStateReferralCount        = "support.state.referral_count"
 	configStateActiveTaskID         = "support.state.active_task_id"
 	configStateActiveTaskStatus     = "support.state.active_task_status"
 	configStateActiveTaskTarget     = "support.state.active_task_target"
@@ -149,7 +159,16 @@ type Status struct {
 	Endpoint            string            `json:"endpoint,omitempty"`
 	Registered          bool              `json:"registered"`
 	DeviceID            string            `json:"device_id,omitempty"`
+	ReferralCode        string            `json:"referral_code,omitempty"`
+	ShareText           string            `json:"share_text,omitempty"`
 	PollIntervalSeconds int               `json:"poll_interval_seconds,omitempty"`
+	MaxTasks            int               `json:"max_tasks,omitempty"`
+	UsedTasks           int               `json:"used_tasks,omitempty"`
+	BudgetUSD           float64           `json:"budget_usd,omitempty"`
+	SpentUSD            float64           `json:"spent_usd,omitempty"`
+	BudgetStatus        string            `json:"budget_status,omitempty"`
+	IsBound             bool              `json:"is_bound,omitempty"`
+	ReferralCount       int               `json:"referral_count,omitempty"`
 	ActiveTask          *TaskSnapshot     `json:"active_task,omitempty"`
 	LastTask            *TaskSnapshot     `json:"last_task,omitempty"`
 	LastMessage         *MessageSnapshot  `json:"last_message,omitempty"`
@@ -307,17 +326,17 @@ func (s *Service) AskForHelp(ctx context.Context, req AskRequest) (AskResult, er
 		DeviceID:            state.DeviceID,
 		PollIntervalSeconds: state.PollIntervalSeconds,
 		ReferralCode:        state.ReferralCode,
+		ShareText:           state.ShareText,
+		MaxTasks:            state.MaxTasks,
+		UsedTasks:           state.UsedTasks,
+		BudgetUSD:           state.BudgetUSD,
+		SpentUSD:            state.SpentUSD,
+		BudgetStatus:        state.BudgetStatus,
+		IsBound:             state.IsBound,
+		ReferralCount:       state.ReferralCount,
 	}
-	if registerResp != nil {
+	if registerResp != nil && result.ReferralCode == "" {
 		result.ReferralCode = registerResp.ReferralCode
-		result.ShareText = registerResp.ShareText
-		result.MaxTasks = registerResp.Budget.MaxTasks
-		result.UsedTasks = registerResp.Budget.UsedTasks
-		result.BudgetUSD = registerResp.Budget.BudgetUSD
-		result.SpentUSD = registerResp.Budget.SpentUSD
-		result.BudgetStatus = registerResp.Budget.Status
-		result.IsBound = registerResp.Budget.IsBound
-		result.ReferralCount = registerResp.Budget.ReferralCount
 	}
 
 	if req.Description == "" {
@@ -364,6 +383,34 @@ func (s *Service) AskForHelp(ctx context.Context, req AskRequest) (AskResult, er
 	return result, nil
 }
 
+// GoUXManifestJSON returns the current aima-service-new device-go UX manifest.
+// This is the shared UX source consumed by bootstrap scripts and the Python CLI.
+func (s *Service) GoUXManifestJSON(ctx context.Context) (json.RawMessage, error) {
+	endpoint := s.endpointFromConfig(ctx)
+	if endpoint == "" {
+		return nil, fmt.Errorf("support endpoint is not configured; set %s or AIMA_SUPPORT_ENDPOINT", ConfigEndpoint)
+	}
+
+	query := url.Values{}
+	query.Set("schema_version", "v1")
+	if worker := s.optionalConfig(ctx, ConfigWorkerCode, "AIMA_SUPPORT_WORKER_CODE"); worker != "" {
+		query.Set("worker_code", worker)
+	}
+	if state := s.loadState(ctx); state.ReferralCode != "" {
+		query.Set("ref", state.ReferralCode)
+	}
+
+	var raw json.RawMessage
+	manifestURL := endpoint + "/ux-manifests/device-go"
+	if encoded := query.Encode(); encoded != "" {
+		manifestURL += "?" + encoded
+	}
+	if err := s.doJSON(ctx, http.MethodGet, manifestURL, "", nil, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 // Status returns the latest persisted support state without performing network I/O.
 func (s *Service) Status(ctx context.Context) Status {
 	state := s.loadState(ctx)
@@ -372,7 +419,16 @@ func (s *Service) Status(ctx context.Context) Status {
 		Endpoint:            s.endpointFromConfig(ctx),
 		Registered:          state.DeviceID != "",
 		DeviceID:            state.DeviceID,
+		ReferralCode:        state.ReferralCode,
+		ShareText:           state.ShareText,
 		PollIntervalSeconds: state.PollIntervalSeconds,
+		MaxTasks:            state.MaxTasks,
+		UsedTasks:           state.UsedTasks,
+		BudgetUSD:           state.BudgetUSD,
+		SpentUSD:            state.SpentUSD,
+		BudgetStatus:        state.BudgetStatus,
+		IsBound:             state.IsBound,
+		ReferralCount:       state.ReferralCount,
 	}
 
 	if active := s.loadTaskSnapshot(ctx, configStateActiveTaskID, configStateActiveTaskStatus, configStateActiveTaskTarget, configStateActiveTaskUpdatedAt); hasTaskSnapshot(active) {
@@ -474,6 +530,12 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) error {
 		if pollResp.PollIntervalSeconds > 0 {
 			state.PollIntervalSeconds = pollResp.PollIntervalSeconds
 			_ = s.store.SetConfig(ctx, configStatePollIntervalSec, fmt.Sprintf("%d", pollResp.PollIntervalSeconds))
+		}
+		if pollResp.IsBound != state.IsBound {
+			state.IsBound = pollResp.IsBound
+			s.persistStateEntries(ctx, map[string]string{
+				configStateIsBound: strconv.FormatBool(state.IsBound),
+			})
 		}
 
 		if pollResp.InteractionID != "" {
@@ -579,8 +641,16 @@ type deviceState struct {
 	Token               string
 	RecoveryCode        string
 	ReferralCode        string
+	ShareText           string
 	TokenExpiresAt      string
 	PollIntervalSeconds int
+	MaxTasks            int
+	UsedTasks           int
+	BudgetUSD           float64
+	SpentUSD            float64
+	BudgetStatus        string
+	IsBound             bool
+	ReferralCount       int
 }
 
 type activeTaskResponse struct {
@@ -735,6 +805,7 @@ func (s *Service) ensureRegistered(ctx context.Context, req AskRequest) (deviceS
 	if resp.PollIntervalSeconds > 0 {
 		state.PollIntervalSeconds = resp.PollIntervalSeconds
 	}
+	applyRegistrationSummary(&state, &resp)
 	if err := s.saveState(ctx, state); err != nil {
 		return deviceState{}, "", nil, err
 	}
@@ -1103,6 +1174,8 @@ func (s *Service) persistNotification(ctx context.Context, notification Notifica
 		}
 	}
 
+	s.persistSummaryNotification(ctx, notification)
+
 	taskID := strings.TrimSpace(notification.TaskID)
 	taskStatus := strings.TrimSpace(notification.TaskStatus)
 	if taskID == "" && taskStatus == "" {
@@ -1144,6 +1217,7 @@ func (s *Service) loadState(ctx context.Context) deviceState {
 	state.Token = s.optionalConfig(ctx, configStateToken, "")
 	state.RecoveryCode = s.optionalConfig(ctx, configStateRecoveryCode, "")
 	state.ReferralCode = s.optionalConfig(ctx, configStateReferralCode, "")
+	state.ShareText = s.optionalConfig(ctx, configStateShareText, "")
 	state.TokenExpiresAt = s.optionalConfig(ctx, configStateTokenExpiresAt, "")
 	if raw := s.optionalConfig(ctx, configStatePollIntervalSec, ""); raw != "" {
 		var parsed int
@@ -1151,6 +1225,13 @@ func (s *Service) loadState(ctx context.Context) deviceState {
 			state.PollIntervalSeconds = parsed
 		}
 	}
+	state.MaxTasks = parseConfigInt(s.optionalConfig(ctx, configStateMaxTasks, ""))
+	state.UsedTasks = parseConfigInt(s.optionalConfig(ctx, configStateUsedTasks, ""))
+	state.BudgetUSD = parseConfigFloat(s.optionalConfig(ctx, configStateBudgetUSD, ""))
+	state.SpentUSD = parseConfigFloat(s.optionalConfig(ctx, configStateSpentUSD, ""))
+	state.BudgetStatus = s.optionalConfig(ctx, configStateBudgetStatus, "")
+	state.IsBound = parseConfigBool(s.optionalConfig(ctx, configStateIsBound, ""))
+	state.ReferralCount = parseConfigInt(s.optionalConfig(ctx, configStateReferralCount, ""))
 	return state
 }
 
@@ -1160,8 +1241,16 @@ func (s *Service) saveState(ctx context.Context, state deviceState) error {
 		configStateToken:           state.Token,
 		configStateRecoveryCode:    state.RecoveryCode,
 		configStateReferralCode:    state.ReferralCode,
+		configStateShareText:       state.ShareText,
 		configStateTokenExpiresAt:  state.TokenExpiresAt,
 		configStatePollIntervalSec: fmt.Sprintf("%d", maxInt(state.PollIntervalSeconds, int(defaultPollInterval/time.Second))),
+		configStateMaxTasks:        strconv.Itoa(state.MaxTasks),
+		configStateUsedTasks:       strconv.Itoa(state.UsedTasks),
+		configStateBudgetUSD:       strconv.FormatFloat(state.BudgetUSD, 'f', -1, 64),
+		configStateSpentUSD:        strconv.FormatFloat(state.SpentUSD, 'f', -1, 64),
+		configStateBudgetStatus:    state.BudgetStatus,
+		configStateIsBound:         strconv.FormatBool(state.IsBound),
+		configStateReferralCount:   strconv.Itoa(state.ReferralCount),
 	}
 	for key, value := range entries {
 		if err := s.store.SetConfig(ctx, key, value); err != nil {
@@ -1176,6 +1265,92 @@ func (s *Service) clearSavedToken(ctx context.Context) error {
 		return err
 	}
 	return s.store.SetConfig(ctx, configStateTokenExpiresAt, "")
+}
+
+func applyRegistrationSummary(state *deviceState, resp *selfRegisterResponse) {
+	if state == nil || resp == nil {
+		return
+	}
+	state.ShareText = strings.TrimSpace(resp.ShareText)
+	if strings.TrimSpace(resp.ReferralCode) != "" {
+		state.ReferralCode = strings.TrimSpace(resp.ReferralCode)
+	}
+	state.MaxTasks = resp.Budget.MaxTasks
+	state.UsedTasks = resp.Budget.UsedTasks
+	state.BudgetUSD = resp.Budget.BudgetUSD
+	state.SpentUSD = resp.Budget.SpentUSD
+	state.BudgetStatus = strings.TrimSpace(resp.Budget.Status)
+	state.IsBound = resp.Budget.IsBound
+	state.ReferralCount = resp.Budget.ReferralCount
+}
+
+func parseConfigInt(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func parseConfigFloat(raw string) float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func parseConfigBool(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) persistSummaryNotification(ctx context.Context, notification Notification) {
+	entries := map[string]string{}
+	state := s.loadState(ctx)
+
+	if referral := strings.TrimSpace(notification.ReferralCode); referral != "" && referral != state.ReferralCode {
+		entries[configStateReferralCode] = referral
+	}
+	if share := strings.TrimSpace(notification.ShareText); share != "" && share != state.ShareText {
+		entries[configStateShareText] = share
+	}
+	if notification.BudgetTasksTotal > 0 || notification.BudgetTasksRemaining > 0 {
+		used := maxInt(notification.BudgetTasksTotal-notification.BudgetTasksRemaining, 0)
+		if notification.BudgetTasksTotal != state.MaxTasks {
+			entries[configStateMaxTasks] = strconv.Itoa(notification.BudgetTasksTotal)
+		}
+		if used != state.UsedTasks {
+			entries[configStateUsedTasks] = strconv.Itoa(used)
+		}
+	}
+	if notification.BudgetUSDTotal > 0 || notification.BudgetUSDRemaining > 0 {
+		spent := notification.BudgetUSDTotal - notification.BudgetUSDRemaining
+		if spent < 0 {
+			spent = 0
+		}
+		if notification.BudgetUSDTotal != state.BudgetUSD {
+			entries[configStateBudgetUSD] = strconv.FormatFloat(notification.BudgetUSDTotal, 'f', -1, 64)
+		}
+		if spent != state.SpentUSD {
+			entries[configStateSpentUSD] = strconv.FormatFloat(spent, 'f', -1, 64)
+		}
+	}
+	if len(entries) > 0 {
+		s.persistStateEntries(ctx, entries)
+	}
 }
 
 func (s *Service) isEnabled(ctx context.Context) bool {

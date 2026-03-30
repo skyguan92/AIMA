@@ -283,6 +283,10 @@ body {
   padding: 16px;
   box-shadow: var(--panel-shadow, 0 4px 24px rgba(0, 0, 0, 0.2));
 }
+.fleet-panel {
+  display: flex;
+  flex-direction: column;
+}
 .panel-title {
   font-family: var(--font-sans);
   font-size: 12px;
@@ -406,6 +410,45 @@ body {
   opacity: 1;
   color: var(--accent);
 }
+.fleet-scroll {
+  max-height: clamp(160px, 34vh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
+  padding-right: 4px;
+  margin-right: -4px;
+  min-height: 0;
+}
+.fleet-scroll::-webkit-scrollbar {
+  width: 0;
+}
+.fleet-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.fleet-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.fleet-panel:hover .fleet-scroll,
+.fleet-panel:focus-within .fleet-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-light) transparent;
+}
+.fleet-panel:hover .fleet-scroll::-webkit-scrollbar,
+.fleet-panel:focus-within .fleet-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.fleet-panel:hover .fleet-scroll::-webkit-scrollbar-thumb,
+.fleet-panel:focus-within .fleet-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+}
+.fleet-panel:hover .fleet-scroll::-webkit-scrollbar-thumb:hover,
+.fleet-panel:focus-within .fleet-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
 
 /* Agent info rows */
 .agent-info-row {
@@ -443,13 +486,23 @@ body {
   flex-direction: column;
   overflow: hidden;
   background: transparent;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 /* Agent header - minimal Claude Code style */
 .agent-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 16px;
   padding: 14px 24px;
   border-bottom: 0.5px solid var(--border-medium);
   background: var(--glass-bg);
@@ -457,6 +510,12 @@ body {
   -webkit-backdrop-filter: blur(20px);
   flex-shrink: 0;
   z-index: 10;
+}
+.agent-header-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 .agent-avatar {
   width: 32px;
@@ -466,6 +525,12 @@ body {
   object-fit: contain;
   border-radius: 8px;
   opacity: 1;
+}
+.agent-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 .agent-name {
   font-family: var(--font-sans);
@@ -480,11 +545,59 @@ body {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-left: auto;
+}
+.agent-support-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid rgba(10, 132, 255, 0.35);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+.agent-support-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.agent-support-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.agent-support-btn.connected {
+  color: var(--success);
+  border-color: rgba(48, 209, 88, 0.45);
+  background: rgba(48, 209, 88, 0.12);
+}
+.agent-support-btn.connected:hover,
+.agent-support-btn.connected.active {
+  background: var(--success);
+  border-color: var(--success);
+  color: #fff;
+}
+.agent-support-btn .support-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
 }
 
 /* Chat messages - refined typography */
 .chat-messages {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -1213,56 +1326,23 @@ body {
 
 /* ===== Support Page ===== */
 
-/* Topbar support button */
-.topbar-support-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  font-family: var(--font-sans);
-  color: var(--accent);
-  background: var(--accent-dim);
-  border: 1px solid var(--accent);
-  border-radius: 18px;
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-smooth);
-  margin-left: 12px;
-}
-.topbar-support-btn:hover {
-  background: var(--accent);
-  color: #fff;
-}
-.topbar-support-btn.active {
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 0 8px var(--accent-dim);
-}
-.topbar-support-btn.connected {
-  border-color: var(--success);
-  color: var(--success);
-  background: rgba(48, 209, 88, 0.12);
-}
-.topbar-support-btn.connected:hover,
-.topbar-support-btn.connected.active {
-  background: var(--success);
-  color: #fff;
-}
-.topbar-support-btn .support-dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  flex-shrink: 0;
-}
-
 /* Support page layout (fills .center) */
 .support-page {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  padding: var(--spacing-lg);
-  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.support-page-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(100%, 820px);
+  margin: 0 auto;
+  padding: 18px 24px 18px;
+  flex: 1;
+  min-height: 0;
 }
 
 /* Hero / not-connected state */
@@ -1360,8 +1440,187 @@ body {
 .support-connected {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  gap: var(--spacing-md);
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+}
+.support-flow {
+  flex: 1;
+  min-height: 0;
+}
+.support-content-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.support-content-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.support-content-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.support-content-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.support-content-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+.support-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.support-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-panel);
+  border: var(--panel-border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.support-status-pill strong {
+  color: var(--text);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+.support-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.support-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--bg-secondary);
+  border: var(--panel-border);
+  border-radius: var(--radius-sm);
+}
+.support-summary-card .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+}
+.support-summary-card .value {
+  font-size: 14px;
+  font-family: var(--font-mono);
+  color: var(--text);
+  word-break: break-word;
+}
+.support-summary-card .meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.support-summary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.support-summary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: var(--panel-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth),
+    background var(--duration-fast) var(--ease-smooth);
+}
+.support-summary-btn:hover {
+  border-color: rgba(10, 132, 255, 0.35);
+  color: var(--accent);
+}
+.support-summary-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.support-intake {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: var(--panel-border);
+  border-radius: var(--radius-sm);
+}
+.support-intake-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.support-intake-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+}
+.support-intake-subtitle {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.support-starter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.support-starter-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+}
+.support-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.support-chip {
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: var(--panel-border);
+  border-radius: 999px;
+  cursor: pointer;
+  text-align: left;
+}
+.support-chip:hover {
+  border-color: rgba(10, 132, 255, 0.35);
+  color: var(--text);
+}
+.support-note {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.support-helper {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
 }
 .support-status-grid {
   display: grid;
@@ -1388,8 +1647,6 @@ body {
   word-break: break-all;
 }
 .support-msg-list {
-  flex: 1;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1397,7 +1654,7 @@ body {
   background: var(--bg-secondary);
   border: var(--panel-border);
   border-radius: var(--radius-sm);
-  min-height: 120px;
+  min-height: 160px;
 }
 .support-msg {
   padding: 8px 10px;
@@ -1406,6 +1663,9 @@ body {
   background: var(--bg-panel);
   border-radius: 6px;
   line-height: 1.4;
+}
+.support-msg-body {
+  white-space: pre-wrap;
 }
 .support-msg .msg-time {
   font-size: 11px;
@@ -1424,6 +1684,8 @@ body {
 .support-msg .msg-type.command { color: var(--warning); background: rgba(255, 159, 10, 0.15); }
 .support-msg .msg-type.error { color: var(--error); background: rgba(255, 69, 58, 0.15); }
 .support-msg .msg-type.complete { color: var(--success); background: rgba(48, 209, 88, 0.15); }
+.support-msg .msg-type.question { color: var(--accent); background: rgba(10, 132, 255, 0.18); }
+.support-msg .msg-type.approval { color: var(--warning); background: rgba(255, 159, 10, 0.15); }
 .support-feedback {
   font-size: 13px;
   color: var(--error);
@@ -1437,6 +1699,14 @@ body {
   display: flex;
   gap: 8px;
 }
+.support-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-top: 4px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(29, 29, 31, 0.18) 100%);
+}
 .support-input-row input {
   flex: 1;
   padding: 10px 12px;
@@ -1446,6 +1716,10 @@ body {
   color: var(--text);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-sm);
+}
+.support-input-row input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .support-input-row button {
   padding: 10px 20px;
@@ -1457,6 +1731,10 @@ body {
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
+}
+.support-input-row button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .support-disconnect-btn {
   align-self: center;
@@ -1485,18 +1763,30 @@ body {
 }
 
 @media (max-width: 768px) {
-  .topbar-support-btn {
-    padding: 4px 10px;
-    font-size: 12px;
-  }
   .support-page {
-    padding: var(--spacing-md);
+    padding: 0;
+  }
+  .support-page-shell {
+    width: 100%;
+    padding: 12px;
+  }
+  .support-content-scroll {
+    padding-right: 0;
   }
   .support-hero h2 {
     font-size: 18px;
   }
+  .support-summary-grid,
   .support-status-grid {
     grid-template-columns: 1fr;
+  }
+  .agent-header {
+    padding: 12px 16px;
+    gap: 12px;
+  }
+  .agent-support-btn {
+    padding: 7px 10px;
+    font-size: 12px;
   }
 }
 </style>
@@ -1515,12 +1805,6 @@ body {
   <!-- Top Bar -->
   <div class="topbar">
     <div class="topbar-logo"><img :src="theme === 'dark' ? 'logo-dark-wordmark.svg' : 'logo-light-wordmark.svg'" alt="AIMA" class="topbar-logo-img"></div>
-    <button class="topbar-support-btn"
-      :class="{ active: currentView === 'support', connected: supportConnected }"
-      @click="toggleView('support')">
-      <span class="support-dot"></span>
-      <span x-text="t('support')"></span>
-    </button>
     <div class="topbar-right">
       <span class="status-text">
         <span class="status-dot" :class="systemOnline ? 'online' : 'offline'"></span>
@@ -1659,21 +1943,34 @@ body {
 
     <!-- Center: Chat / Support (toggled by currentView) -->
     <div class="center">
-
-      <!-- Chat View -->
-      <div x-show="currentView === 'chat'" style="display:flex;flex-direction:column;height:100%">
-        <div class="agent-header">
+      <div class="agent-header">
+        <div class="agent-header-main">
           <img class="agent-avatar" src="avatar.svg" alt="AIMA Agent">
-          <div>
+          <div class="agent-meta">
             <div class="agent-name">AIMA Agent</div>
             <div class="agent-mode">
-              <span class="status-dot" :class="agentAvailable ? 'online' : 'offline'" style="width:6px;height:6px"></span>
-              <span x-text="agentAvailable ? t('agent_ready') : t('direct_mode')"></span>
+              <span class="status-dot" :class="currentView === 'support' ? (supportConnected ? 'online' : 'offline') : (agentAvailable ? 'online' : 'offline')" style="width:6px;height:6px"></span>
+              <span x-text="currentView === 'support' ? (supportConnected ? supportEntryLabel() : t('support_connecting')) : (agentAvailable ? t('agent_ready') : t('direct_mode'))"></span>
             </div>
           </div>
         </div>
+        <button class="agent-support-btn"
+          :class="{ active: currentView === 'support', connected: supportConnected }"
+          @click="openSupportFlow()">
+          <span class="support-dot"></span>
+          <span x-text="supportEntryLabel()"></span>
+        </button>
+      </div>
 
+      <!-- Chat View -->
+      <div x-show="currentView === 'chat'" class="chat-view">
         <div class="chat-messages" x-ref="chatMessages">
+          <template x-if="messages.length === 0 && !thinking">
+            <div class="chat-welcome">
+              <div class="chat-welcome-title">AIMA</div>
+              <div class="chat-welcome-hint" x-text="t('welcome')"></div>
+            </div>
+          </template>
           <template x-for="(msg, i) in messages" :key="i">
             <div class="msg" :class="'msg-' + msg.role">
               <template x-if="msg.role === 'user'">
@@ -1729,70 +2026,100 @@ body {
 
       <!-- Support View -->
       <div x-show="currentView === 'support'" class="support-page" x-cloak>
-        <div class="support-feedback" x-show="supportPageError" x-text="supportPageError"></div>
-
-        <!-- Not connected + not connecting + no prompt -->
-        <div x-show="!supportConnected && !supportPageConnecting && !supportPagePrompt" class="support-hero">
-          <div class="support-hero-icon">&#x260E;</div>
-          <h2 x-text="t('support_connect')"></h2>
-          <p x-text="t('support_desc')"></p>
-          <textarea x-model="supportPageDesc" rows="3" :placeholder="t('support_enter_desc')"></textarea>
-          <button class="support-hero-btn" @click="connectSupport()" x-text="t('support_connect')"></button>
-        </div>
-
-        <!-- Connecting -->
-        <div x-show="supportPageConnecting" class="support-hero">
-          <div class="thinking" style="font-size:24px">&middot;&middot;&middot;</div>
-          <p x-text="t('support_connecting')"></p>
-        </div>
-
-        <!-- Needs invite/recovery code -->
-        <div x-show="supportPagePrompt && !supportPageConnecting" class="support-hero">
-          <div class="support-hero-icon">&#x1F511;</div>
-          <p x-text="supportPagePrompt === 'recovery' ? t('support_enter_recovery') : t('support_enter_invite')"></p>
-          <div class="support-code-row">
-            <input x-model="supportPageCode" @keydown.enter="submitSupportCode()" :placeholder="supportPagePrompt === 'recovery' ? 'recovery-code' : 'invite-code'">
-            <button @click="submitSupportCode()" x-text="t('send')"></button>
-          </div>
-        </div>
-
-        <!-- Connected -->
-        <div x-show="supportConnected && !supportPageConnecting" class="support-connected">
-          <!-- Status cards -->
-          <div class="support-status-grid">
-            <div class="support-status-card">
-              <div class="label" x-text="t('support_device_id')"></div>
-              <div class="value" x-text="supportState.deviceId || '—'"></div>
-            </div>
-            <div class="support-status-card">
-              <div class="label" x-text="t('support_active_task')"></div>
-              <div class="value" x-text="supportState.activeTask ? (supportState.activeTask.status || 'active') : t('support_no_task')"></div>
-            </div>
-          </div>
-
-          <!-- Messages -->
-          <div class="support-msg-list" x-ref="supportMsgList">
-            <template x-if="!supportState.messages || supportState.messages.length === 0">
-              <div class="support-msg-empty" x-text="t('support_waiting')"></div>
-            </template>
-            <template x-for="m in (supportState.messages || [])" :key="m.seq">
-              <div class="support-msg">
-                <span class="msg-type" :class="m.type || 'info'" x-text="m.type || 'info'"></span>
-                <span x-text="m.message || m.content || ''"></span>
+        <div class="support-page-shell">
+          <div class="support-feedback" x-show="supportPageError" x-text="supportPageError"></div>
+          <div class="support-connected support-flow">
+            <div class="support-content-scroll" x-ref="supportPageScroll">
+              <div class="support-status-strip">
+                <div class="support-status-pill">
+                  <span x-text="t('support_device_id')"></span>
+                  <strong x-text="supportState.deviceId || 'linking…'"></strong>
+                </div>
+                <div class="support-status-pill">
+                  <span x-text="t('support_active_task')"></span>
+                  <strong x-text="supportState.activeTask ? (supportState.activeTask.status || 'active') : (supportConnected ? t('support_no_task') : t('support_connecting'))"></strong>
+                </div>
               </div>
-            </template>
-          </div>
 
-          <!-- Submit new task -->
-          <div class="support-input-row">
-            <input x-model="supportPageDesc" :placeholder="t('support_enter_desc')" @keydown.enter="submitSupportTask()">
-            <button @click="submitSupportTask()" :disabled="!supportPageDesc.trim()" x-text="t('support_new_task')"></button>
-          </div>
+              <div class="support-summary-grid" x-show="supportSummaryVisible()">
+                <div class="support-summary-card">
+                  <div class="label" x-text="t('support_device_id')"></div>
+                  <div class="value" x-text="supportState.deviceId || 'linking…'"></div>
+                  <div class="meta" x-text="supportBindSummaryText()"></div>
+                  <div class="support-summary-actions">
+                    <button type="button" class="support-summary-btn" @click="openSupportBinding()" :disabled="!supportCanBind()" x-text="supportBindActionLabel()"></button>
+                  </div>
+                </div>
+                <div class="support-summary-card">
+                  <div class="label" x-text="supportBudgetTasksLabel()"></div>
+                  <div class="value" x-text="supportTaskBudgetValue()"></div>
+                  <div class="meta" x-text="supportBudgetAmountSummary()"></div>
+                </div>
+                <div class="support-summary-card">
+                  <div class="label" x-text="supportShareHeading()"></div>
+                  <div class="value" x-text="supportSharePrimaryValue()"></div>
+                  <div class="meta" x-text="supportShareMetaText()"></div>
+                  <div class="support-summary-actions" x-show="supportState.shareText">
+                    <button type="button" class="support-summary-btn" @click="copySupportShareText()" x-text="supportCopyShareLabel()"></button>
+                  </div>
+                </div>
+              </div>
 
-          <!-- Disconnect -->
-          <button class="support-disconnect-btn" @click="disconnectSupport()" x-text="t('support_disconnect')"></button>
+              <div class="support-msg-list">
+                <template x-if="supportPageFeed.length === 0">
+                  <div class="support-msg-empty" x-text="supportPageEmptyStateText()"></div>
+                </template>
+                <template x-for="entry in supportPageFeed" :key="entry.id">
+                  <div class="support-msg">
+                    <span class="msg-type" :class="supportPageTypeClass(entry.type)" x-text="supportPageTypeLabel(entry.type)"></span>
+                    <span class="support-msg-body" x-text="entry.text"></span>
+                  </div>
+                </template>
+              </div>
+
+              <div class="support-intake" x-show="supportPageShowTaskMenu()">
+                <div class="support-intake-header">
+                  <div class="support-intake-title" x-text="supportTaskMenuTitle()"></div>
+                  <div class="support-intake-subtitle" x-text="supportTaskMenuSubtitle()"></div>
+                </div>
+                <div class="support-starter-section" x-show="supportTaskMenuOptions().length > 0">
+                  <div class="support-starter-label" x-text="supportTaskMenuPrompt()"></div>
+                  <div class="support-chip-list">
+                    <template x-for="option in supportTaskMenuOptions()" :key="option.id || option.value">
+                      <button type="button" class="support-chip" @click="applySupportTaskOption(option)" x-text="supportManifestText(option.label, option.value || option.id || '')"></button>
+                    </template>
+                  </div>
+                </div>
+                <div class="support-starter-section" x-show="supportTaskMenuExamples().length > 0">
+                  <div class="support-starter-label" x-text="supportTaskMenuFreeformHint()"></div>
+                  <div class="support-chip-list">
+                    <template x-for="example in supportTaskMenuExamples()" :key="supportManifestText(example, '')">
+                      <button type="button" class="support-chip" @click="applySupportExample(example)" x-text="supportManifestText(example, '')"></button>
+                    </template>
+                  </div>
+                </div>
+                <div class="support-note" x-show="supportPageGuidedHint" x-text="supportPageGuidedHint"></div>
+                <div class="support-note" x-show="!supportPageGuidedHint && supportTaskMenuSecretWarning()" x-text="supportTaskMenuSecretWarning()"></div>
+                <div class="support-helper" x-show="supportTaskMenuFooter()" x-text="supportTaskMenuFooter()"></div>
+              </div>
+            </div>
+
+            <div class="support-footer">
+              <div class="support-input-row">
+                <input
+                  x-ref="supportPageInput"
+                  :value="supportPageInputValue()"
+                  @input="setSupportPageInput($event.target.value)"
+                  @keydown.enter="submitSupportInput()"
+                  :placeholder="supportPageInputPlaceholder()"
+                  :disabled="supportPageInputDisabled()">
+                <button @click="submitSupportInput()" :disabled="!supportPageCanSubmit()" x-text="supportPageButtonLabel()"></button>
+              </div>
+
+              <button class="support-disconnect-btn" x-show="supportConnected" @click="disconnectSupport()" x-text="supportDisconnectLabel()"></button>
+            </div>
+          </div>
         </div>
-
       </div>
 
     </div>
@@ -1828,23 +2155,25 @@ body {
       </div>
 
       <!-- Fleet Panel -->
-      <div class="panel">
+      <div class="panel fleet-panel">
         <div class="panel-title">&#x25C9; <span x-text="t('fleet')"></span></div>
-        <template x-if="fleet.length === 0">
-          <div class="empty" x-text="t('no_fleet')"></div>
-        </template>
-        <template x-for="(d, fi) in fleet" :key="fi">
-          <div class="fleet-device" :class="{ clickable: d.addr && d.online }" @click="openDeviceUI(d)">
-            <span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span>
-            <div style="flex:1;min-width:0">
-              <div class="name" x-text="d.name || d.id"></div>
-              <div class="meta" x-text="d.meta || ''"></div>
+        <div class="fleet-scroll">
+          <template x-if="fleet.length === 0">
+            <div class="empty" x-text="t('no_fleet')"></div>
+          </template>
+          <template x-for="(d, fi) in fleet" :key="d.id || d.addr || fi">
+            <div class="fleet-device" :class="{ clickable: d.addr && d.online }" @click="openDeviceUI(d)">
+              <span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span>
+              <div style="flex:1;min-width:0">
+                <div class="name" x-text="d.name || d.id"></div>
+                <div class="meta" x-text="d.meta || ''"></div>
+              </div>
+              <template x-if="d.addr && d.online">
+                <span class="fleet-link-hint" title="Open Web UI">&#x2197;</span>
+              </template>
             </div>
-            <template x-if="d.addr && d.online">
-              <span class="fleet-link-hint" title="Open Web UI">&#x2197;</span>
-            </template>
-          </div>
-        </template>
+          </template>
+        </div>
       </div>
 
       <!-- Deployments Panel -->
@@ -1883,8 +2212,8 @@ body {
                   </div>
                 </template>
                 <!-- Error display -->
-                <template x-if="dep.phase === 'failed' && dep.error_lines">
-                  <div class="deploy-error-lines" x-text="dep.error_lines"></div>
+                <template x-if="dep.phase === 'failed' && dep.failure_detail">
+                  <div class="deploy-error-lines" x-text="dep.failure_detail" :title="dep.error_lines || dep.failure_detail"></div>
                 </template>
               </div>
             </li>
@@ -1946,52 +2275,87 @@ body {
       <div style="display:flex;flex-direction:column;gap:8px">
         <div class="panel">
           <div class="panel-title">&#x25C9; <span x-text="t('fleet')"></span></div>
-          <template x-for="(d, fi) in fleet" :key="fi"><div class="fleet-device"><span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span><div><div class="name" x-text="d.name || d.id"></div><div class="meta" x-text="d.meta || ''"></div></div></div></template>
+          <template x-for="(d, fi) in fleet" :key="d.id || d.addr || fi"><div class="fleet-device"><span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span><div><div class="name" x-text="d.name || d.id"></div><div class="meta" x-text="d.meta || ''"></div></div></div></template>
         </div>
         <div class="panel">
           <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
-          <ul class="panel-list"><template x-for="(dep, di) in deployments" :key="di"><li style="flex-wrap:wrap"><span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span><span x-text="dep.name"></span><span class="item-detail" x-text="dep.startup_message || dep.phase"></span><template x-if="dep.startup_progress > 0 && dep.startup_progress < 100"><div style="width:100%;margin-top:2px"><div class="deploy-progress"><div class="deploy-progress-fill" :style="'width:' + dep.startup_progress + '%'"></div></div></div></template></li></template></ul>
+          <ul class="panel-list"><template x-for="(dep, di) in deployments" :key="di"><li style="flex-wrap:wrap"><span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span><span x-text="dep.name"></span><span class="item-detail" x-text="dep.phase === 'failed' ? (dep.failure_detail || dep.detail) : (dep.startup_message || dep.phase)"></span><template x-if="dep.startup_progress > 0 && dep.startup_progress < 100"><div style="width:100%;margin-top:2px"><div class="deploy-progress"><div class="deploy-progress-fill" :style="'width:' + dep.startup_progress + '%'"></div></div></div></template></li></template></ul>
         </div>
       </div>
     </template>
     <template x-if="mobileTab === 'support'">
-      <div class="support-page" style="padding:12px">
-        <div class="support-feedback" x-show="supportPageError" x-text="supportPageError"></div>
-        <!-- Not connected -->
-        <div x-show="!supportConnected && !supportPageConnecting && !supportPagePrompt" class="support-hero">
-          <div class="support-hero-icon">&#x260E;</div>
-          <h2 x-text="t('support_connect')"></h2>
-          <textarea x-model="supportPageDesc" rows="2" :placeholder="t('support_enter_desc')" style="width:100%"></textarea>
-          <button class="support-hero-btn" @click="connectSupport()" x-text="t('support_connect')"></button>
-        </div>
-        <!-- Connecting -->
-        <div x-show="supportPageConnecting" class="support-hero">
-          <div class="thinking" style="font-size:24px">&middot;&middot;&middot;</div>
-          <p x-text="t('support_connecting')"></p>
-        </div>
-        <!-- Needs code -->
-        <div x-show="supportPagePrompt && !supportPageConnecting" class="support-hero">
-          <p x-text="supportPagePrompt === 'recovery' ? t('support_enter_recovery') : t('support_enter_invite')"></p>
-          <div class="support-code-row">
-            <input x-model="supportPageCode" @keydown.enter="submitSupportCode()">
-            <button @click="submitSupportCode()" x-text="t('send')"></button>
+      <div class="support-page">
+        <div class="support-page-shell">
+          <div class="support-feedback" x-show="supportPageError" x-text="supportPageError"></div>
+          <div class="support-connected support-flow">
+            <div class="support-content-scroll" x-ref="supportPageScroll">
+              <div class="support-status-strip">
+                <div class="support-status-pill"><span x-text="t('support_device_id')"></span><strong x-text="supportState.deviceId || 'linking…'"></strong></div>
+                <div class="support-status-pill"><span x-text="t('support_active_task')"></span><strong x-text="supportState.activeTask ? (supportState.activeTask.status || 'active') : (supportConnected ? t('support_no_task') : t('support_connecting'))"></strong></div>
+              </div>
+              <div class="support-summary-grid" x-show="supportSummaryVisible()">
+                <div class="support-summary-card">
+                  <div class="label" x-text="t('support_device_id')"></div>
+                  <div class="value" x-text="supportState.deviceId || 'linking…'"></div>
+                  <div class="meta" x-text="supportBindSummaryText()"></div>
+                  <div class="support-summary-actions">
+                    <button type="button" class="support-summary-btn" @click="openSupportBinding()" :disabled="!supportCanBind()" x-text="supportBindActionLabel()"></button>
+                  </div>
+                </div>
+                <div class="support-summary-card">
+                  <div class="label" x-text="supportBudgetTasksLabel()"></div>
+                  <div class="value" x-text="supportTaskBudgetValue()"></div>
+                  <div class="meta" x-text="supportBudgetAmountSummary()"></div>
+                </div>
+                <div class="support-summary-card">
+                  <div class="label" x-text="supportShareHeading()"></div>
+                  <div class="value" x-text="supportSharePrimaryValue()"></div>
+                  <div class="meta" x-text="supportShareMetaText()"></div>
+                  <div class="support-summary-actions" x-show="supportState.shareText">
+                    <button type="button" class="support-summary-btn" @click="copySupportShareText()" x-text="supportCopyShareLabel()"></button>
+                  </div>
+                </div>
+              </div>
+              <div class="support-msg-list" style="min-height:80px">
+                <template x-if="supportPageFeed.length === 0"><div class="support-msg-empty" x-text="supportPageEmptyStateText()"></div></template>
+                <template x-for="entry in supportPageFeed" :key="entry.id"><div class="support-msg"><span class="msg-type" :class="supportPageTypeClass(entry.type)" x-text="supportPageTypeLabel(entry.type)"></span><span class="support-msg-body" x-text="entry.text"></span></div></template>
+              </div>
+              <div class="support-intake" x-show="supportPageShowTaskMenu()">
+                <div class="support-intake-header">
+                  <div class="support-intake-title" x-text="supportTaskMenuTitle()"></div>
+                  <div class="support-intake-subtitle" x-text="supportTaskMenuSubtitle()"></div>
+                </div>
+                <div class="support-starter-section" x-show="supportTaskMenuOptions().length > 0">
+                  <div class="support-starter-label" x-text="supportTaskMenuPrompt()"></div>
+                  <div class="support-chip-list">
+                    <template x-for="option in supportTaskMenuOptions()" :key="option.id || option.value"><button type="button" class="support-chip" @click="applySupportTaskOption(option)" x-text="supportManifestText(option.label, option.value || option.id || '')"></button></template>
+                  </div>
+                </div>
+                <div class="support-starter-section" x-show="supportTaskMenuExamples().length > 0">
+                  <div class="support-starter-label" x-text="supportTaskMenuFreeformHint()"></div>
+                  <div class="support-chip-list">
+                    <template x-for="example in supportTaskMenuExamples()" :key="supportManifestText(example, '')"><button type="button" class="support-chip" @click="applySupportExample(example)" x-text="supportManifestText(example, '')"></button></template>
+                  </div>
+                </div>
+                <div class="support-note" x-show="supportPageGuidedHint" x-text="supportPageGuidedHint"></div>
+                <div class="support-note" x-show="!supportPageGuidedHint && supportTaskMenuSecretWarning()" x-text="supportTaskMenuSecretWarning()"></div>
+                <div class="support-helper" x-show="supportTaskMenuFooter()" x-text="supportTaskMenuFooter()"></div>
+              </div>
+            </div>
+            <div class="support-footer">
+              <div class="support-input-row">
+                <input
+                  x-ref="supportPageInput"
+                  :value="supportPageInputValue()"
+                  @input="setSupportPageInput($event.target.value)"
+                  @keydown.enter="submitSupportInput()"
+                  :placeholder="supportPageInputPlaceholder()"
+                  :disabled="supportPageInputDisabled()">
+                <button @click="submitSupportInput()" :disabled="!supportPageCanSubmit()" x-text="supportPageButtonLabel()"></button>
+              </div>
+              <button class="support-disconnect-btn" x-show="supportConnected" @click="disconnectSupport()" x-text="supportDisconnectLabel()"></button>
+            </div>
           </div>
-        </div>
-        <!-- Connected -->
-        <div x-show="supportConnected && !supportPageConnecting" class="support-connected">
-          <div class="support-status-grid">
-            <div class="support-status-card"><div class="label" x-text="t('support_device_id')"></div><div class="value" x-text="supportState.deviceId || '—'"></div></div>
-            <div class="support-status-card"><div class="label" x-text="t('support_active_task')"></div><div class="value" x-text="supportState.activeTask ? (supportState.activeTask.status || 'active') : t('support_no_task')"></div></div>
-          </div>
-          <div class="support-msg-list" style="min-height:80px">
-            <template x-if="!supportState.messages || supportState.messages.length === 0"><div class="support-msg-empty" x-text="t('support_waiting')"></div></template>
-            <template x-for="m in (supportState.messages || [])" :key="m.seq"><div class="support-msg"><span class="msg-type" :class="m.type || 'info'" x-text="m.type || 'info'"></span><span x-text="m.message || m.content || ''"></span></div></template>
-          </div>
-          <div class="support-input-row">
-            <input x-model="supportPageDesc" :placeholder="t('support_enter_desc')" @keydown.enter="submitSupportTask()">
-            <button @click="submitSupportTask()" :disabled="!supportPageDesc.trim()" x-text="t('support_new_task')"></button>
-          </div>
-          <button class="support-disconnect-btn" @click="disconnectSupport()" x-text="t('support_disconnect')"></button>
         </div>
       </div>
     </template>
@@ -2107,21 +2471,32 @@ var I18N = {
     settings_saved: 'Settings saved successfully.',
     settings_error: 'Failed to save settings.',
     settings_cleared: 'Settings cleared.',
-    cli_help_header: 'CLI Mode — Available MCP Tools',
-    cli_help_usage: 'Usage: /cli <tool> [params]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
-    cli_unknown_tool: 'Unknown tool: ',
     support: 'Support',
-    support_connect: 'Connect to Support',
+    support_entry: 'Connect AIMA-Service',
+    support_connect: 'Connect AIMA-Service',
     support_disconnect: 'Disconnect',
-    support_desc: 'Connect this device to the AIMA support service for remote assistance. Optionally describe what you need help with.',
+    support_desc: 'Connect this device to AIMA-Service for remote assistance. Optionally describe what you need help with.',
     support_enter_desc: 'Describe what you need help with...',
-    support_connecting: 'Connecting to support service...',
+    support_connecting: 'Connecting to AIMA-Service...',
     support_enter_invite: 'Device registration requires an invite code or worker code. Please enter it below:',
     support_enter_recovery: 'This device was previously registered. Please enter your saved recovery code:',
     support_device_id: 'Device ID',
     support_active_task: 'Active Task',
     support_no_task: 'No active task',
     support_waiting: 'Waiting for remote assistance...',
+    support_bind: 'Bind to AIMA-Service',
+    support_bound: 'Linked to AIMA-Service',
+    support_unbound: 'Binding is available after linking',
+    support_task_budget: 'Task Budget',
+    support_amount_budget: 'Amount Budget',
+    support_tasks_remaining: 'Tasks Remaining',
+    support_budget_pending: 'Available after linking',
+    support_share_heading: 'Share',
+    support_share_ready: 'Share text ready',
+    support_share_empty: 'Referral info appears after linking',
+    support_share_copy: 'Copy share text',
+    support_share_copied: 'Copied to clipboard',
+    support_referrals: 'Referrals',
     support_new_task: 'New Task',
     support_messages: 'Messages',
   },
@@ -2174,21 +2549,32 @@ var I18N = {
     settings_saved: '\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\u3002',
     settings_error: '\u4FDD\u5B58\u8BBE\u7F6E\u5931\u8D25\u3002',
     settings_cleared: '\u8BBE\u7F6E\u5DF2\u6E05\u9664\u3002',
-    cli_help_header: 'CLI \u6A21\u5F0F \u2014 \u53EF\u7528 MCP \u5DE5\u5177',
-    cli_help_usage: '\u7528\u6CD5: /cli <\u5DE5\u5177\u540D> [\u53C2\u6570]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
-    cli_unknown_tool: '\u672A\u77E5\u5DE5\u5177: ',
-    support: '\u6C42\u52A9',
-    support_connect: '\u8FDE\u63A5\u652F\u6301\u670D\u52A1',
+    support: '\u7075\u673A\u4E91',
+    support_entry: '\u8FDE\u7EBF\u7075\u673A\u4E91',
+    support_connect: '\u8FDE\u7EBF\u7075\u673A\u4E91',
     support_disconnect: '\u65AD\u5F00\u8FDE\u63A5',
-    support_desc: '\u5C06\u6B64\u8BBE\u5907\u8FDE\u63A5\u5230 AIMA \u652F\u6301\u670D\u52A1\uFF0C\u83B7\u53D6\u8FDC\u7A0B\u534F\u52A9\u3002\u53EF\u9009\u63CF\u8FF0\u4F60\u9700\u8981\u7684\u5E2E\u52A9\u3002',
+    support_desc: '\u5C06\u6B64\u8BBE\u5907\u8FDE\u7EBF\u5230\u7075\u673A\u4E91\uFF0C\u83B7\u53D6\u8FDC\u7A0B\u534F\u52A9\u3002\u53EF\u9009\u63CF\u8FF0\u4F60\u9700\u8981\u7684\u5E2E\u52A9\u3002',
     support_enter_desc: '\u63CF\u8FF0\u4F60\u9700\u8981\u7684\u5E2E\u52A9...',
-    support_connecting: '\u6B63\u5728\u8FDE\u63A5\u652F\u6301\u670D\u52A1...',
+    support_connecting: '\u6B63\u5728\u8FDE\u7EBF\u7075\u673A\u4E91...',
     support_enter_invite: '\u8BBE\u5907\u6CE8\u518C\u9700\u8981\u9080\u8BF7\u7801\u6216 Worker \u63A5\u5165\u7801\uFF0C\u8BF7\u5728\u4E0B\u65B9\u8F93\u5165\uFF1A',
     support_enter_recovery: '\u6B64\u8BBE\u5907\u4E4B\u524D\u5DF2\u6CE8\u518C\uFF0C\u8BF7\u8F93\u5165\u5DF2\u4FDD\u5B58\u7684\u6062\u590D\u7801\uFF1A',
     support_device_id: '\u8BBE\u5907 ID',
     support_active_task: '\u5F53\u524D\u4EFB\u52A1',
     support_no_task: '\u65E0\u6D3B\u52A8\u4EFB\u52A1',
     support_waiting: '\u7B49\u5F85\u8FDC\u7A0B\u534F\u52A9\u4E2D...',
+    support_bind: '\u7ED1\u5B9A\u7075\u673A\u4E91',
+    support_bound: '\u5DF2\u7ED1\u5B9A\u7075\u673A\u4E91',
+    support_unbound: '\u53EF\u524D\u5F80\u7075\u673A\u4E91\u5B8C\u6210\u7ED1\u5B9A',
+    support_task_budget: '\u4EFB\u52A1\u989D\u5EA6',
+    support_amount_budget: '\u91D1\u989D\u989D\u5EA6',
+    support_tasks_remaining: '\u5269\u4F59\u989D\u5EA6',
+    support_budget_pending: '\u8FDE\u7EBF\u540E\u663E\u793A',
+    support_share_heading: '\u9080\u8BF7\u5206\u4EAB',
+    support_share_ready: '\u5206\u4EAB\u6587\u6848\u5DF2\u5C31\u7EEA',
+    support_share_empty: '\u8FDE\u7EBF\u540E\u663E\u793A\u63A8\u8350\u4FE1\u606F',
+    support_share_copy: '\u590D\u5236\u5206\u4EAB\u6587\u6848',
+    support_share_copied: '\u5DF2\u590D\u5236\u5230\u526A\u8D34\u677F',
+    support_referrals: '\u9080\u8BF7\u6570',
     support_new_task: '\u65B0\u4EFB\u52A1',
     support_messages: '\u6D88\u606F',
   },
@@ -2241,9 +2627,6 @@ var I18N = {
     settings_saved: '\u8A2D\u5B9A\u3092\u4FDD\u5B58\u3057\u307E\u3057\u305F\u3002',
     settings_error: '\u8A2D\u5B9A\u306E\u4FDD\u5B58\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002',
     settings_cleared: '\u8A2D\u5B9A\u3092\u30AF\u30EA\u30A2\u3057\u307E\u3057\u305F\u3002',
-    cli_help_header: 'CLI\u30E2\u30FC\u30C9 \u2014 \u5229\u7528\u53EF\u80FD\u306AMCP\u30C4\u30FC\u30EB',
-    cli_help_usage: '\u4F7F\u3044\u65B9: /cli <\u30C4\u30FC\u30EB\u540D> [\u30D1\u30E9\u30E1\u30FC\u30BF]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
-    cli_unknown_tool: '\u4E0D\u660E\u306A\u30C4\u30FC\u30EB: ',
   },
   ko: {
     system_online: '\uC2DC\uC2A4\uD15C \uC628\uB77C\uC778',
@@ -2294,9 +2677,6 @@ var I18N = {
     settings_saved: '\uC124\uC815\uC774 \uC800\uC7A5\uB418\uC5C8\uC2B5\uB2C8\uB2E4.',
     settings_error: '\uC124\uC815 \uC800\uC7A5\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.',
     settings_cleared: '\uC124\uC815\uC774 \uCD08\uAE30\uD654\uB418\uC5C8\uC2B5\uB2C8\uB2E4.',
-    cli_help_header: 'CLI \uBAA8\uB4DC \u2014 \uC0AC\uC6A9 \uAC00\uB2A5\uD55C MCP \uB3C4\uAD6C',
-    cli_help_usage: '\uC0AC\uC6A9\uBC95: /cli <\uB3C4\uAD6C\uBA85> [\uB9E4\uAC1C\uBCC0\uC218]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
-    cli_unknown_tool: '\uC54C \uC218 \uC5C6\uB294 \uB3C4\uAD6C: ',
   },
   es: {
     system_online: 'Sistema en l\u00EDnea',
@@ -2347,9 +2727,6 @@ var I18N = {
     settings_saved: 'Configuraci\u00F3n guardada correctamente.',
     settings_error: 'Error al guardar la configuraci\u00F3n.',
     settings_cleared: 'Configuraci\u00F3n eliminada.',
-    cli_help_header: 'Modo CLI \u2014 Herramientas MCP disponibles',
-    cli_help_usage: 'Uso: /cli <herramienta> [par\u00E1metros]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
-    cli_unknown_tool: 'Herramienta desconocida: ',
   },
   fr: {
     system_online: 'Syst\u00E8me en ligne',
@@ -2400,9 +2777,6 @@ var I18N = {
     settings_saved: 'Param\u00E8tres enregistr\u00E9s avec succ\u00E8s.',
     settings_error: 'Erreur lors de l\'enregistrement des param\u00E8tres.',
     settings_cleared: 'Param\u00E8tres effac\u00E9s.',
-    cli_help_header: 'Mode CLI \u2014 Outils MCP disponibles',
-    cli_help_usage: 'Utilisation : /cli <outil> [param\u00E8tres]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
-    cli_unknown_tool: 'Outil inconnu : ',
   },
   de: {
     system_online: 'System online',
@@ -2453,9 +2827,6 @@ var I18N = {
     settings_saved: 'Einstellungen erfolgreich gespeichert.',
     settings_error: 'Fehler beim Speichern der Einstellungen.',
     settings_cleared: 'Einstellungen gel\u00F6scht.',
-    cli_help_header: 'CLI-Modus \u2014 Verf\u00FCgbare MCP-Tools',
-    cli_help_usage: 'Verwendung: /cli <Tool> [Parameter]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
-    cli_unknown_tool: 'Unbekanntes Tool: ',
   }
 };
 
@@ -2478,10 +2849,6 @@ function aimaApp() {
 
     saveLang() {
       localStorage.setItem('aima_lang', this.lang);
-      // Update welcome message to match language
-      if (this.messages.length === 1 && this.messages[0].role === 'system') {
-        this.messages[0].text = this.t('welcome');
-      }
     },
 
     // State
@@ -2529,11 +2896,35 @@ function aimaApp() {
     supportPageDesc: '',
     supportPageCode: '',
     supportPageError: '',
+    supportPageGuidedHint: '',
+    supportPageFeed: [],
+    supportPageAwaitingDescription: false,
+    supportManifest: null,
+    supportManifestLoading: false,
+    supportManifestError: '',
+    _supportPageLocalSeq: 0,
+    _supportPageSeen: {
+      initialized: false,
+      msgSeq: 0,
+      activeTask: '',
+      lastTask: '',
+      connection: ''
+    },
 
     supportState: {
       enabled: false,
+      endpoint: '',
       registered: false,
       deviceId: '',
+      referralCode: '',
+      shareText: '',
+      maxTasks: 0,
+      usedTasks: 0,
+      budgetUSD: 0,
+      spentUSD: 0,
+      budgetStatus: '',
+      isBound: false,
+      referralCount: 0,
       activeTask: null,
       lastTask: null,
       lastMessage: null,
@@ -2551,8 +2942,7 @@ function aimaApp() {
     _timers: [],
 
     init() {
-      // Set welcome message in current language
-      this.messages = [{ role: 'system', text: this.t('welcome') }];
+      this.messages = [];
 
       this.pollSystemStatus();
       this.pollEngines();
@@ -2560,6 +2950,7 @@ function aimaApp() {
       this.pollDeployments();
       this.pollFleet();
       this.pollAgentInfo();
+      this.loadSupportManifest();
 
       this._timers.push(setInterval(() => this.pollSystemStatus(), 5000));
       this._timers.push(setInterval(() => this.pollEngines(), 30000));
@@ -2638,6 +3029,29 @@ function aimaApp() {
       } catch (e) {
         this.systemOnline = false;
         return { _err: e.message };
+      }
+    },
+
+    async loadSupportManifest(force) {
+      if (this.supportManifestLoading) return this.supportManifest;
+      if (this.supportManifest && !force) return this.supportManifest;
+
+      this.supportManifestLoading = true;
+      this.supportManifestError = '';
+      const headers = {};
+      if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+      try {
+        const resp = await fetch('/ui/api/support-manifest', { headers });
+        if (!resp.ok) throw new Error('support manifest unavailable');
+        const data = await resp.json();
+        if (!data || typeof data !== 'object') throw new Error('invalid support manifest');
+        this.supportManifest = data;
+        return data;
+      } catch (e) {
+        this.supportManifestError = e.message || 'support manifest unavailable';
+        return null;
+      } finally {
+        this.supportManifestLoading = false;
       }
     },
 
@@ -2725,15 +3139,7 @@ function aimaApp() {
 
     handleSupportStatus(data) {
       if (!data || typeof data !== 'object') return;
-      this.supportState = {
-        enabled: data.enabled === true,
-        registered: data.registered === true,
-        deviceId: data.device_id || '',
-        activeTask: data.active_task || null,
-        lastTask: data.last_task || null,
-        lastMessage: data.last_message || null,
-        messages: Array.isArray(data.messages) ? data.messages : []
-      };
+      this.supportState = this.mergeSupportState(data);
       this.supportConnected = data.enabled === true && data.registered === true;
       // On first poll, seed _supportSeen with current state so stale data
       // doesn't appear as new chat messages.
@@ -2747,6 +3153,37 @@ function aimaApp() {
         return;
       }
       this.syncSupportMessages();
+      this.syncSupportPageUpdates();
+    },
+
+    mergeSupportState(data) {
+      const next = Object.assign({}, this.supportState || {});
+      if (data.enabled !== undefined) next.enabled = data.enabled === true;
+      if (data.endpoint !== undefined) next.endpoint = data.endpoint || '';
+      if (data.registered !== undefined) next.registered = data.registered === true;
+      if (data.device_id !== undefined) next.deviceId = data.device_id || '';
+      if (data.referral_code !== undefined) next.referralCode = data.referral_code || '';
+      if (data.share_text !== undefined) next.shareText = data.share_text || '';
+      if (data.max_tasks !== undefined) next.maxTasks = Number(data.max_tasks || 0);
+      if (data.used_tasks !== undefined) next.usedTasks = Number(data.used_tasks || 0);
+      if (data.budget_usd !== undefined) next.budgetUSD = Number(data.budget_usd || 0);
+      if (data.spent_usd !== undefined) next.spentUSD = Number(data.spent_usd || 0);
+      if (data.budget_status !== undefined) next.budgetStatus = data.budget_status || '';
+      if (data.is_bound !== undefined) next.isBound = data.is_bound === true;
+      if (data.referral_count !== undefined) next.referralCount = Number(data.referral_count || 0);
+      if (data.active_task !== undefined) {
+        next.activeTask = data.active_task || null;
+      } else if (data.task_id || data.task_status || data.task_target) {
+        next.activeTask = {
+          task_id: data.task_id || '',
+          status: data.task_status || '',
+          target: data.task_target || ''
+        };
+      }
+      if (data.last_task !== undefined) next.lastTask = data.last_task || null;
+      if (data.last_message !== undefined) next.lastMessage = data.last_message || null;
+      if (data.messages !== undefined) next.messages = Array.isArray(data.messages) ? data.messages : [];
+      return next;
     },
 
     supportTaskSignature(task) {
@@ -2754,22 +3191,28 @@ function aimaApp() {
       return [
         task.task_id || '',
         task.status || '',
-        task.target || '',
-        task.updated_at || ''
+        task.target || ''
       ].join('|');
     },
 
     rememberSupportResult(data) {
       if (!data || typeof data !== 'object') return;
+      this.supportState = this.mergeSupportState(data);
+      if (data.enabled === true || data.device_id) {
+        this.supportConnected = true;
+      }
       if (data.device_id) {
         this._supportSeen.connection = data.device_id;
+        this._supportPageSeen.connection = data.device_id;
       }
       if (data.task_id || data.task_status || data.task_target) {
-        this._supportSeen.activeTask = this.supportTaskSignature({
+        const taskSig = this.supportTaskSignature({
           task_id: data.task_id || '',
           status: data.task_status || '',
           target: data.task_target || ''
         });
+        this._supportSeen.activeTask = taskSig;
+        this._supportPageSeen.activeTask = taskSig;
       }
     },
 
@@ -2837,6 +3280,436 @@ function aimaApp() {
       }
     },
 
+    primeSupportPageSeen() {
+      if (this._supportPageSeen.initialized) return;
+      this._supportPageSeen.initialized = true;
+      if (this.supportState.deviceId) this._supportPageSeen.connection = this.supportState.deviceId;
+      if (this.supportState.activeTask) this._supportPageSeen.activeTask = this.supportTaskSignature(this.supportState.activeTask);
+      if (this.supportState.lastTask) this._supportPageSeen.lastTask = this.supportTaskSignature(this.supportState.lastTask);
+      const msgs = this.supportState.messages || [];
+      if (msgs.length > 0) this._supportPageSeen.msgSeq = msgs[msgs.length - 1].seq || 0;
+    },
+
+    appendSupportPageMessage(text, type) {
+      const msg = String(text || '').trim();
+      if (!msg) return;
+      this._supportPageLocalSeq += 1;
+      this.supportPageFeed.push({
+        id: 'support-local-' + this._supportPageLocalSeq,
+        text: msg,
+        type: type || 'info'
+      });
+      this.scrollSupportPage();
+    },
+
+    scrollSupportPage() {
+      this.$nextTick(() => {
+        const el = this.$refs.supportPageScroll || this.$refs.supportMsgList;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    },
+
+    syncSupportPageUpdates() {
+      if (!this._supportPageSeen.initialized) return;
+
+      const support = this.supportState || {};
+      const msgs = support.messages || [];
+      const seenSeq = this._supportPageSeen.msgSeq || 0;
+      for (const m of msgs) {
+        if (!m.seq || m.seq <= seenSeq) continue;
+        this._supportPageSeen.msgSeq = m.seq;
+        const msg = (m.message || m.content || '').trim();
+        if (!msg) continue;
+        this.appendSupportPageMessage(msg, m.type || 'info');
+      }
+
+      const activeSig = this.supportTaskSignature(support.activeTask);
+      if (activeSig && activeSig !== this._supportPageSeen.activeTask) {
+        const task = support.activeTask;
+        let text = 'Support task active: ' + (task.task_id || 'pending');
+        if (task.status) text += ' (' + task.status + ')';
+        if (task.target) text += ' - ' + task.target;
+        this.appendSupportPageMessage(text, 'command_intent');
+        this._supportPageSeen.activeTask = activeSig;
+        this.supportPageAwaitingDescription = false;
+      } else if (!activeSig) {
+        this._supportPageSeen.activeTask = '';
+      }
+
+      const lastTaskSig = this.supportTaskSignature(support.lastTask);
+      if (lastTaskSig && lastTaskSig !== this._supportPageSeen.lastTask) {
+        const task = support.lastTask;
+        let text = 'Support task ' + (task.task_id || 'pending') + ' finished';
+        if (task.status) text += ': ' + task.status;
+        this.appendSupportPageMessage(text, 'task_completion');
+        this._supportPageSeen.lastTask = lastTaskSig;
+      }
+    },
+
+    supportPageTypeClass(type) {
+      switch (type) {
+        case 'command_intent':
+          return 'command';
+        case 'task_completion':
+          return 'complete';
+        case 'info_request':
+          return 'question';
+        case 'choice':
+          return 'info';
+        case 'approval':
+          return 'approval';
+        case 'error':
+          return 'error';
+        default:
+          return 'info';
+      }
+    },
+
+    supportPageTypeLabel(type) {
+      switch (type) {
+        case 'command_intent':
+          return 'run';
+        case 'task_completion':
+          return 'task';
+        case 'info_request':
+          return 'ask';
+        case 'choice':
+          return 'you';
+        case 'approval':
+          return 'approval';
+        case 'error':
+          return 'error';
+        default:
+          return 'info';
+      }
+    },
+
+    supportManifestLocale() {
+      return this.lang === 'zh' ? 'zh_cn' : 'en_us';
+    },
+
+    supportManifestText(value, fallback) {
+      if (!value) return fallback || '';
+      if (typeof value === 'string') return value || fallback || '';
+      const locale = this.supportManifestLocale();
+      return value[locale] || value.text || value.en_us || value.zh_cn || fallback || '';
+    },
+
+    supportManifestBlock(id) {
+      const blocks = this.supportManifest && this.supportManifest.blocks;
+      if (!blocks || typeof blocks !== 'object') return null;
+      return blocks[id] || null;
+    },
+
+    supportManifestOnboarding(key) {
+      const onboarding = this.supportManifest && this.supportManifest.onboarding;
+      if (!onboarding || typeof onboarding !== 'object') return null;
+      return onboarding[key] || null;
+    },
+
+    supportTaskMenuBlock() {
+      return this.supportManifestBlock('task_menu');
+    },
+
+    supportTaskMenuTitle() {
+      const block = this.supportTaskMenuBlock();
+      return this.supportManifestText(block && block.title, this.t('support_connect'));
+    },
+
+    supportTaskMenuSubtitle() {
+      const block = this.supportTaskMenuBlock();
+      return this.supportManifestText(block && block.subtitle, this.t('support_desc'));
+    },
+
+    supportTaskMenuPrompt() {
+      const block = this.supportTaskMenuBlock();
+      return this.supportManifestText(block && block.prompt, this.t('support_enter_desc'));
+    },
+
+    supportTaskMenuFooter() {
+      const block = this.supportTaskMenuBlock();
+      return this.supportManifestText(block && block.footer, '');
+    },
+
+    supportTaskMenuFreeformHint() {
+      const block = this.supportTaskMenuBlock();
+      return this.supportManifestText(block && block.context && block.context.freeform_hint, 'Examples');
+    },
+
+    supportTaskMenuSecretWarning() {
+      const block = this.supportTaskMenuBlock();
+      return this.supportManifestText(block && block.context && block.context.secret_warning, '');
+    },
+
+    supportTaskMenuOptions() {
+      const block = this.supportTaskMenuBlock();
+      return Array.isArray(block && block.options) ? block.options : [];
+    },
+
+    supportTaskMenuExamples() {
+      const block = this.supportTaskMenuBlock();
+      return Array.isArray(block && block.context && block.context.freeform_examples) ? block.context.freeform_examples : [];
+    },
+
+    supportTaskMenuGuidedFlow(key) {
+      if (!key) return null;
+      const block = this.supportTaskMenuBlock();
+      const flows = block && block.context && block.context.guided_flows;
+      if (!flows || typeof flows !== 'object') return null;
+      return flows[key] || null;
+    },
+
+    supportInvitePromptText() {
+      return this.supportManifestText(this.supportManifestOnboarding('invite_prompt'), this.t('support_enter_invite'));
+    },
+
+    supportRecoveryPromptText() {
+      return this.supportManifestText(this.supportManifestOnboarding('recovery_prompt'), this.t('support_enter_recovery'));
+    },
+
+    supportDisconnectLabel() {
+      const block = this.supportTaskMenuBlock();
+      return this.supportManifestText(block && block.context && block.context.disconnect_option_label, this.t('support_disconnect'));
+    },
+
+    supportEntryLabel() {
+      return this.t('support_entry');
+    },
+
+    supportTaskCompletionBlock() {
+      return this.supportManifestBlock('task_completion');
+    },
+
+    supportTaskCompletionText(key, fallback) {
+      const block = this.supportTaskCompletionBlock();
+      return this.supportManifestText(block && block.context && block.context[key], fallback || '');
+    },
+
+    supportSummaryVisible() {
+      return !!(this.supportState.deviceId || this.supportState.referralCode || this.supportState.shareText || this.supportState.maxTasks > 0 || this.supportState.budgetUSD > 0 || this.supportConnected);
+    },
+
+    supportBindActionLabel() {
+      if (this.supportState.isBound) return this.t('support_bound');
+      const block = this.supportTaskMenuBlock();
+      return this.supportManifestText(block && block.context && block.context.bind_option_label, this.t('support_bind'));
+    },
+
+    supportBindSummaryText() {
+      if (!this.supportState.deviceId && !this.supportConnected) return this.t('support_connecting');
+      if (this.supportState.isBound) return this.t('support_bound');
+      return this.supportTaskCompletionText('bind_console_prompt', this.t('support_unbound'));
+    },
+
+    supportBudgetTasksLabel() {
+      return this.supportTaskCompletionText('budget_tasks_label', this.t('support_task_budget'));
+    },
+
+    supportBudgetAmountLabel() {
+      return this.supportTaskCompletionText('budget_amount_label', this.t('support_amount_budget'));
+    },
+
+    supportBudgetRemainingLabel() {
+      return this.supportTaskCompletionText('budget_remaining_label', this.t('support_tasks_remaining'));
+    },
+
+    supportTaskBudgetValue() {
+      if (this.supportState.maxTasks > 0) return this.supportState.usedTasks + ' / ' + this.supportState.maxTasks;
+      return this.t('support_budget_pending');
+    },
+
+    supportBudgetAmountSummary() {
+      const parts = [];
+      if (this.supportState.budgetUSD > 0) {
+        parts.push(this.supportBudgetAmountLabel() + ': ' + this.fmtUSD(this.supportState.spentUSD) + ' / ' + this.fmtUSD(this.supportState.budgetUSD));
+      }
+      if (this.supportState.maxTasks > 0) {
+        parts.push(this.supportBudgetRemainingLabel() + ': ' + Math.max(this.supportState.maxTasks - this.supportState.usedTasks, 0));
+      }
+      return parts.join(' · ') || this.t('support_budget_pending');
+    },
+
+    supportShareHeading() {
+      return this.supportTaskCompletionText('share_heading', this.t('support_share_heading'));
+    },
+
+    supportSharePrimaryValue() {
+      if (this.supportState.referralCode) return this.supportState.referralCode;
+      if (this.supportState.shareText) return this.t('support_share_ready');
+      return '—';
+    },
+
+    supportShareMetaText() {
+      const parts = [];
+      if (this.supportState.referralCount > 0) parts.push(this.t('support_referrals') + ': ' + this.supportState.referralCount);
+      if (this.supportState.shareText) parts.push(this.t('support_share_ready'));
+      return parts.join(' · ') || this.t('support_share_empty');
+    },
+
+    supportCopyShareLabel() {
+      return this.t('support_share_copy');
+    },
+
+    supportCanBind() {
+      return !!(this.supportPublicBaseURL() && this.supportState.deviceId && !this.supportState.isBound);
+    },
+
+    supportPublicBaseURL() {
+      const context = this.supportManifest && this.supportManifest.context;
+      let base = context && context.public_base_url ? String(context.public_base_url) : '';
+      if (!base) base = String(this.supportState.endpoint || '');
+      if (!base) return '';
+      return base
+        .replace(/\/+$/, '')
+        .replace(/\/platform\/api\/v1$/, '')
+        .replace(/\/api\/v1$/, '')
+        .replace(/\/platform$/, '');
+    },
+
+    openSupportBinding() {
+      if (!this.supportCanBind()) return;
+      window.open(this.supportPublicBaseURL() + '/link', '_blank', 'noopener');
+    },
+
+    async copySupportShareText() {
+      if (!this.supportState.shareText) return;
+      try {
+        await navigator.clipboard.writeText(this.supportState.shareText);
+        this.appendSupportPageMessage(this.supportTaskCompletionText('copied_notice', this.t('support_share_copied')), 'info');
+      } catch (e) {
+        this.supportPageError = (e && e.message) ? e.message : 'clipboard unavailable';
+      }
+    },
+
+    supportPageShowTaskMenu() {
+      return !this.supportPagePrompt && !this.supportState.activeTask;
+    },
+
+    supportPageEmptyStateText() {
+      if (this.supportPageConnecting) return this.t('support_connecting');
+      return this.supportTaskMenuSubtitle() || this.t('support_desc');
+    },
+
+    applySupportTaskOption(option) {
+      const key = option && (option.value || option.id);
+      const guided = this.supportTaskMenuGuidedFlow(key);
+      const step = guided && Array.isArray(guided.steps) && guided.steps.length > 0 ? guided.steps[0] : null;
+      const defaultAnswer = this.supportManifestText(step && step.default_answer, '');
+      const optionLabel = this.supportManifestText(option && option.label, '');
+
+      this.supportPageGuidedHint = this.supportManifestText(step && step.prompt, '');
+      if (defaultAnswer) {
+        this.supportPageDesc = defaultAnswer;
+      } else if (!step) {
+        this.supportPageDesc = optionLabel;
+      } else {
+        this.supportPageDesc = '';
+      }
+      if (this.supportConnected && !this.supportState.activeTask) {
+        this.supportPageAwaitingDescription = true;
+      }
+      this.focusSupportInput();
+    },
+
+    applySupportExample(example) {
+      this.supportPageDesc = this.supportManifestText(example, '');
+      this.supportPageGuidedHint = '';
+      if (this.supportConnected && !this.supportState.activeTask) {
+        this.supportPageAwaitingDescription = true;
+      }
+      this.focusSupportInput();
+    },
+
+    formatSupportLinkedMessage(result) {
+      const lines = ['Device linked 设备已连接!'];
+      if (result && result.device_id) {
+        lines.push('Device ID: ' + result.device_id);
+      }
+      if (result && result.budget_usd > 0) {
+        let budget = 'Budget 额度: $' + Number(result.spent_usd || 0).toFixed(2) + '/$' + Number(result.budget_usd || 0).toFixed(2) + ' USD';
+        if (result.max_tasks > 0) {
+          budget += ' (' + (result.used_tasks || 0) + '/' + result.max_tasks + ' tasks 任务)';
+        }
+        lines.push(budget);
+      } else if (result && result.max_tasks > 0) {
+        lines.push('Budget 额度: ' + (result.used_tasks || 0) + '/' + result.max_tasks + ' tasks 任务');
+      }
+      if (result && result.is_bound) {
+        lines.push('Account bound 已绑定账户');
+      }
+      if (result && result.referral_code) {
+        lines.push('Your referral code 你的推荐码: ' + result.referral_code);
+      }
+      return lines.join('\n');
+    },
+
+    formatSupportTaskMessage(result) {
+      if (!result || !result.task_id) return '';
+      let text = '';
+      if (result.created) {
+        text = 'Support task active 任务已创建: ' + result.task_id + ' (' + (result.task_status || 'created') + ')';
+      } else if (result.reused_active_task) {
+        text = 'Support task active 任务继续中: ' + result.task_id + ' (' + (result.task_status || 'created') + ')';
+      } else {
+        text = 'Support task: ' + result.task_id + ' (' + (result.task_status || 'created') + ')';
+      }
+      if (result.task_target) {
+        text += '\nTarget 目标: ' + result.task_target;
+      }
+      return text;
+    },
+
+    supportPageInputValue() {
+      return this.supportPagePrompt ? this.supportPageCode : this.supportPageDesc;
+    },
+
+    setSupportPageInput(value) {
+      if (this.supportPagePrompt) {
+        this.supportPageCode = value;
+      } else {
+        this.supportPageDesc = value;
+        if (value && value.trim()) this.supportPageGuidedHint = '';
+      }
+    },
+
+    supportPageInputDisabled() {
+      if (this.supportPageConnecting) return true;
+      if (this.supportPagePrompt) return false;
+      if (this.supportState.activeTask) return true;
+      return !this.supportPageAwaitingDescription;
+    },
+
+    supportPageInputPlaceholder() {
+      if (this.supportPagePrompt === 'recovery') return 'recovery-code';
+      if (this.supportPagePrompt === 'invite') return 'invite-code';
+      if (this.supportState.activeTask) return this.t('support_waiting');
+      if (this.supportPageAwaitingDescription) return this.supportPageGuidedHint || this.supportTaskMenuPrompt() || this.t('support_enter_desc');
+      return this.t('support_connecting');
+    },
+
+    supportPageButtonLabel() {
+      if (this.supportPageConnecting) return this.t('support_connecting');
+      if (this.supportPagePrompt) return this.t('send');
+      if (this.supportState.activeTask) return this.t('support_waiting');
+      if (this.supportPageAwaitingDescription) return this.t('send');
+      return this.t('support_connect');
+    },
+
+    supportPageCanSubmit() {
+      if (this.supportPageConnecting) return false;
+      if (this.supportPagePrompt) return this.supportPageCode.trim().length > 0;
+      if (this.supportState.activeTask) return false;
+      if (this.supportPageAwaitingDescription) return this.supportPageDesc.trim().length > 0;
+      return true;
+    },
+
+    focusSupportInput() {
+      this.$nextTick(() => {
+        const el = this.$refs.supportPageInput;
+        if (el && !this.supportPageInputDisabled()) el.focus();
+      });
+    },
+
     async pollEngines() {
       const data = await this.callTool('engine.list');
       if (data._err) return;
@@ -2888,6 +3761,7 @@ function aimaApp() {
           startup_progress: d.startup_progress || 0,
           startup_message: d.startup_message || '',
           error_lines: d.error_lines || '',
+          failure_detail: this.summarizeDeploymentFailure(d),
           eta
         };
       });
@@ -2956,11 +3830,6 @@ function aimaApp() {
       const text = this.input.trim();
       if (!text || this.thinking) return;
       this.input = '';
-
-      // Clear welcome message on first user input
-      if (this.messages.length === 1 && this.messages[0].role === 'system') {
-        this.messages = [];
-      }
 
       this.messages.push({ role: 'user', text });
       this.thinking = true;
@@ -3140,18 +4009,31 @@ function aimaApp() {
 
     // ── Support Page methods (independent from chat /askforhelp) ──
 
-    toggleView(view) {
-      this.currentView = this.currentView === view ? 'chat' : view;
+    openSupportFlow() {
+      if (this.currentView === 'support') {
+        this.currentView = 'chat';
+        return;
+      }
+      this.currentView = 'support';
+      this.loadSupportManifest();
+      this.primeSupportPageSeen();
+      if (!this.supportPageConnecting && (!this.supportConnected || (!this.supportState.activeTask && !this.supportPagePrompt && !this.supportPageAwaitingDescription))) {
+        this.connectSupport();
+      } else {
+        this.scrollSupportPage();
+        this.focusSupportInput();
+      }
     },
 
     async connectSupport() {
+      if (this.supportPageConnecting) return;
       this.supportPageConnecting = true;
       this.supportPagePrompt = null;
       this.supportPageError = '';
-      const params = {};
-      if (this.supportPageDesc.trim()) params.description = this.supportPageDesc.trim();
+      this.supportPageAwaitingDescription = false;
+      this.appendSupportPageMessage(this.t('support_connecting'), 'info');
 
-      const data = await this.callTool('support.askforhelp', params);
+      const data = await this.callTool('support.askforhelp', {});
 
       if (data._err) {
         const errLower = (data._err || '').toLowerCase();
@@ -3161,17 +4043,33 @@ function aimaApp() {
         if (needsInvite || needsRecovery) {
           this.supportPagePrompt = needsRecovery ? 'recovery' : 'invite';
           this.supportPageConnecting = false;
+          this.appendSupportPageMessage(this.supportPagePrompt === 'recovery' ? this.supportRecoveryPromptText() : this.supportInvitePromptText(), needsRecovery ? 'info_request' : 'approval');
+          this.focusSupportInput();
           return;
         }
         this.supportPageConnecting = false;
         this.supportPageError = data._err;
+        this.appendSupportPageMessage(data._err, 'error');
         return;
       }
 
       this.supportPageConnecting = false;
       this.supportPageError = '';
-      this.supportPageDesc = '';
+      this.supportPageCode = '';
+      this.rememberSupportResult(data);
+      if (data.created) {
+        this.appendSupportPageMessage(this.formatSupportTaskMessage(data), 'task_completion');
+        this.appendSupportPageMessage(this.t('support_waiting'), 'info');
+      } else if (data.reused_active_task) {
+        this.appendSupportPageMessage(this.formatSupportTaskMessage(data), 'command_intent');
+        this.appendSupportPageMessage(this.t('support_waiting'), 'info');
+      } else {
+        this.appendSupportPageMessage(this.formatSupportLinkedMessage(data), 'complete');
+        this.appendSupportPageMessage(this.supportTaskMenuTitle(), 'info_request');
+        this.supportPageAwaitingDescription = true;
+      }
       await this.pollSystemStatus();
+      this.focusSupportInput();
     },
 
     async submitSupportCode() {
@@ -3191,13 +4089,24 @@ function aimaApp() {
 
       if (data._err) {
         this.supportPageError = data._err;
+        this.appendSupportPageMessage(data._err, 'error');
         return;
       }
       this.supportPageError = '';
       this.supportPagePrompt = null;
       this.supportPageCode = '';
-      this.supportPageDesc = '';
+      this.rememberSupportResult(data);
+      if (data.reused_active_task) {
+        this.appendSupportPageMessage(this.formatSupportTaskMessage(data), 'command_intent');
+        this.appendSupportPageMessage(this.t('support_waiting'), 'info');
+        this.supportPageAwaitingDescription = false;
+      } else {
+        this.appendSupportPageMessage(this.formatSupportLinkedMessage(data), 'complete');
+        this.appendSupportPageMessage(this.supportTaskMenuTitle(), 'info_request');
+        this.supportPageAwaitingDescription = true;
+      }
       await this.pollSystemStatus();
+      this.focusSupportInput();
     },
 
     async disconnectSupport() {
@@ -3209,24 +4118,48 @@ function aimaApp() {
       }
       this.supportConnected = false;
       this.supportPagePrompt = null;
+      this.supportPageAwaitingDescription = false;
+      this.supportPageGuidedHint = '';
       this.supportPageDesc = '';
       this.supportPageCode = '';
+      this.supportPageFeed = [];
+      this._supportPageLocalSeq = 0;
+      this._supportPageSeen = { initialized: false, msgSeq: 0, activeTask: '', lastTask: '', connection: '' };
       this.supportState.activeTask = null;
       this.supportState.messages = [];
       await this.pollSystemStatus();
     },
 
+    submitSupportInput() {
+      if (this.supportPagePrompt) return this.submitSupportCode();
+      if (this.supportPageAwaitingDescription) return this.submitSupportTask();
+      return this.connectSupport();
+    },
+
     async submitSupportTask() {
       if (!this.supportPageDesc.trim()) return;
+      const description = this.supportPageDesc.trim();
+      this.appendSupportPageMessage(description, 'choice');
       this.supportPageConnecting = true;
       this.supportPageError = '';
-      const data = await this.callTool('support.askforhelp', { description: this.supportPageDesc.trim() });
+      const data = await this.callTool('support.askforhelp', { description: description });
       this.supportPageConnecting = false;
       if (data._err) {
         this.supportPageError = data._err;
+        this.appendSupportPageMessage(data._err, 'error');
         return;
       }
       this.supportPageError = '';
+      this.rememberSupportResult(data);
+      this.supportPageAwaitingDescription = false;
+      this.supportPageGuidedHint = '';
+      if (data.created) {
+        this.appendSupportPageMessage(this.formatSupportTaskMessage(data), 'task_completion');
+        this.appendSupportPageMessage(this.t('support_waiting'), 'info');
+      } else if (data.reused_active_task) {
+        this.appendSupportPageMessage(this.formatSupportTaskMessage(data), 'command_intent');
+        this.appendSupportPageMessage(this.t('support_waiting'), 'info');
+      }
       this.supportPageDesc = '';
       await this.pollSystemStatus();
     },
@@ -3492,7 +4425,6 @@ function aimaApp() {
     },
 
     scrollChat() {
-
       this.$nextTick(() => {
         const el = this.$refs.chatMessages;
         if (el) el.scrollTop = el.scrollHeight;
@@ -3571,6 +4503,16 @@ function aimaApp() {
     // Mobile tab
     setMobileTab(tab) {
       this.mobileTab = this.mobileTab === tab ? 'chat' : tab;
+      if (this.mobileTab === 'support') {
+        this.loadSupportManifest();
+        this.primeSupportPageSeen();
+        if (!this.supportPageConnecting && (!this.supportConnected || (!this.supportState.activeTask && !this.supportPagePrompt && !this.supportPageAwaitingDescription))) {
+          this.connectSupport();
+        } else {
+          this.scrollSupportPage();
+          this.focusSupportInput();
+        }
+      }
     },
 
     // Global keyboard shortcut
@@ -3596,12 +4538,36 @@ function aimaApp() {
       return mib + 'M';
     },
 
+    fmtUSD(amount) {
+      return '$' + Number(amount || 0).toFixed(2);
+    },
+
     fmtModelSize(bytes, format) {
       if (bytes > 0) {
         const gb = bytes / (1024 * 1024 * 1024);
         return gb >= 1 ? gb.toFixed(1) + 'G' : (bytes / (1024 * 1024)).toFixed(0) + 'M';
       }
       return format || '';
+    },
+
+    summarizeDeploymentFailure(dep) {
+      if (!dep || dep.phase !== 'failed') return '';
+
+      const startupMessage = String(dep.startup_message || '').trim();
+      if (startupMessage && !/^(initializing|loading|scheduling|pulling|ready)/i.test(startupMessage)) {
+        return startupMessage;
+      }
+
+      const lines = String(dep.error_lines || '')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean);
+      const noise = /(tokens per second|eval time|total time|done request|all slots are idle|slot\s+release|stop processing)/i;
+      const signal = /(error|failed|exception|panic|traceback|out of memory|oom|killed|denied|not found|no such|cannot|unable|fatal)/i;
+
+      const match = lines.find(line => signal.test(line) && !noise.test(line));
+      if (!match) return '';
+      return match.length > 180 ? match.slice(0, 177) + '...' : match;
     }
   };
 }

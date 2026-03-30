@@ -1,0 +1,35 @@
+package ui
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestRegisterRoutes_SupportManifest(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(&Deps{
+		SupportManifest: func(ctx context.Context) (json.RawMessage, error) {
+			_ = ctx
+			return json.RawMessage(`{"flow_id":"device-go","blocks":{"task_menu":{"title":{"text":"Task menu"}}}}`), nil
+		},
+	})(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/api/support-manifest", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", got)
+	}
+	if got := rec.Body.String(); got != `{"flow_id":"device-go","blocks":{"task_menu":{"title":{"text":"Task menu"}}}}` {
+		t.Fatalf("body = %q", got)
+	}
+}
