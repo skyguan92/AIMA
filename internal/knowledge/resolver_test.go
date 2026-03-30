@@ -1023,6 +1023,47 @@ func TestResolveTimeFieldsZeroWhenMissing(t *testing.T) {
 	}
 }
 
+func TestResolveLeavesEngineImageEmptyForNativePreinstalledEngine(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{{
+			Metadata: EngineMetadata{Name: "vllm-musa", Type: "vllm", Version: "0.9.2"},
+			Hardware: EngineHardware{GPUArch: "MUSA"},
+			Startup: EngineStartup{
+				Command:     []string{"vllm", "serve", "{{.ModelPath}}"},
+				DefaultArgs: map[string]any{},
+				HealthCheck: HealthCheck{Path: "/health", TimeoutS: 60},
+			},
+			Source: &EngineSource{
+				InstallType: "preinstalled",
+				Probe: &EngineSourceProbe{
+					Paths: []string{"/opt/mt-ai/llm/venv/bin/vllm"},
+				},
+			},
+			Runtime: EngineRuntime{Default: "native"},
+		}},
+		ModelAssets: []ModelAsset{{
+			Kind:     "model_asset",
+			Metadata: ModelMetadata{Name: "qwen3-8b"},
+			Variants: []ModelVariant{{
+				Name:     "qwen3-8b-musa",
+				Hardware: ModelVariantHardware{GPUArch: "MUSA"},
+				Engine:   "vllm",
+			}},
+		}},
+	}
+	hw := HardwareInfo{GPUArch: "MUSA", Platform: "linux/arm64", RuntimeType: "native"}
+	resolved, err := cat.Resolve(hw, "qwen3-8b", "vllm", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.EngineImage != "" {
+		t.Fatalf("EngineImage = %q, want empty for native preinstalled engine", resolved.EngineImage)
+	}
+	if resolved.RuntimeRecommendation != "native" {
+		t.Fatalf("RuntimeRecommendation = %q, want native", resolved.RuntimeRecommendation)
+	}
+}
+
 func TestCheckFitPowerBudget(t *testing.T) {
 	tests := []struct {
 		name        string

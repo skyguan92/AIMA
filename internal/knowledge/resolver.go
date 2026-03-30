@@ -64,6 +64,7 @@ type ResolvedConfig struct {
 	Container             *ContainerAccess  // vendor-specific container access (devices, env, volumes, security) from hardware profile
 	EngineRegistries      []string          // container image registries from engine YAML (for pre-pull fallback)
 	EngineDigest          string            // OCI content digest from engine YAML (for pull verification)
+	EngineDistribution    string            // "registry" (default) or "local" — local-only engines cannot be pulled remotely
 
 	// Time estimates (zero = unknown, graceful degradation)
 	ColdStartSMin int // engine cold start lower bound (seconds)
@@ -194,22 +195,28 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 	}
 
 	resolved := &ResolvedConfig{
-		Engine:           engineType,
-		EngineImage:      engine.Image.Name + ":" + engine.Image.Tag,
-		ModelName:        model.Metadata.Name,
-		Slot:             slot.Name,
-		Config:           config,
-		Provenance:       provenance,
-		Partition:        slot,
-		Command:          engine.Startup.Command,
-		InitCommands:     engine.Startup.InitCommands,
-		ExtraVolumes:     engine.Startup.ExtraVolumes,
-		Env:              engine.Startup.Env,
-		WorkDir:          engine.Startup.WorkDir,
-		HealthCheck:      &engine.Startup.HealthCheck,
-		Source:           engine.Source,
-		EngineRegistries: engine.Image.Registries,
-		EngineDigest:     engine.Image.Digest,
+		Engine:             engineType,
+		ModelName:          model.Metadata.Name,
+		Slot:               slot.Name,
+		Config:             config,
+		Provenance:         provenance,
+		Partition:          slot,
+		Command:            engine.Startup.Command,
+		InitCommands:       engine.Startup.InitCommands,
+		ExtraVolumes:       engine.Startup.ExtraVolumes,
+		Env:                engine.Startup.Env,
+		WorkDir:            engine.Startup.WorkDir,
+		HealthCheck:        &engine.Startup.HealthCheck,
+		Source:             engine.Source,
+		EngineRegistries:   engine.Image.Registries,
+		EngineDigest:       engine.Image.Digest,
+		EngineDistribution: engine.Image.Distribution,
+	}
+	if engine.Image.Name != "" {
+		resolved.EngineImage = engine.Image.Name
+		if engine.Image.Tag != "" {
+			resolved.EngineImage += ":" + engine.Image.Tag
+		}
 	}
 	if engine.Startup.Warmup.Enabled {
 		resolved.Warmup = &engine.Startup.Warmup
@@ -272,14 +279,10 @@ func (c *Catalog) findEngine(engineType string, hw HardwareInfo) (*EngineAsset, 
 		if hw.RuntimeType != "native" {
 			return true
 		}
-		// Engine with an explicit command can run natively (pre-installed binary / system package).
-		if len(ea.Startup.Command) > 0 {
-			return true
-		}
 		if ea.Source == nil {
 			return false
 		}
-		return platformInList(hw.Platform, ea.Source.Platforms)
+		return ea.Source.Supports(hw.Platform)
 	}
 
 	// Prefer exact metadata.name match, then metadata.type.

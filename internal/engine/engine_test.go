@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 
 	"github.com/jguan/aima/internal/knowledge"
@@ -240,6 +241,61 @@ func TestScanTagAwarePatternPriority(t *testing.T) {
 	}
 	if stable.Tag != "v0.8.5" {
 		t.Errorf("expected stable tag v0.8.5, got %s", stable.Tag)
+	}
+}
+
+func TestBinaryManagerEnsureReusesExistingDistBinary(t *testing.T) {
+	t.Parallel()
+
+	distDir := t.TempDir()
+	binaryPath := filepath.Join(distDir, "llama-server")
+	if err := os.WriteFile(binaryPath, []byte("bin"), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+
+	mgr := NewBinaryManager(distDir)
+	source := &BinarySource{
+		Binary:    "llama-server",
+		Platforms: []string{goruntime.GOOS + "/" + goruntime.GOARCH},
+	}
+
+	path, downloaded, err := mgr.Ensure(context.Background(), source, nil)
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if downloaded {
+		t.Fatal("Ensure should reuse an existing dist binary")
+	}
+	if path != binaryPath {
+		t.Fatalf("Ensure path = %q, want %q", path, binaryPath)
+	}
+}
+
+func TestBinaryManagerEnsureUsesProbePathsForPreinstalledEngine(t *testing.T) {
+	t.Parallel()
+
+	distDir := t.TempDir()
+	probeDir := t.TempDir()
+	probePath := filepath.Join(probeDir, "vllm")
+	if err := os.WriteFile(probePath, []byte("bin"), 0o755); err != nil {
+		t.Fatalf("write probe binary: %v", err)
+	}
+
+	mgr := NewBinaryManager(distDir)
+	source := &BinarySource{
+		InstallType: "preinstalled",
+		ProbePaths:  []string{probePath},
+	}
+
+	path, downloaded, err := mgr.Ensure(context.Background(), source, nil)
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if downloaded {
+		t.Fatal("Ensure should not download a preinstalled engine")
+	}
+	if path != probePath {
+		t.Fatalf("Ensure path = %q, want %q", path, probePath)
 	}
 }
 

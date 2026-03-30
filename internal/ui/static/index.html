@@ -179,6 +179,11 @@ body {
   height: 22px;
   width: auto;
   object-fit: contain;
+  border-radius: 4px;
+}
+:root:not([data-theme="light"]) .topbar-logo-img,
+:root:not([data-theme="light"]) .agent-avatar {
+  mix-blend-mode: lighten;
 }
 .topbar-right {
   display: flex;
@@ -1625,7 +1630,7 @@ body {
           <div class="empty" x-text="t('no_engines')"></div>
         </template>
         <ul class="panel-list">
-          <template x-for="e in engines" :key="e.id">
+          <template x-for="(e, ei) in engines" :key="ei">
             <li>
               <span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span>
               <span x-text="e.type"></span>
@@ -1642,7 +1647,7 @@ body {
           <div class="empty" x-text="t('no_models')"></div>
         </template>
         <ul class="panel-list">
-          <template x-for="m in models" :key="m.name">
+          <template x-for="(m, mi) in models" :key="mi">
             <li>
               <span class="dot dot-green"></span>
               <span x-text="m.name" style="flex:1;overflow:hidden;text-overflow:ellipsis"></span>
@@ -1829,7 +1834,7 @@ body {
         <template x-if="fleet.length === 0">
           <div class="empty" x-text="t('no_fleet')"></div>
         </template>
-        <template x-for="d in fleet" :key="d.id">
+        <template x-for="(d, fi) in fleet" :key="fi">
           <div class="fleet-device" :class="{ clickable: d.addr && d.online }" @click="openDeviceUI(d)">
             <span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span>
             <div style="flex:1;min-width:0">
@@ -1850,7 +1855,7 @@ body {
           <div class="empty" x-text="t('no_deployments')"></div>
         </template>
         <ul class="panel-list">
-          <template x-for="dep in deployments" :key="dep.name">
+          <template x-for="(dep, di) in deployments" :key="di">
             <li :class="{ starting: dep.startup_progress > 0 && dep.startup_progress < 100 }">
               <span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span>
               <div style="flex:1;overflow:hidden">
@@ -1930,11 +1935,11 @@ body {
         </div>
         <div class="panel">
           <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span></div>
-          <ul class="panel-list"><template x-for="e in engines" :key="e.id"><li><span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span><span x-text="e.type"></span></li></template></ul>
+          <ul class="panel-list"><template x-for="(e, ei) in engines" :key="ei"><li><span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span><span x-text="e.type"></span></li></template></ul>
         </div>
         <div class="panel">
           <div class="panel-title">&#x25C6; <span x-text="t('models')"></span></div>
-          <ul class="panel-list"><template x-for="m in models" :key="m.name"><li><span class="dot dot-green"></span><span x-text="m.name"></span></li></template></ul>
+          <ul class="panel-list"><template x-for="(m, mi) in models" :key="mi"><li><span class="dot dot-green"></span><span x-text="m.name"></span></li></template></ul>
         </div>
       </div>
     </template>
@@ -1942,11 +1947,11 @@ body {
       <div style="display:flex;flex-direction:column;gap:8px">
         <div class="panel">
           <div class="panel-title">&#x25C9; <span x-text="t('fleet')"></span></div>
-          <template x-for="d in fleet" :key="d.id"><div class="fleet-device"><span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span><div><div class="name" x-text="d.name || d.id"></div><div class="meta" x-text="d.meta || ''"></div></div></div></template>
+          <template x-for="(d, fi) in fleet" :key="fi"><div class="fleet-device"><span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span><div><div class="name" x-text="d.name || d.id"></div><div class="meta" x-text="d.meta || ''"></div></div></div></template>
         </div>
         <div class="panel">
           <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
-          <ul class="panel-list"><template x-for="dep in deployments" :key="dep.name"><li style="flex-wrap:wrap"><span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span><span x-text="dep.name"></span><span class="item-detail" x-text="dep.startup_message || dep.phase"></span><template x-if="dep.startup_progress > 0 && dep.startup_progress < 100"><div style="width:100%;margin-top:2px"><div class="deploy-progress"><div class="deploy-progress-fill" :style="'width:' + dep.startup_progress + '%'"></div></div></div></template></li></template></ul>
+          <ul class="panel-list"><template x-for="(dep, di) in deployments" :key="di"><li style="flex-wrap:wrap"><span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span><span x-text="dep.name"></span><span class="item-detail" x-text="dep.startup_message || dep.phase"></span><template x-if="dep.startup_progress > 0 && dep.startup_progress < 100"><div style="width:100%;margin-top:2px"><div class="deploy-progress"><div class="deploy-progress-fill" :style="'width:' + dep.startup_progress + '%'"></div></div></div></template></li></template></ul>
         </div>
       </div>
     </template>
@@ -2539,7 +2544,8 @@ function aimaApp() {
       connection: '',
       activeTask: '',
       lastTask: '',
-      msgSeq: 0
+      msgSeq: 0,
+      initialized: false
     },
 
     // Polling intervals
@@ -2704,6 +2710,17 @@ function aimaApp() {
         messages: Array.isArray(data.messages) ? data.messages : []
       };
       this.supportConnected = data.enabled === true && data.registered === true;
+      // On first poll, seed _supportSeen with current state so stale data
+      // doesn't appear as new chat messages.
+      if (!this._supportSeen.initialized) {
+        this._supportSeen.initialized = true;
+        if (data.device_id) this._supportSeen.connection = data.device_id;
+        if (this.supportState.activeTask) this._supportSeen.activeTask = this.supportTaskSignature(this.supportState.activeTask);
+        if (this.supportState.lastTask) this._supportSeen.lastTask = this.supportTaskSignature(this.supportState.lastTask);
+        const msgs = this.supportState.messages || [];
+        if (msgs.length > 0) this._supportSeen.msgSeq = msgs[msgs.length - 1].seq || 0;
+        return;
+      }
       this.syncSupportMessages();
     },
 
@@ -2811,7 +2828,14 @@ function aimaApp() {
       const data = await this.callTool('model.list');
       if (data._err) return;
       const list = Array.isArray(data) ? data : [];
-      this.models = list.map(m => ({
+      // Deduplicate by name (multiple registrations of same model file)
+      const seen = new Set();
+      this.models = list.filter(m => {
+        const n = m.name || 'unknown';
+        if (seen.has(n)) return false;
+        seen.add(n);
+        return true;
+      }).map(m => ({
         name: m.name || 'unknown',
         size: this.fmtModelSize(m.size_bytes || 0, m.format || '')
       }));

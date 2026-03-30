@@ -9,6 +9,8 @@ hardware:
   vram_min_mib: 4096
 image:
   # NGC official DGX Spark image, arm64 + Blackwell SM121
+  # NOTE: nvcr.io requires NGC authentication; no China mirror available.
+  # For China users: pre-pull with `docker login nvcr.io` or use `aima engine import`.
   name: nvcr.io/nvidia/vllm
   tag: "26.01-py3"
   size_approx_mb: 12000

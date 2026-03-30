@@ -16,6 +16,7 @@ func newCatalogCmd(app *App) *cobra.Command {
 
 	cmd.AddCommand(newCatalogStatusCmd(app))
 	cmd.AddCommand(newCatalogOverrideCmd(app))
+	cmd.AddCommand(newCatalogValidateCmd(app))
 	return cmd
 }
 
@@ -44,6 +45,26 @@ func newCatalogOverrideCmd(app *App) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+func newCatalogValidateCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate",
+		Short: "Validate engine YAML catalog for schema issues (missing registries, proxy-in-name, single-point-of-failure)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if app.ToolDeps.CatalogValidate == nil {
+				return fmt.Errorf("catalog.validate not available")
+			}
+			data, err := app.ToolDeps.CatalogValidate(cmd.Context())
+			if err != nil {
+				return err
+			}
+			var pretty json.RawMessage = data
+			out, _ := json.MarshalIndent(pretty, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(out))
+			return nil
+		},
+	}
 }
 
 func newCatalogStatusCmd(app *App) *cobra.Command {

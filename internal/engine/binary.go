@@ -29,15 +29,23 @@ func NewBinaryManager(distDir string) *BinaryManager {
 
 // BinarySource describes where to download a native binary.
 type BinarySource struct {
-	Binary    string              // e.g. "llama-server"
-	Platforms []string            // e.g. ["linux/amd64", "darwin/arm64"]
-	Download  map[string]string   // platform -> URL
-	Mirror    map[string][]string // platform -> mirror URLs (tried in order)
-	SHA256    map[string]string   // platform -> expected hex digest (optional)
+	Binary      string              // e.g. "llama-server"
+	Platforms   []string            // e.g. ["linux/amd64", "darwin/arm64"]
+	Download    map[string]string   // platform -> URL
+	Mirror      map[string][]string // platform -> mirror URLs (tried in order)
+	SHA256      map[string]string   // platform -> expected hex digest (optional)
+	InstallType string              // e.g. "preinstalled"
+	ProbePaths  []string            // explicit binary paths for pre-installed engines
 }
 
 // Supports reports whether this source supports the given platform string (e.g. "linux/amd64").
 func (s *BinarySource) Supports(platform string) bool {
+	if s == nil {
+		return false
+	}
+	if s.InstallType == "preinstalled" && len(s.Platforms) == 0 {
+		return true
+	}
 	for _, p := range s.Platforms {
 		if p == platform {
 			return true
@@ -49,54 +57,48 @@ func (s *BinarySource) Supports(platform string) bool {
 // Resolve returns the path to a native engine binary, downloading it if needed.
 // Search order: distDir -> PATH -> download from source.
 func (m *BinaryManager) Resolve(ctx context.Context, source *BinarySource) (string, error) {
+	path, _, err := m.Ensure(ctx, source, nil)
+	return path, err
+}
+
+// Ensure makes a native engine binary available for the current platform.
+// It reuses an existing binary from distDir / probe paths / PATH when possible,
+// and downloads it only when missing.
+func (m *BinaryManager) Ensure(ctx context.Context, source *BinarySource, onProgress func(ProgressEvent)) (string, bool, error) {
 	if source == nil {
-		return "", fmt.Errorf("no binary source configured")
+		return "", false, fmt.Errorf("no binary source configured")
 	}
 
 	platform := goruntime.GOOS + "/" + goruntime.GOARCH
-	if !platformSupported(platform, source.Platforms) {
-		return "", fmt.Errorf("platform %s not supported (available: %v)", platform, source.Platforms)
+	if !source.Supports(platform) {
+		return "", false, fmt.Errorf("platform %s not supported (available: %v)", platform, source.Platforms)
 	}
 
 	name := source.Binary
-	candidates := binaryCandidates(name)
-
-	// 1. Check distDir
-	for _, c := range candidates {
-		p := filepath.Join(m.distDir, c)
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
+	if path, ok := m.findExisting(source); ok {
+		return path, false, nil
 	}
 
-	// 2. Check PATH
-	for _, c := range candidates {
-		if p, err := lookPath(c); err == nil {
-			return p, nil
-		}
+	if source.InstallType == "preinstalled" {
+		return "", false, fmt.Errorf("preinstalled engine binary not found (probe paths: %v)", source.ProbePaths)
 	}
 
-	// 3. Download from source
 	url := source.Download[platform]
 	mirrorURLs := source.Mirror[platform]
 	if url == "" && len(mirrorURLs) == 0 {
-		return "", fmt.Errorf("no download URL for platform %s", platform)
+		return "", false, fmt.Errorf("no download URL for platform %s", platform)
 	}
 
 	expectedSHA256 := source.SHA256[platform]
-	if err := m.download(ctx, url, mirrorURLs, m.distDir, name, expectedSHA256, nil); err != nil {
-		return "", fmt.Errorf("download %s: %w", name, err)
+	if err := m.download(ctx, url, mirrorURLs, m.distDir, name, expectedSHA256, onProgress); err != nil {
+		return "", true, fmt.Errorf("download %s: %w", name, err)
 	}
 
-	// Binary should now be in distDir
-	for _, c := range candidates {
-		p := filepath.Join(m.distDir, c)
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
+	if path, ok := m.findExisting(source); ok {
+		return path, true, nil
 	}
 
-	return "", fmt.Errorf("binary %s not found in %s after download", name, m.distDir)
+	return "", true, fmt.Errorf("binary %s not found in %s after download", name, m.distDir)
 }
 
 // Download forces download of the binary for the current platform,
@@ -108,8 +110,11 @@ func (m *BinaryManager) Download(ctx context.Context, source *BinarySource, onPr
 	}
 
 	platform := goruntime.GOOS + "/" + goruntime.GOARCH
-	if !platformSupported(platform, source.Platforms) {
+	if !source.Supports(platform) {
 		return fmt.Errorf("platform %s not supported (available: %v)", platform, source.Platforms)
+	}
+	if source.InstallType == "preinstalled" {
+		return fmt.Errorf("engine is preinstalled on this host; no downloadable artifact is configured")
 	}
 
 	url := source.Download[platform]
@@ -120,6 +125,35 @@ func (m *BinaryManager) Download(ctx context.Context, source *BinarySource, onPr
 
 	expectedSHA256 := source.SHA256[platform]
 	return m.download(ctx, url, mirrorURLs, m.distDir, source.Binary, expectedSHA256, onProgress)
+}
+
+func (m *BinaryManager) findExisting(source *BinarySource) (string, bool) {
+	if source == nil {
+		return "", false
+	}
+
+	if source.Binary != "" {
+		for _, c := range binaryCandidates(source.Binary) {
+			p := filepath.Join(m.distDir, c)
+			if _, err := os.Stat(p); err == nil {
+				return p, true
+			}
+		}
+	}
+
+	for _, p := range source.ProbePaths {
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+
+	if source.Binary != "" {
+		if p, err := lookPath(source.Binary); err == nil {
+			return p, true
+		}
+	}
+
+	return "", false
 }
 
 // download tries mirror URLs first, then primary. Extracts zip/tar.gz archives.

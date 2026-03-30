@@ -11,6 +11,7 @@ image:
   tag: "latest"
   size_approx_mb: 4000
   platforms: [linux/arm64]
+  distribution: local
 patterns:
   - "^qwen-tts-fastapi-cuda-blackwell$"
   - "tts-fastapi-cuda-blackwell"

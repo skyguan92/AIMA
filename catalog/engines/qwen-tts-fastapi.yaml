@@ -10,6 +10,7 @@ image:
   tag: "latest"
   size_approx_mb: 2500
   platforms: [linux/arm64]
+  distribution: local
 patterns:
   - "^qwen-tts-fastapi$"
   - "qwen3-tts"

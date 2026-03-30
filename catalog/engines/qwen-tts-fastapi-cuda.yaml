@@ -8,6 +8,7 @@ image:
   tag: "latest"
   size_approx_mb: 5000
   platforms: [linux/amd64]
+  distribution: local
 patterns:
   - "^qwen-tts-fastapi-cuda$"
   - "tts-fastapi-cuda"

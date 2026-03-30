@@ -8,10 +8,13 @@ hardware:
   gpu_arch: Ascend910B
   vram_min_mib: 32768
 image:
-  name: docker.1ms.run/lmsysorg/sglang
+  name: lmsysorg/sglang
   tag: "main-cann8.5.0-910b"
   size_approx_mb: 12000
   platforms: [linux/arm64]
+  registries:
+    - docker.io/lmsysorg/sglang
+    - docker.1ms.run/lmsysorg/sglang
 patterns:
   - "^sglang-ascend"
   - "ascend.*sglang"

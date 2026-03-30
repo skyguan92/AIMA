@@ -18,10 +18,7 @@ image:
   platforms: [linux/arm64]
   registries:
     - docker.io/scitrera/dgx-spark-vllm
-  source:
-    mirror:
-      docker.io:
-        - docker.1ms.run/scitrera/dgx-spark-vllm
+    - docker.1ms.run/scitrera/dgx-spark-vllm
 patterns:
   - "^vllm-spark"
   - "vllm-spark"

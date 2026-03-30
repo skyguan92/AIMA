@@ -154,6 +154,12 @@ type EngineSource struct {
 
 // Supports reports whether this source supports the given platform (e.g. "linux/amd64").
 func (s *EngineSource) Supports(platform string) bool {
+	if s == nil {
+		return false
+	}
+	if s.InstallType == "preinstalled" && len(s.Platforms) == 0 {
+		return true
+	}
 	for _, p := range s.Platforms {
 		if p == platform {
 			return true
@@ -201,6 +207,7 @@ type EngineImage struct {
 	Platforms    []string `yaml:"platforms"      json:"platforms"`
 	Registries   []string `yaml:"registries"     json:"registries"`
 	Digest       string   `yaml:"digest,omitempty" json:"digest,omitempty"`
+	Distribution string   `yaml:"distribution,omitempty" json:"distribution,omitempty"` // "registry" (default) or "local"
 }
 
 type EngineHardware struct {

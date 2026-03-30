@@ -1696,12 +1696,18 @@ func (a *fleetMCPAdapter) ListToolDefs() json.RawMessage {
 // toEngineBinarySource converts a knowledge.EngineSource to engine.BinarySource.
 // Centralises the mapping so callers don't repeat the 4-field struct literal.
 func toEngineBinarySource(src *knowledge.EngineSource) *engine.BinarySource {
+	var probePaths []string
+	if src != nil && src.Probe != nil {
+		probePaths = append(probePaths, src.Probe.Paths...)
+	}
 	return &engine.BinarySource{
-		Binary:    src.Binary,
-		Platforms: src.Platforms,
-		Download:  src.Download,
-		Mirror:    src.Mirror,
-		SHA256:    src.SHA256,
+		Binary:      src.Binary,
+		Platforms:   src.Platforms,
+		Download:    src.Download,
+		Mirror:      src.Mirror,
+		SHA256:      src.SHA256,
+		InstallType: src.InstallType,
+		ProbePaths:  probePaths,
 	}
 }
 
@@ -3063,6 +3069,11 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				return fmt.Errorf("engine %q not found in catalog for gpu_arch %q", name, hwInfo.GPUArch)
 			}
 
+			// Local-only engines cannot be pulled from a registry
+			if ea.Image.Distribution == "local" {
+				return fmt.Errorf("engine %q is a locally-built image (distribution: local); build it on the target device or import with: aima engine import <tarball>", name)
+			}
+
 			// Native binary path: prefer if platform is supported
 			platform := goruntime.GOOS + "/" + goruntime.GOARCH
 			preferredRuntime := preferredEngineRuntimeType(ea, platform)
@@ -3070,11 +3081,15 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				distPlatform := goruntime.GOOS + "-" + goruntime.GOARCH
 				distDir := filepath.Join(dataDir, "dist", distPlatform)
 				mgr := engine.NewBinaryManager(distDir)
-				if err := mgr.Download(ctx, toEngineBinarySource(ea.Source), onProgress); err != nil {
+				_, downloaded, err := mgr.Ensure(ctx, toEngineBinarySource(ea.Source), onProgress)
+				if err != nil {
 					return err
 				}
 				// Auto-scan to register in DB
 				_, _ = scanEnginesCore(ctx, "native", false)
+				if !downloaded && onProgress != nil {
+					onProgress(engine.ProgressEvent{Phase: "already_available", Message: "engine binary already available locally"})
+				}
 				return nil
 			}
 			// Container image path
@@ -3131,10 +3146,14 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				distPlatform := goruntime.GOOS + "-" + goruntime.GOARCH
 				distDir := filepath.Join(dataDir, "dist", distPlatform)
 				mgr := engine.NewBinaryManager(distDir)
-				if err := mgr.Download(ctx, toEngineBinarySource(ea.Source), onProgress); err != nil {
+				_, downloaded, err := mgr.Ensure(ctx, toEngineBinarySource(ea.Source), onProgress)
+				if err != nil {
 					return err
 				}
 				_, _ = scanEnginesCore(ctx, "native", false)
+				if !downloaded && onProgress != nil {
+					onProgress(engine.ProgressEvent{Phase: "already_available", Message: "engine binary already available locally"})
+				}
 				return nil
 			}
 			return fmt.Errorf("engine %q has no download source for platform %s/%s", name, goruntime.GOOS, goruntime.GOARCH)
@@ -3195,6 +3214,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		},
 		EnginePlan: func(ctx context.Context) (json.RawMessage, error) {
 			hwInfo := buildHardwareInfo(ctx, cat, rt.Name())
+			_, _ = scanEnginesCore(ctx, "auto", false)
 
 			// Get all installed engines from DB
 			allInstalled, _ := db.ListEngines(ctx)
@@ -4752,6 +4772,83 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				"parse_warnings": parseWarnings,
 			}
 			return json.Marshal(status)
+		},
+		CatalogValidate: func(ctx context.Context) (json.RawMessage, error) {
+			type issue struct {
+				Engine   string `json:"engine"`
+				Severity string `json:"severity"` // "error" or "warning"
+				Field    string `json:"field"`
+				Message  string `json:"message"`
+			}
+			var issues []issue
+
+			knownRegistryPrefixes := []string{
+				"docker.io/", "ghcr.io/", "nvcr.io/", "quay.io/",
+				"registry.cn-", "harbor.", "cr.", "docker.1ms.run/",
+			}
+
+			for _, ea := range cat.EngineAssets {
+				name := ea.Metadata.Name
+
+				// Skip preinstalled engines (no image to validate)
+				if ea.Source != nil && ea.Source.InstallType == "preinstalled" && ea.Image.Name == "" {
+					continue
+				}
+
+				isLocal := ea.Image.Distribution == "local"
+
+				// Check: container engines should have registries (unless local)
+				if ea.Image.Name != "" && len(ea.Image.Registries) == 0 && !isLocal {
+					issues = append(issues, issue{
+						Engine:   name,
+						Severity: "error",
+						Field:    "image.registries",
+						Message:  "container engine has no registries configured; pull will fail",
+					})
+				}
+
+				// Check: image.name should not contain registry prefix
+				if ea.Image.Name != "" {
+					for _, prefix := range knownRegistryPrefixes {
+						if strings.HasPrefix(ea.Image.Name, prefix) {
+							issues = append(issues, issue{
+								Engine:   name,
+								Severity: "warning",
+								Field:    "image.name",
+								Message:  fmt.Sprintf("image name contains registry prefix %q; use short name in image.name and put full paths in registries", prefix),
+							})
+							break
+						}
+					}
+				}
+
+				// Check: single registry = single point of failure
+				if ea.Image.Name != "" && len(ea.Image.Registries) == 1 && !isLocal {
+					issues = append(issues, issue{
+						Engine:   name,
+						Severity: "warning",
+						Field:    "image.registries",
+						Message:  fmt.Sprintf("only one registry (%s); no fallback if it is unavailable", ea.Image.Registries[0]),
+					})
+				}
+
+				// Check: local distribution should have a comment or clear name
+				if isLocal && len(ea.Image.Registries) > 0 {
+					issues = append(issues, issue{
+						Engine:   name,
+						Severity: "warning",
+						Field:    "image.distribution",
+						Message:  "distribution is 'local' but registries are configured; these registries will not be used for pull",
+					})
+				}
+			}
+
+			result := map[string]any{
+				"total_engines": len(cat.EngineAssets),
+				"issues":        issues,
+				"issue_count":   len(issues),
+			}
+			return json.Marshal(result)
 		},
 	}
 	return deps

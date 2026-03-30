@@ -75,8 +75,9 @@ type ToolDeps struct {
 	DiscoverLAN func(ctx context.Context, timeoutS int) (json.RawMessage, error)
 
 	// Catalog overlay
-	CatalogOverride func(ctx context.Context, kind, name, content string) (json.RawMessage, error)
-	CatalogStatus   func(ctx context.Context) (json.RawMessage, error)
+	CatalogOverride  func(ctx context.Context, kind, name, content string) (json.RawMessage, error)
+	CatalogStatus    func(ctx context.Context) (json.RawMessage, error)
+	CatalogValidate  func(ctx context.Context) (json.RawMessage, error)
 
 	// Deploy approval
 	DeployApprove func(ctx context.Context, id int64) (json.RawMessage, error)
@@ -1659,6 +1660,23 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 		},
 	})
 
+	// catalog.validate
+	s.RegisterTool(&Tool{
+		Name:        "catalog.validate",
+		Description: "Validate engine YAML catalog for schema issues: missing registries, baked-in proxy URLs, single-point-of-failure registries, and local-only distribution markers.",
+		InputSchema: noParamsSchema(),
+		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
+			if deps.CatalogValidate == nil {
+				return ErrorResult("catalog.validate not implemented"), nil
+			}
+			data, err := deps.CatalogValidate(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("catalog validate: %w", err)
+			}
+			return TextResult(string(data)), nil
+		},
+	})
+
 	// system.status
 	s.RegisterTool(&Tool{
 		Name:        "system.status",
@@ -1890,7 +1908,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			val, err := deps.GetConfig(ctx, p.Key)
 			if err != nil {
-				return nil, fmt.Errorf("get config %s: %w", p.Key, err)
+				// Key not found → return empty string (not an error).
+				// This prevents HTTP 500 storms from UI polling for unconfigured keys.
+				return TextResult(""), nil
 			}
 			if IsSensitiveConfigKey(p.Key) {
 				val = "***"

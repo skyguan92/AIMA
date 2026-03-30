@@ -10,6 +10,7 @@ image:
   tag: "latest"
   size_approx_mb: 39000
   platforms: [linux/arm64]
+  distribution: local
 patterns:
   - "^z-image-diffusers$"
   - "z-image"

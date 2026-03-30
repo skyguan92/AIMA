@@ -115,6 +115,19 @@ func TestEngineCompatibilityHelpers(t *testing.T) {
 		Hardware: knowledge.EngineHardware{GPUArch: "*"},
 		Source:   &knowledge.EngineSource{Platforms: []string{"darwin/arm64"}},
 	}
+	preinstalledNative := &knowledge.EngineAsset{
+		Metadata: knowledge.EngineMetadata{Name: "vllm-musa", Type: "vllm"},
+		Hardware: knowledge.EngineHardware{GPUArch: "Ada"},
+		Source: &knowledge.EngineSource{
+			InstallType: "preinstalled",
+			Probe: &knowledge.EngineSourceProbe{
+				Paths: []string{"/opt/vendor/bin/vllm"},
+			},
+		},
+		Runtime: knowledge.EngineRuntime{
+			Default: "native",
+		},
+	}
 
 	if !engineCompatibleWithHost(wildcard, hw) {
 		t.Fatal("wildcard engine should be compatible with Ada/linux-amd64")
@@ -124,6 +137,12 @@ func TestEngineCompatibilityHelpers(t *testing.T) {
 	}
 	if got := preferredEngineRuntimeType(nativeFallback, hw.Platform); got != "container" {
 		t.Fatalf("preferredEngineRuntimeType = %q, want container", got)
+	}
+	if !engineCompatibleWithHost(preinstalledNative, hw) {
+		t.Fatal("preinstalled native engine should be compatible without explicit source.platforms")
+	}
+	if got := preferredEngineRuntimeType(preinstalledNative, hw.Platform); got != "native" {
+		t.Fatalf("preferredEngineRuntimeType(preinstalled native) = %q, want native", got)
 	}
 
 	recommendedContainer := &knowledge.EngineAsset{
