@@ -1206,6 +1206,287 @@ body {
   margin: -8px;
   margin-bottom: 0;
 }
+
+/* ===== Support Page ===== */
+
+/* Topbar support button */
+.topbar-support-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: 18px;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-smooth);
+  margin-left: 12px;
+}
+.topbar-support-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.topbar-support-btn.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 8px var(--accent-dim);
+}
+.topbar-support-btn.connected {
+  border-color: var(--success);
+  color: var(--success);
+  background: rgba(48, 209, 88, 0.12);
+}
+.topbar-support-btn.connected:hover,
+.topbar-support-btn.connected.active {
+  background: var(--success);
+  color: #fff;
+}
+.topbar-support-btn .support-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+/* Support page layout (fills .center) */
+.support-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: var(--spacing-lg);
+  overflow-y: auto;
+}
+
+/* Hero / not-connected state */
+.support-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: var(--spacing-md);
+  text-align: center;
+  max-width: 480px;
+  margin: 0 auto;
+}
+.support-hero-icon {
+  font-size: 48px;
+  opacity: 0.6;
+}
+.support-hero h2 {
+  font-family: var(--font-sans);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+.support-hero p {
+  font-size: 14px;
+  color: var(--text-dim);
+  margin: 0;
+  line-height: 1.5;
+}
+.support-hero textarea {
+  width: 100%;
+  padding: 12px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+  min-height: 60px;
+}
+.support-hero-btn {
+  padding: 12px 36px;
+  font-size: 16px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-smooth);
+}
+.support-hero-btn:hover {
+  background: var(--accent-hover);
+  transform: scale(1.02);
+}
+.support-hero-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Prompt input (invite/recovery code) */
+.support-hero .support-code-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.support-hero .support-code-row input {
+  flex: 1;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: var(--font-mono);
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+}
+.support-hero .support-code-row button {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+/* Connected panel */
+.support-connected {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: var(--spacing-md);
+}
+.support-status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-sm);
+}
+.support-status-card {
+  background: var(--bg-panel);
+  border: var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+.support-status-card .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.support-status-card .value {
+  font-size: 14px;
+  font-family: var(--font-mono);
+  color: var(--text);
+  word-break: break-all;
+}
+.support-msg-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--spacing-sm);
+  background: var(--bg-secondary);
+  border: var(--panel-border);
+  border-radius: var(--radius-sm);
+  min-height: 120px;
+}
+.support-msg {
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-panel);
+  border-radius: 6px;
+  line-height: 1.4;
+}
+.support-msg .msg-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-right: 6px;
+}
+.support-msg .msg-type {
+  font-size: 10px;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-right: 6px;
+}
+.support-msg .msg-type.info { color: var(--accent); background: var(--accent-dim); }
+.support-msg .msg-type.command { color: var(--warning); background: rgba(255, 159, 10, 0.15); }
+.support-msg .msg-type.error { color: var(--error); background: rgba(255, 69, 58, 0.15); }
+.support-msg .msg-type.complete { color: var(--success); background: rgba(48, 209, 88, 0.15); }
+
+.support-input-row {
+  display: flex;
+  gap: 8px;
+}
+.support-input-row input {
+  flex: 1;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+}
+.support-input-row button {
+  padding: 10px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.support-disconnect-btn {
+  align-self: center;
+  padding: 8px 24px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--error);
+  background: rgba(255, 69, 58, 0.1);
+  border: 1px solid var(--error);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-smooth);
+}
+.support-disconnect-btn:hover {
+  background: var(--error);
+  color: #fff;
+}
+
+/* Support empty messages */
+.support-msg-empty {
+  color: var(--text-tertiary);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px;
+}
+
+@media (max-width: 768px) {
+  .topbar-support-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+  .support-page {
+    padding: var(--spacing-md);
+  }
+  .support-hero h2 {
+    font-size: 18px;
+  }
+  .support-status-grid {
+    grid-template-columns: 1fr;
+  }
+}
 </style>
 
 <script>
@@ -1222,6 +1503,12 @@ body {
   <!-- Top Bar -->
   <div class="topbar">
     <div class="topbar-logo"><img :src="theme === 'dark' ? 'logo-dark.png' : 'logo-light.png'" alt="AIMA" class="topbar-logo-img"></div>
+    <button class="topbar-support-btn"
+      :class="{ active: currentView === 'support', connected: supportConnected }"
+      @click="toggleView('support')">
+      <span class="support-dot"></span>
+      <span x-text="t('support')"></span>
+    </button>
     <div class="topbar-right">
       <span class="status-text">
         <span class="status-dot" :class="systemOnline ? 'online' : 'offline'"></span>
@@ -1358,71 +1645,143 @@ body {
       </div>
     </div>
 
-    <!-- Center: Agent Chat -->
+    <!-- Center: Chat / Support (toggled by currentView) -->
     <div class="center">
-      <div class="agent-header">
-        <img class="agent-avatar" :src="theme === 'dark' ? 'logo-dark.png' : 'logo-light.png'" alt="AIMA">
-        <div>
-          <div class="agent-name">AIMA Agent</div>
-          <div class="agent-mode">
-            <span class="status-dot" :class="agentAvailable ? 'online' : 'offline'" style="width:6px;height:6px"></span>
-            <span x-text="agentAvailable ? t('agent_ready') : t('direct_mode')"></span>
+
+      <!-- Chat View -->
+      <div x-show="currentView === 'chat'" style="display:flex;flex-direction:column;height:100%">
+        <div class="agent-header">
+          <img class="agent-avatar" :src="theme === 'dark' ? 'logo-dark.png' : 'logo-light.png'" alt="AIMA">
+          <div>
+            <div class="agent-name">AIMA Agent</div>
+            <div class="agent-mode">
+              <span class="status-dot" :class="agentAvailable ? 'online' : 'offline'" style="width:6px;height:6px"></span>
+              <span x-text="agentAvailable ? t('agent_ready') : t('direct_mode')"></span>
+            </div>
           </div>
+        </div>
+
+        <div class="chat-messages" x-ref="chatMessages">
+          <template x-for="(msg, i) in messages" :key="i">
+            <div class="msg" :class="'msg-' + msg.role">
+              <template x-if="msg.role === 'user'">
+                <div><span class="msg-prefix">&gt;</span><span class="msg-text" x-text="msg.text"></span></div>
+              </template>
+              <template x-if="msg.role === 'ai'">
+                <div><span class="msg-prefix">○</span><span class="msg-text" x-text="msg.text"></span></div>
+              </template>
+              <template x-if="msg.role === 'tool'">
+                <div class="msg-tool" :class="msg.expanded ? 'expanded' : ''" @click="msg.expanded = !msg.expanded">
+                  <div class="msg-tool-header">
+                    <span class="msg-tool-indicator" :class="msg.status || 'running'"></span>
+                    <span class="msg-tool-name" x-text="msg.toolName || 'tool'"></span>
+                    <span class="msg-tool-duration" x-show="msg.duration" x-text="msg.duration"></span>
+                    <span class="msg-tool-expand">▸</span>
+                  </div>
+                  <div class="msg-tool-content">
+                    <div class="msg-tool-args" x-show="msg.args">
+                      <strong>Input:</strong>
+                      <pre x-text="typeof msg.args === 'object' ? JSON.stringify(msg.args, null, 2) : msg.args"></pre>
+                    </div>
+                    <div class="msg-tool-result" :class="msg.status" x-show="msg.result">
+                      <strong>Result:</strong>
+                      <pre x-text="typeof msg.result === 'object' ? JSON.stringify(msg.result, null, 2) : msg.result"></pre>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <template x-if="msg.role === 'error'">
+                <div><span class="msg-text" x-text="msg.text"></span></div>
+              </template>
+              <template x-if="msg.role === 'system'">
+                <div><span class="msg-text" x-text="msg.text"></span></div>
+              </template>
+            </div>
+          </template>
+          <div class="thinking" x-show="thinking">&middot;&middot;&middot;</div>
+        </div>
+
+        <div class="chat-input-wrap">
+          <span class="chat-prompt">&gt;</span>
+          <input class="chat-input"
+            x-ref="chatInput"
+            x-model="input"
+            @keydown.enter="send()"
+            :placeholder="t('chat_placeholder')"
+            :disabled="thinking"
+            autocomplete="off"
+            spellcheck="false">
+          <button class="chat-send" @click="send()" :disabled="thinking || !input.trim()" x-text="t('send')"></button>
         </div>
       </div>
 
-      <div class="chat-messages" x-ref="chatMessages">
-        <template x-for="(msg, i) in messages" :key="i">
-          <div class="msg" :class="'msg-' + msg.role">
-            <template x-if="msg.role === 'user'">
-              <div><span class="msg-prefix">&gt;</span><span class="msg-text" x-text="msg.text"></span></div>
+      <!-- Support View -->
+      <div x-show="currentView === 'support'" class="support-page" x-cloak>
+
+        <!-- Not connected + not connecting + no prompt -->
+        <div x-show="!supportConnected && !supportPageConnecting && !supportPagePrompt" class="support-hero">
+          <div class="support-hero-icon">&#x260E;</div>
+          <h2 x-text="t('support_connect')"></h2>
+          <p x-text="t('support_desc')"></p>
+          <textarea x-model="supportPageDesc" rows="3" :placeholder="t('support_enter_desc')"></textarea>
+          <button class="support-hero-btn" @click="connectSupport()" x-text="t('support_connect')"></button>
+        </div>
+
+        <!-- Connecting -->
+        <div x-show="supportPageConnecting" class="support-hero">
+          <div class="thinking" style="font-size:24px">&middot;&middot;&middot;</div>
+          <p x-text="t('support_connecting')"></p>
+        </div>
+
+        <!-- Needs invite/recovery code -->
+        <div x-show="supportPagePrompt && !supportPageConnecting" class="support-hero">
+          <div class="support-hero-icon">&#x1F511;</div>
+          <p x-text="supportPagePrompt === 'recovery' ? t('support_enter_recovery') : t('support_enter_invite')"></p>
+          <div class="support-code-row">
+            <input x-model="supportPageCode" @keydown.enter="submitSupportCode()" :placeholder="supportPagePrompt === 'recovery' ? 'recovery-code' : 'invite-code'">
+            <button @click="submitSupportCode()" x-text="t('send')"></button>
+          </div>
+        </div>
+
+        <!-- Connected -->
+        <div x-show="supportConnected && !supportPageConnecting" class="support-connected">
+          <!-- Status cards -->
+          <div class="support-status-grid">
+            <div class="support-status-card">
+              <div class="label" x-text="t('support_device_id')"></div>
+              <div class="value" x-text="supportState.deviceId || '—'"></div>
+            </div>
+            <div class="support-status-card">
+              <div class="label" x-text="t('support_active_task')"></div>
+              <div class="value" x-text="supportState.activeTask ? (supportState.activeTask.status || 'active') : t('support_no_task')"></div>
+            </div>
+          </div>
+
+          <!-- Messages -->
+          <div class="support-msg-list" x-ref="supportMsgList">
+            <template x-if="!supportState.messages || supportState.messages.length === 0">
+              <div class="support-msg-empty" x-text="t('support_waiting')"></div>
             </template>
-            <template x-if="msg.role === 'ai'">
-              <div><span class="msg-prefix">○</span><span class="msg-text" x-text="msg.text"></span></div>
-            </template>
-            <template x-if="msg.role === 'tool'">
-              <div class="msg-tool" :class="msg.expanded ? 'expanded' : ''" @click="msg.expanded = !msg.expanded">
-                <div class="msg-tool-header">
-                  <span class="msg-tool-indicator" :class="msg.status || 'running'"></span>
-                  <span class="msg-tool-name" x-text="msg.toolName || 'tool'"></span>
-                  <span class="msg-tool-duration" x-show="msg.duration" x-text="msg.duration"></span>
-                  <span class="msg-tool-expand">▸</span>
-                </div>
-                <div class="msg-tool-content">
-                  <div class="msg-tool-args" x-show="msg.args">
-                    <strong>Input:</strong>
-                    <pre x-text="typeof msg.args === 'object' ? JSON.stringify(msg.args, null, 2) : msg.args"></pre>
-                  </div>
-                  <div class="msg-tool-result" :class="msg.status" x-show="msg.result">
-                    <strong>Result:</strong>
-                    <pre x-text="typeof msg.result === 'object' ? JSON.stringify(msg.result, null, 2) : msg.result"></pre>
-                  </div>
-                </div>
+            <template x-for="m in (supportState.messages || [])" :key="m.seq">
+              <div class="support-msg">
+                <span class="msg-type" :class="m.type || 'info'" x-text="m.type || 'info'"></span>
+                <span x-text="m.content"></span>
               </div>
             </template>
-            <template x-if="msg.role === 'error'">
-              <div><span class="msg-text" x-text="msg.text"></span></div>
-            </template>
-            <template x-if="msg.role === 'system'">
-              <div><span class="msg-text" x-text="msg.text"></span></div>
-            </template>
           </div>
-        </template>
-        <div class="thinking" x-show="thinking">&middot;&middot;&middot;</div>
+
+          <!-- Submit new task -->
+          <div class="support-input-row">
+            <input x-model="supportPageDesc" :placeholder="t('support_enter_desc')" @keydown.enter="submitSupportTask()">
+            <button @click="submitSupportTask()" :disabled="!supportPageDesc.trim()" x-text="t('support_new_task')"></button>
+          </div>
+
+          <!-- Disconnect -->
+          <button class="support-disconnect-btn" @click="disconnectSupport()" x-text="t('support_disconnect')"></button>
+        </div>
+
       </div>
 
-      <div class="chat-input-wrap">
-        <span class="chat-prompt">&gt;</span>
-        <input class="chat-input"
-          x-ref="chatInput"
-          x-model="input"
-          @keydown.enter="send()"
-          :placeholder="t('chat_placeholder')"
-          :disabled="thinking"
-          autocomplete="off"
-          spellcheck="false">
-        <button class="chat-send" @click="send()" :disabled="thinking || !input.trim()" x-text="t('send')"></button>
-      </div>
     </div>
 
     <!-- Right Sidebar: Agent Status + Fleet + Deployments -->
@@ -1527,6 +1886,7 @@ body {
     <button :class="mobileTab === 'chat' ? 'active' : ''" @click="setMobileTab('chat')" x-text="t('agent')"></button>
     <button :class="mobileTab === 'dashboard' ? 'active' : ''" @click="setMobileTab('dashboard')" x-text="t('dashboard')"></button>
     <button :class="mobileTab === 'fleet' ? 'active' : ''" @click="setMobileTab('fleet')" x-text="t('fleet')"></button>
+    <button :class="mobileTab === 'support' ? 'active' : ''" @click="setMobileTab('support')" x-text="t('support')"></button>
   </div>
 
   <!-- Mobile Panel Overlay -->
@@ -1578,6 +1938,46 @@ body {
         <div class="panel">
           <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
           <ul class="panel-list"><template x-for="dep in deployments" :key="dep.name"><li style="flex-wrap:wrap"><span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span><span x-text="dep.name"></span><span class="item-detail" x-text="dep.startup_message || dep.phase"></span><template x-if="dep.startup_progress > 0 && dep.startup_progress < 100"><div style="width:100%;margin-top:2px"><div class="deploy-progress"><div class="deploy-progress-fill" :style="'width:' + dep.startup_progress + '%'"></div></div></div></template></li></template></ul>
+        </div>
+      </div>
+    </template>
+    <template x-if="mobileTab === 'support'">
+      <div class="support-page" style="padding:12px">
+        <!-- Not connected -->
+        <div x-show="!supportConnected && !supportPageConnecting && !supportPagePrompt" class="support-hero">
+          <div class="support-hero-icon">&#x260E;</div>
+          <h2 x-text="t('support_connect')"></h2>
+          <textarea x-model="supportPageDesc" rows="2" :placeholder="t('support_enter_desc')" style="width:100%"></textarea>
+          <button class="support-hero-btn" @click="connectSupport()" x-text="t('support_connect')"></button>
+        </div>
+        <!-- Connecting -->
+        <div x-show="supportPageConnecting" class="support-hero">
+          <div class="thinking" style="font-size:24px">&middot;&middot;&middot;</div>
+          <p x-text="t('support_connecting')"></p>
+        </div>
+        <!-- Needs code -->
+        <div x-show="supportPagePrompt && !supportPageConnecting" class="support-hero">
+          <p x-text="supportPagePrompt === 'recovery' ? t('support_enter_recovery') : t('support_enter_invite')"></p>
+          <div class="support-code-row">
+            <input x-model="supportPageCode" @keydown.enter="submitSupportCode()">
+            <button @click="submitSupportCode()" x-text="t('send')"></button>
+          </div>
+        </div>
+        <!-- Connected -->
+        <div x-show="supportConnected && !supportPageConnecting" class="support-connected">
+          <div class="support-status-grid">
+            <div class="support-status-card"><div class="label" x-text="t('support_device_id')"></div><div class="value" x-text="supportState.deviceId || '—'"></div></div>
+            <div class="support-status-card"><div class="label" x-text="t('support_active_task')"></div><div class="value" x-text="supportState.activeTask ? (supportState.activeTask.status || 'active') : t('support_no_task')"></div></div>
+          </div>
+          <div class="support-msg-list" style="min-height:80px">
+            <template x-if="!supportState.messages || supportState.messages.length === 0"><div class="support-msg-empty" x-text="t('support_waiting')"></div></template>
+            <template x-for="m in (supportState.messages || [])" :key="m.seq"><div class="support-msg"><span class="msg-type" :class="m.type || 'info'" x-text="m.type || 'info'"></span><span x-text="m.content"></span></div></template>
+          </div>
+          <div class="support-input-row">
+            <input x-model="supportPageDesc" :placeholder="t('support_enter_desc')" @keydown.enter="submitSupportTask()">
+            <button @click="submitSupportTask()" :disabled="!supportPageDesc.trim()" x-text="t('support_new_task')"></button>
+          </div>
+          <button class="support-disconnect-btn" @click="disconnectSupport()" x-text="t('support_disconnect')"></button>
         </div>
       </div>
     </template>
@@ -1696,6 +2096,20 @@ var I18N = {
     cli_help_header: 'CLI Mode — Available MCP Tools',
     cli_help_usage: 'Usage: /cli <tool> [params]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
     cli_unknown_tool: 'Unknown tool: ',
+    support: 'Support',
+    support_connect: 'Connect to Support',
+    support_disconnect: 'Disconnect',
+    support_desc: 'Connect this device to the AIMA support service for remote assistance. Optionally describe what you need help with.',
+    support_enter_desc: 'Describe what you need help with...',
+    support_connecting: 'Connecting to support service...',
+    support_enter_invite: 'Device registration requires an invite code or worker code. Please enter it below:',
+    support_enter_recovery: 'This device was previously registered. Please enter your saved recovery code:',
+    support_device_id: 'Device ID',
+    support_active_task: 'Active Task',
+    support_no_task: 'No active task',
+    support_waiting: 'Waiting for remote assistance...',
+    support_new_task: 'New Task',
+    support_messages: 'Messages',
   },
   zh: {
     system_online: '\u7CFB\u7EDF\u5728\u7EBF',
@@ -1749,6 +2163,20 @@ var I18N = {
     cli_help_header: 'CLI \u6A21\u5F0F \u2014 \u53EF\u7528 MCP \u5DE5\u5177',
     cli_help_usage: '\u7528\u6CD5: /cli <\u5DE5\u5177\u540D> [\u53C2\u6570]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
     cli_unknown_tool: '\u672A\u77E5\u5DE5\u5177: ',
+    support: '\u6C42\u52A9',
+    support_connect: '\u8FDE\u63A5\u652F\u6301\u670D\u52A1',
+    support_disconnect: '\u65AD\u5F00\u8FDE\u63A5',
+    support_desc: '\u5C06\u6B64\u8BBE\u5907\u8FDE\u63A5\u5230 AIMA \u652F\u6301\u670D\u52A1\uFF0C\u83B7\u53D6\u8FDC\u7A0B\u534F\u52A9\u3002\u53EF\u9009\u63CF\u8FF0\u4F60\u9700\u8981\u7684\u5E2E\u52A9\u3002',
+    support_enter_desc: '\u63CF\u8FF0\u4F60\u9700\u8981\u7684\u5E2E\u52A9...',
+    support_connecting: '\u6B63\u5728\u8FDE\u63A5\u652F\u6301\u670D\u52A1...',
+    support_enter_invite: '\u8BBE\u5907\u6CE8\u518C\u9700\u8981\u9080\u8BF7\u7801\u6216 Worker \u63A5\u5165\u7801\uFF0C\u8BF7\u5728\u4E0B\u65B9\u8F93\u5165\uFF1A',
+    support_enter_recovery: '\u6B64\u8BBE\u5907\u4E4B\u524D\u5DF2\u6CE8\u518C\uFF0C\u8BF7\u8F93\u5165\u5DF2\u4FDD\u5B58\u7684\u6062\u590D\u7801\uFF1A',
+    support_device_id: '\u8BBE\u5907 ID',
+    support_active_task: '\u5F53\u524D\u4EFB\u52A1',
+    support_no_task: '\u65E0\u6D3B\u52A8\u4EFB\u52A1',
+    support_waiting: '\u7B49\u5F85\u8FDC\u7A0B\u534F\u52A9\u4E2D...',
+    support_new_task: '\u65B0\u4EFB\u52A1',
+    support_messages: '\u6D88\u606F',
   },
   ja: {
     system_online: '\u30B7\u30B9\u30C6\u30E0\u30AA\u30F3\u30E9\u30A4\u30F3',
@@ -2078,6 +2506,15 @@ function aimaApp() {
     models: [],
     deployments: [],
     fleet: [],
+    // View toggle (chat / support)
+    currentView: 'chat',
+    // Support page state
+    supportConnected: false,
+    supportPageConnecting: false,
+    supportPagePrompt: null,
+    supportPageDesc: '',
+    supportPageCode: '',
+
     supportState: {
       enabled: false,
       registered: false,
@@ -2255,6 +2692,7 @@ function aimaApp() {
         lastMessage: data.last_message || null,
         messages: Array.isArray(data.messages) ? data.messages : []
       };
+      this.supportConnected = data.enabled === true && data.registered === true;
       this.syncSupportMessages();
     },
 
@@ -2639,6 +3077,81 @@ function aimaApp() {
       }
       this.scrollChat();
     },
+
+    // ── Support Page methods (independent from chat /askforhelp) ──
+
+    toggleView(view) {
+      this.currentView = this.currentView === view ? 'chat' : view;
+    },
+
+    async connectSupport() {
+      this.supportPageConnecting = true;
+      this.supportPagePrompt = null;
+      const params = {};
+      if (this.supportPageDesc.trim()) params.description = this.supportPageDesc.trim();
+
+      const data = await this.callTool('support.askforhelp', params);
+
+      if (data._err) {
+        const errLower = (data._err || '').toLowerCase();
+        const needsInvite = errLower.includes('invite_code') || errLower.includes('invite code') || errLower.includes('worker_enrollment_code') || errLower.includes('worker enrollment code');
+        const needsRecovery = errLower.includes('recovery_code') || errLower.includes('recovery code');
+
+        if (needsInvite || needsRecovery) {
+          this.supportPagePrompt = needsRecovery ? 'recovery' : 'invite';
+          this.supportPageConnecting = false;
+          return;
+        }
+        this.supportPageConnecting = false;
+        return;
+      }
+
+      this.supportPageConnecting = false;
+      this.supportPageDesc = '';
+      // supportConnected will be synced by handleSupportStatus on next poll
+    },
+
+    async submitSupportCode() {
+      if (!this.supportPageCode.trim()) return;
+      this.supportPageConnecting = true;
+      const params = {};
+      if (this.supportPageDesc.trim()) params.description = this.supportPageDesc.trim();
+      if (this.supportPagePrompt === 'recovery') {
+        params.recovery_code = this.supportPageCode.trim();
+      } else {
+        params.invite_code = this.supportPageCode.trim();
+      }
+
+      const data = await this.callTool('support.askforhelp', params);
+      this.supportPageConnecting = false;
+
+      if (data._err) {
+        // Stay on prompt screen
+        return;
+      }
+      this.supportPagePrompt = null;
+      this.supportPageCode = '';
+      this.supportPageDesc = '';
+    },
+
+    async disconnectSupport() {
+      await this.callTool('system.config', { key: 'support.enabled', value: 'false' });
+      this.supportConnected = false;
+      this.supportPagePrompt = null;
+      this.supportPageDesc = '';
+      this.supportPageCode = '';
+    },
+
+    async submitSupportTask() {
+      if (!this.supportPageDesc.trim()) return;
+      this.supportPageConnecting = true;
+      const data = await this.callTool('support.askforhelp', { description: this.supportPageDesc.trim() });
+      this.supportPageConnecting = false;
+      if (!data._err) {
+        this.supportPageDesc = '';
+      }
+    },
+
     async _sendAgentStream(text, params) {
       const headers = { 'Content-Type': 'application/json' };
       if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;

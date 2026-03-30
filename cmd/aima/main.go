@@ -63,8 +63,8 @@ func isLightweightInvocation() bool {
 			return true
 		}
 	}
-	// No subcommand at all → root help
-	return len(os.Args) <= 1
+	// No subcommand at all → full init (auto-serve with browser open).
+	return false
 }
 
 func isServeInvocation() bool {
@@ -1219,6 +1219,7 @@ func run() error {
 		FleetRegistry: fleetRegistry,
 		FleetClient:   fleetClient,
 		Support:       supportSvc,
+		OpenBrowser:   len(os.Args) <= 1,
 	}
 
 	rootCmd := cli.NewRootCmd(app)

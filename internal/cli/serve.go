@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -95,6 +97,15 @@ func newServeCmd(app *App) *cobra.Command {
 						slog.Warn("support supervisor stopped", "error", err)
 					}
 				}()
+			}
+
+			// Auto-open browser when launched without subcommand (double-click).
+			if app.OpenBrowser {
+				app.Proxy.SetOnReady(func(listenAddr string) {
+					url := fmt.Sprintf("http://127.0.0.1:%d/ui/", parsePort(addr))
+					fmt.Fprintf(os.Stderr, "\n  AIMA is running at: %s\n\n", url)
+					openBrowser(url)
+				})
 			}
 
 			errCh := make(chan error, 2)
@@ -252,7 +263,23 @@ func backendModelNames(s *proxy.Server) []string {
 	return names
 }
 
-// apiKeyAuth wraps an HTTP handler with dynamic Bearer token authentication.
+// openBrowser opens the given URL in the user's default browser.
+// Fire-and-forget: errors are silently ignored (e.g. headless Linux).
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		return
+	}
+	_ = cmd.Start()
+}
+
 // keyFn is called on each request, enabling hot-reload of the API key.
 // When keyFn returns empty string, all requests pass through.
 func apiKeyAuth(keyFn func() string, next http.Handler) http.Handler {
