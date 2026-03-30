@@ -454,11 +454,15 @@ func run() error {
 		})
 	}
 
-	var patrol *agent.Patrol // created later; captured by closure, safe because serve runs after init
+	var (
+		patrol *agent.Patrol // created later; captured by closure, safe because serve runs after init
+		app    *cli.App      // created later; captured by closure so HTTP routes can reuse the exact Cobra tree
+	)
 	proxyServer.SetExtraRoutes(func(mux *http.ServeMux) {
 		fleetRoutes(mux)
 		uiRoutes(mux)
 		openclawRoutes(mux)
+		mux.HandleFunc("POST /api/v1/cli/exec", cli.NewExecHandler(func() *cli.App { return app }))
 		mux.HandleFunc("/api/v1/power", handlePowerSnapshot(cat))
 		mux.HandleFunc("/api/v1/power/history", func(w http.ResponseWriter, r *http.Request) {
 			from := r.URL.Query().Get("from")
@@ -1217,7 +1221,7 @@ func run() error {
 	mcp.RegisterAllTools(mcpServer, deps)
 
 	// 10. Build App and run CLI
-	app := &cli.App{
+	app = &cli.App{
 		DB:            db,
 		Catalog:       cat,
 		Proxy:         proxyServer,
