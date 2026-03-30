@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -395,16 +396,16 @@ func run() error {
 			if cat.DeploymentScenarios[i].Metadata.Name == name {
 				ds := &cat.DeploymentScenarios[i]
 				return json.Marshal(map[string]any{
-					"name":               ds.Metadata.Name,
-					"description":        ds.Metadata.Description,
-					"target":             ds.Target,
-					"deployments":        ds.Deployments,
-					"post_deploy":        ds.PostDeploy,
-					"integrations":       ds.Integrations,
-					"verified":           ds.Verified,
-					"open_questions":     ds.OpenQuestions,
-					"memory_budget":      ds.MemoryBudget,
-					"startup_order":      ds.StartupOrder,
+					"name":                ds.Metadata.Name,
+					"description":         ds.Metadata.Description,
+					"target":              ds.Target,
+					"deployments":         ds.Deployments,
+					"post_deploy":         ds.PostDeploy,
+					"integrations":        ds.Integrations,
+					"verified":            ds.Verified,
+					"open_questions":      ds.OpenQuestions,
+					"memory_budget":       ds.MemoryBudget,
+					"startup_order":       ds.StartupOrder,
 					"alternative_configs": ds.AlternativeConfigs,
 				})
 			}
@@ -530,9 +531,17 @@ func run() error {
 			}
 			results = append(results, deployResult{Model: d.Model, Engine: d.Engine, Status: "ok", Data: data})
 
+			deploymentQuery := knowledge.SanitizePodName(d.Model + "-" + d.Engine)
+			var deployStatusTarget struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(data, &deployStatusTarget) == nil && deployStatusTarget.Name != "" {
+				deploymentQuery = deployStatusTarget.Name
+			}
+
 			// Wait strategy between deployments (not after the last one)
 			if i < len(ordered)-1 {
-				if err := scenarioWaitForReady(ctx, d.Model, od.waitFor, od.timeoutS, deps.DeployStatus); err != nil {
+				if err := scenarioWaitForReady(ctx, deploymentQuery, od.waitFor, od.timeoutS, deps.DeployStatus); err != nil {
 					slog.Warn("startup wait did not complete", "model", d.Model, "wait_for", od.waitFor, "err", err)
 					results = append(results, deployResult{Model: d.Model + "_wait", Status: "warning", Error: err.Error()})
 				}
@@ -2586,15 +2595,72 @@ func defaultEngineAsset(cat *knowledge.Catalog, hw knowledge.HardwareInfo) *know
 }
 
 // scenarioWaitForReady waits for a deployed model to become ready before proceeding.
-// waitFor: "health_check" polls deploy.status, "port_open" tries TCP connect, "" defaults to 2s sleep.
+// waitFor: "health_check" polls deploy.status, "port_open" probes the returned address, "" defaults to 2s sleep.
 // On timeout, returns an error (caller treats as warning, continues deployment).
-func scenarioWaitForReady(ctx context.Context, model, waitFor string, timeoutS int, deployStatus func(context.Context, string) (json.RawMessage, error)) error {
+func scenarioWaitForReady(ctx context.Context, query, waitFor string, timeoutS int, deployStatus func(context.Context, string) (json.RawMessage, error)) error {
 	if waitFor == "" || timeoutS <= 0 {
 		time.Sleep(2 * time.Second)
 		return nil
 	}
+	if deployStatus == nil {
+		return fmt.Errorf("deploy.status not available for wait_for=%q", waitFor)
+	}
 
-	deadline := time.After(time.Duration(timeoutS) * time.Second)
+	switch waitFor {
+	case "health_check", "port_open":
+	default:
+		return fmt.Errorf("unknown wait_for %q", waitFor)
+	}
+
+	checkReady := func() (bool, error) {
+		data, err := deployStatus(ctx, query)
+		if err != nil {
+			return false, nil
+		}
+		var s struct {
+			Phase          string `json:"phase"`
+			Ready          bool   `json:"ready"`
+			Address        string `json:"address"`
+			Message        string `json:"message,omitempty"`
+			StartupMessage string `json:"startup_message,omitempty"`
+		}
+		if err := json.Unmarshal(data, &s); err != nil {
+			return false, nil
+		}
+		if s.Phase == "failed" {
+			msg := s.Message
+			if msg == "" {
+				msg = s.StartupMessage
+			}
+			if msg == "" {
+				msg = "deployment reported failed phase"
+			}
+			return false, fmt.Errorf("deployment %s failed: %s", query, msg)
+		}
+		switch waitFor {
+		case "health_check":
+			return s.Ready, nil
+		case "port_open":
+			if s.Address == "" {
+				return false, nil
+			}
+			conn, err := net.DialTimeout("tcp", s.Address, time.Second)
+			if err != nil {
+				return false, nil
+			}
+			conn.Close()
+			return true, nil
+		default:
+			return false, nil
+		}
+	}
+
+	if ready, err := checkReady(); ready || err != nil {
+		return err
+	}
+
+	timer := time.NewTimer(time.Duration(timeoutS) * time.Second)
+	defer timer.Stop()
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
@@ -2602,32 +2668,11 @@ func scenarioWaitForReady(ctx context.Context, model, waitFor string, timeoutS i
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-deadline:
-			return fmt.Errorf("timeout after %ds waiting for %s (%s)", timeoutS, model, waitFor)
+		case <-timer.C:
+			return fmt.Errorf("timeout after %ds waiting for %s (%s)", timeoutS, query, waitFor)
 		case <-ticker.C:
-			switch waitFor {
-			case "health_check":
-				if deployStatus == nil {
-					time.Sleep(2 * time.Second)
-					return nil
-				}
-				data, err := deployStatus(ctx, model)
-				if err != nil {
-					continue // not ready yet
-				}
-				var s struct {
-					Status string `json:"status"`
-				}
-				if json.Unmarshal(data, &s) == nil && (s.Status == "running" || s.Status == "ready") {
-					return nil
-				}
-			case "port_open":
-				// Extract port from model config if available; otherwise just wait
-				time.Sleep(2 * time.Second)
-				return nil
-			default:
-				time.Sleep(2 * time.Second)
-				return nil
+			if ready, err := checkReady(); ready || err != nil {
+				return err
 			}
 		}
 	}
