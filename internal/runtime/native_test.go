@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,13 +21,37 @@ func newTestRuntime(t *testing.T) *NativeRuntime {
 	)
 }
 
+func newWindowsListenerScript(t *testing.T, port int, sleepSeconds int, echoArg bool) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "listener.ps1")
+	lines := []string{
+		"param([string]$Arg0)",
+	}
+	if echoArg {
+		lines = append(lines,
+			"if ($Arg0) { Write-Output $Arg0 }",
+		)
+	}
+	lines = append(lines,
+		"$listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, "+strconv.Itoa(port)+")",
+		"$listener.Start()",
+		"Start-Sleep -Seconds "+strconv.Itoa(sleepSeconds),
+		"$listener.Stop()",
+	)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\r\n")+"\r\n"), 0o644); err != nil {
+		t.Fatalf("write windows listener script: %v", err)
+	}
+	return path
+}
+
 func TestNativeDeployAndDelete(t *testing.T) {
 	rt := newTestRuntime(t)
 
 	// Use a command that exists cross-platform and exits quickly after a while
 	var cmd []string
 	if runtime.GOOS == "windows" {
-		cmd = []string{"cmd", "/c", "echo hello && ping -n 3 127.0.0.1 >nul"}
+		script := newWindowsListenerScript(t, 9999, 30, false)
+		cmd = []string{"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script}
 	} else {
 		cmd = []string{"sh", "-c", "echo hello && sleep 10"}
 	}
@@ -83,7 +108,8 @@ func TestNativeDeployDuplicate(t *testing.T) {
 
 	var cmd []string
 	if runtime.GOOS == "windows" {
-		cmd = []string{"cmd", "/c", "ping -n 10 127.0.0.1 >nul"}
+		script := newWindowsListenerScript(t, 8080, 30, false)
+		cmd = []string{"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script}
 	} else {
 		cmd = []string{"sleep", "10"}
 	}
@@ -120,7 +146,8 @@ func TestNativeModelPathSubstitution(t *testing.T) {
 	var cmd []string
 	modelPath := "/data/models/test-model"
 	if runtime.GOOS == "windows" {
-		cmd = []string{"cmd", "/c", "echo {{.ModelPath}}"}
+		script := newWindowsListenerScript(t, 8080, 2, true)
+		cmd = []string{"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "{{.ModelPath}}"}
 		modelPath = "C:\\data\\models\\test-model"
 	} else {
 		cmd = []string{"sh", "-c", "echo '{{.ModelPath}}'"}
@@ -177,6 +204,26 @@ func TestNativeLogsReadTail(t *testing.T) {
 	}
 }
 
+func TestEffectiveHealthTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		hc   *HealthCheckConfig
+		want time.Duration
+	}{
+		{name: "nil health check", hc: nil, want: 60 * time.Second},
+		{name: "zero timeout", hc: &HealthCheckConfig{TimeoutS: 0}, want: 60 * time.Second},
+		{name: "custom timeout", hc: &HealthCheckConfig{TimeoutS: 600}, want: 600 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveHealthTimeout(tt.hc); got != tt.want {
+				t.Fatalf("effectiveHealthTimeout(%+v) = %v, want %v", tt.hc, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNativeDeleteNotFound(t *testing.T) {
 	rt := newTestRuntime(t)
 	err := rt.Delete(context.Background(), "nonexistent")
@@ -190,7 +237,8 @@ func TestNativeProcessDoneChannelClosedOnExit(t *testing.T) {
 
 	var cmd []string
 	if runtime.GOOS == "windows" {
-		cmd = []string{"cmd", "/c", "echo done"}
+		script := newWindowsListenerScript(t, 18081, 1, false)
+		cmd = []string{"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script}
 	} else {
 		cmd = []string{"sh", "-c", "echo done"}
 	}
@@ -199,6 +247,7 @@ func TestNativeProcessDoneChannelClosedOnExit(t *testing.T) {
 		Name:    "quick-exit",
 		Engine:  "test",
 		Command: cmd,
+		Port:    18081,
 	}); err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
@@ -246,7 +295,8 @@ func TestNativePersistenceAcrossInvocations(t *testing.T) {
 
 	var cmd []string
 	if runtime.GOOS == "windows" {
-		cmd = []string{"cmd", "/c", "ping -n 30 127.0.0.1 >nul"}
+		script := newWindowsListenerScript(t, 19876, 30, false)
+		cmd = []string{"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script}
 	} else {
 		cmd = []string{"sleep", "30"}
 	}
