@@ -2668,6 +2668,7 @@ var I18N = {
     support_referrals: 'Referrals',
     support_new_task: 'New Task',
     support_messages: 'Messages',
+    support_open_workspace: 'Open AIMA-Service',
     tab_general: 'General',
     tab_monitoring: 'Monitoring',
     tab_agent: 'AI Agent',
@@ -2768,6 +2769,7 @@ var I18N = {
     support_referrals: '\u9080\u8BF7\u6570',
     support_new_task: '\u65B0\u4EFB\u52A1',
     support_messages: '\u6D88\u606F',
+    support_open_workspace: '\u6253\u5F00\u7075\u673A\u4E91',
     tab_general: '\u5E38\u89C4',
     tab_monitoring: '\u76D1\u63A7',
     tab_agent: 'AI Agent',
@@ -2843,6 +2845,7 @@ var I18N = {
     settings_saved: '\u8A2D\u5B9A\u3092\u4FDD\u5B58\u3057\u307E\u3057\u305F\u3002',
     settings_error: '\u8A2D\u5B9A\u306E\u4FDD\u5B58\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002',
     settings_cleared: '\u8A2D\u5B9A\u3092\u30AF\u30EA\u30A2\u3057\u307E\u3057\u305F\u3002',
+    support_open_workspace: 'Open AIMA-Service',
     tab_general: '\u4E00\u822C',
     tab_monitoring: '\u30E2\u30CB\u30BF\u30EA\u30F3\u30B0',
     tab_agent: 'AI Agent',
@@ -2918,6 +2921,7 @@ var I18N = {
     settings_saved: '\uC124\uC815\uC774 \uC800\uC7A5\uB418\uC5C8\uC2B5\uB2C8\uB2E4.',
     settings_error: '\uC124\uC815 \uC800\uC7A5\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.',
     settings_cleared: '\uC124\uC815\uC774 \uCD08\uAE30\uD654\uB418\uC5C8\uC2B5\uB2C8\uB2E4.',
+    support_open_workspace: 'Open AIMA-Service',
     tab_general: '\uC77C\uBC18',
     tab_monitoring: '\uBAA8\uB2C8\uD130\uB9C1',
     tab_agent: 'AI Agent',
@@ -2993,6 +2997,7 @@ var I18N = {
     settings_saved: 'Configuraci\u00F3n guardada correctamente.',
     settings_error: 'Error al guardar la configuraci\u00F3n.',
     settings_cleared: 'Configuraci\u00F3n eliminada.',
+    support_open_workspace: 'Abrir AIMA-Service',
     tab_general: 'General',
     tab_monitoring: 'Monitoreo',
     tab_agent: 'AI Agent',
@@ -3065,6 +3070,7 @@ var I18N = {
     settings_saved: 'Param\u00E8tres enregistr\u00E9s avec succ\u00E8s.',
     settings_error: 'Erreur lors de l\'enregistrement des param\u00E8tres.',
     settings_cleared: 'Param\u00E8tres effac\u00E9s.',
+    support_open_workspace: 'Ouvrir AIMA-Service',
     tab_general: 'G\u00E9n\u00E9ral',
     tab_monitoring: 'Surveillance',
     tab_agent: 'AI Agent',
@@ -3140,6 +3146,7 @@ var I18N = {
     settings_saved: 'Einstellungen erfolgreich gespeichert.',
     settings_error: 'Fehler beim Speichern der Einstellungen.',
     settings_cleared: 'Einstellungen gel\u00F6scht.',
+    support_open_workspace: 'AIMA-Service \u00F6ffnen',
     tab_general: 'Allgemein',
     tab_monitoring: '\u00DCberwachung',
     tab_agent: 'AI Agent',
@@ -4799,12 +4806,12 @@ function aimaApp() {
       try {
         var pc = await this.callTool('agent.patrol_config', { action: 'get' });
         if (pc) {
-          this.settingsForm.patrolInterval = pc.Interval ? this.formatGoDuration(pc.Interval) : '5m';
+          this.settingsForm.patrolInterval = (pc.Interval === 0 || pc.Interval) ? this.formatGoDuration(pc.Interval) : '5m';
           this.settingsForm.selfHeal = pc.SelfHealEnabled !== false;
-          this.settingsForm.gpuTempWarn = pc.GPUTempWarnC || 85;
-          this.settingsForm.gpuIdlePct = pc.GPUIdlePct || 10;
-          this.settingsForm.gpuIdleMinutes = pc.GPUIdleMinutes || 15;
-          this.settingsForm.vramOpportunityPct = pc.VRAMOpportunityPct || 50;
+          this.settingsForm.gpuTempWarn = typeof pc.GPUTempWarnC === 'number' ? pc.GPUTempWarnC : 85;
+          this.settingsForm.gpuIdlePct = typeof pc.GPUIdlePct === 'number' ? pc.GPUIdlePct : 10;
+          this.settingsForm.gpuIdleMinutes = typeof pc.GPUIdleMinutes === 'number' ? pc.GPUIdleMinutes : 15;
+          this.settingsForm.vramOpportunityPct = typeof pc.VRAMOpportunityPct === 'number' ? pc.VRAMOpportunityPct : 50;
         }
       } catch(e) {}
       // Connectivity tab

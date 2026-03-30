@@ -647,11 +647,17 @@ func run() error {
 			if err != nil {
 				return nil, fmt.Errorf("invalid duration: %w", err)
 			}
+			if d < 0 {
+				return nil, fmt.Errorf("interval must be >= 0")
+			}
 			patrol.SetInterval(d)
 		case "gpu_temp_warn":
 			v, err := strconv.Atoi(p.Value)
 			if err != nil {
 				return nil, fmt.Errorf("invalid integer: %w", err)
+			}
+			if v < 0 {
+				return nil, fmt.Errorf("gpu_temp_warn must be >= 0")
 			}
 			patrol.SetGPUTempWarn(v)
 		case "gpu_idle_pct":
@@ -659,17 +665,26 @@ func run() error {
 			if err != nil {
 				return nil, fmt.Errorf("invalid integer: %w", err)
 			}
+			if v < 0 || v > 100 {
+				return nil, fmt.Errorf("gpu_idle_pct must be between 0 and 100")
+			}
 			patrol.SetGPUIdle(v, patrol.Config().GPUIdleMinutes)
 		case "gpu_idle_minutes":
 			v, err := strconv.Atoi(p.Value)
 			if err != nil {
 				return nil, fmt.Errorf("invalid integer: %w", err)
 			}
+			if v < 0 {
+				return nil, fmt.Errorf("gpu_idle_minutes must be >= 0")
+			}
 			patrol.SetGPUIdle(patrol.Config().GPUIdlePct, v)
 		case "vram_opportunity_pct":
 			v, err := strconv.Atoi(p.Value)
 			if err != nil {
 				return nil, fmt.Errorf("invalid integer: %w", err)
+			}
+			if v < 0 || v > 100 {
+				return nil, fmt.Errorf("vram_opportunity_pct must be between 0 and 100")
 			}
 			patrol.SetVRAMOpportunity(v)
 		case "self_heal":
