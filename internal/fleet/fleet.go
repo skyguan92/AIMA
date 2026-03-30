@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -112,6 +113,30 @@ func (r *Registry) List() []*Device {
 		cp := *d
 		list = append(list, &cp)
 	}
+	sort.Slice(list, func(i, j int) bool {
+		a, b := list[i], list[j]
+		if a.Self != b.Self {
+			return a.Self
+		}
+		aName := strings.ToLower(strings.TrimSpace(a.Name))
+		if aName == "" {
+			aName = a.ID
+		}
+		bName := strings.ToLower(strings.TrimSpace(b.Name))
+		if bName == "" {
+			bName = b.ID
+		}
+		if aName != bName {
+			return aName < bName
+		}
+		if a.AddrV4 != b.AddrV4 {
+			return a.AddrV4 < b.AddrV4
+		}
+		if a.Port != b.Port {
+			return a.Port < b.Port
+		}
+		return a.ID < b.ID
+	})
 	return list
 }
 
@@ -183,8 +208,8 @@ func (r *Registry) healthCheck() {
 	}
 
 	type result struct {
-		id   string
-		ok   bool
+		id string
+		ok bool
 	}
 	ch := make(chan result, len(targets))
 

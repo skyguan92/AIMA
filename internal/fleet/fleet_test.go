@@ -132,6 +132,38 @@ func TestRegistryCollisionDedup(t *testing.T) {
 	}
 }
 
+func TestRegistryListStableOrder(t *testing.T) {
+	r := NewRegistry(6188)
+
+	r.Update([]proxy.DiscoveredService{
+		{Name: "zulu._llm._tcp.local.", AddrV4: "10.0.0.3", Port: 6188},
+		{Name: "alpha._llm._tcp.local.", AddrV4: "10.0.0.2", Port: 6188},
+		{Name: "self._llm._tcp.local.", AddrV4: "127.0.0.1", Port: 6188},
+		{Name: "alpha._llm._tcp.local.", AddrV4: "10.0.0.1", Port: 6188},
+	})
+
+	list := r.List()
+	if len(list) != 4 {
+		t.Fatalf("expected 4 devices, got %d", len(list))
+	}
+
+	got := make([]string, 0, len(list))
+	for _, d := range list {
+		got = append(got, d.ID)
+	}
+	want := []string{
+		"self",
+		"alpha-10.0.0.1-6188",
+		"alpha-10.0.0.2-6188",
+		"zulu",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("device order = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestHandlerLocalTools(t *testing.T) {
 	toolsJSON, _ := json.Marshal([]map[string]string{
 		{"name": "hardware.detect", "description": "Detect HW"},
