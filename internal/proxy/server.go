@@ -46,6 +46,7 @@ type Server struct {
 	mu          sync.RWMutex
 	server      *http.Server
 	extraRoutes func(*http.ServeMux)
+	onReady     func(addr string)
 }
 
 // Option configures Server.
@@ -89,6 +90,15 @@ func (s *Server) SetExtraRoutes(fn func(*http.ServeMux)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.extraRoutes = fn
+}
+
+// SetOnReady registers a callback invoked once the server is listening.
+// The callback receives the resolved listen address (e.g. "127.0.0.1:6188").
+// Must be called before Start.
+func (s *Server) SetOnReady(fn func(addr string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onReady = fn
 }
 
 func NewServer(opts ...Option) *Server {
@@ -144,6 +154,14 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	defer ln.Close()
 	slog.Info("proxy server starting", "addr", ln.Addr().String())
+
+	// Notify that the server is ready to accept connections.
+	s.mu.RLock()
+	onReady := s.onReady
+	s.mu.RUnlock()
+	if onReady != nil {
+		go onReady(ln.Addr().String())
+	}
 
 	// Watch for context cancellation
 	go func() {

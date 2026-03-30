@@ -21,6 +21,7 @@ type App struct {
 	FleetRegistry *fleet.Registry
 	FleetClient   *fleet.Client
 	Support       *support.Service
+	OpenBrowser   bool // When true, the default (no-subcommand) invocation opens the UI in a browser.
 }
 
 // NewRootCmd creates the root aima command with all subcommands.
@@ -31,6 +32,21 @@ func NewRootCmd(app *App) *cobra.Command {
 		Long:          "AIMA manages AI inference on edge devices — hardware detection, knowledge-driven config, multi-model deployment.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+	}
+
+	// When invoked without a subcommand (e.g. double-click), delegate to "serve".
+	// Uses ExecuteContext so Cobra's full lifecycle (PersistentPreRunE, flag
+	// defaults, etc.) is honoured — don't call serveCmd.RunE directly.
+	root.RunE = func(cmd *cobra.Command, args []string) error {
+		if !app.OpenBrowser {
+			return cmd.Help()
+		}
+		serveCmd, _, _ := root.Find([]string{"serve"})
+		if serveCmd == nil {
+			return cmd.Help()
+		}
+		serveCmd.SetContext(cmd.Context())
+		return serveCmd.ExecuteContext(cmd.Context())
 	}
 
 	root.AddCommand(
