@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jguan/aima/internal/knowledge"
 )
 
 func newTestRuntime(t *testing.T) *NativeRuntime {
@@ -361,4 +363,56 @@ func TestNativePersistenceAcrossInvocations(t *testing.T) {
 	// Cleanup: also ensure rt1's in-memory state is cleaned
 	rt1.Delete(context.Background(), "persistent")
 	time.Sleep(100 * time.Millisecond)
+}
+
+func TestMetaToStatusMarksMissingProcessFailed(t *testing.T) {
+	rt := newTestRuntime(t)
+	meta := &deploymentMeta{
+		Name:      "failed-deploy",
+		PID:       999999,
+		Port:      19999,
+		StartTime: time.Now(),
+	}
+
+	status := rt.metaToStatus(meta)
+	if status.Phase != "failed" {
+		t.Fatalf("phase = %q, want failed", status.Phase)
+	}
+	if status.Ready {
+		t.Fatal("ready should be false for missing process")
+	}
+}
+
+func TestProcToStatusUsesStartupErrorAsFailure(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "deploy.log")
+	if err := os.WriteFile(logPath, []byte("couldn't bind HTTP server socket: Address already in use\n"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	rt := newTestRuntime(t)
+	rt.engineAssets = []knowledge.EngineAsset{{
+		Metadata: knowledge.EngineMetadata{Name: "llamacpp"},
+		Startup: knowledge.EngineStartup{
+			LogPatterns: &knowledge.StartupLogPatterns{
+				Errors: []knowledge.StartupErrorPattern{{
+					Pattern: "couldn't bind HTTP server socket|address already in use",
+					Message: "Port is already in use",
+				}},
+			},
+		},
+	}}
+
+	status := rt.procToStatus(&nativeProcess{
+		name:      "llama-bind-error",
+		port:      8080,
+		logPath:   logPath,
+		labels:    map[string]string{"aima.dev/engine": "llamacpp"},
+		startTime: time.Now(),
+	})
+	if status.Phase != "failed" {
+		t.Fatalf("phase = %q, want failed", status.Phase)
+	}
+	if status.Message != "Port is already in use" {
+		t.Fatalf("message = %q, want %q", status.Message, "Port is already in use")
+	}
 }

@@ -232,6 +232,7 @@ variants:
     engine: llamacpp
     format: gguf
     default_config:
+      quantization: int4
       n_gpu_layers: 999
       ctx_size: 4096
     expected_performance:

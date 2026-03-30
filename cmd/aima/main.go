@@ -1312,6 +1312,42 @@ func registerPulledModel(ctx context.Context, destPath, dataDir string, db *stat
 		slog.Warn("model downloaded but scan/register failed", "path", destPath, "err", err)
 		return nil // download succeeded; registration failure is non-fatal
 	}
+	return upsertScannedModelInfo(ctx, info, db)
+}
+
+func registerExistingModel(ctx context.Context, modelPath string, db *state.DB) error {
+	absPath, err := filepath.Abs(modelPath)
+	if err != nil {
+		return fmt.Errorf("resolve local model path %s: %w", modelPath, err)
+	}
+	scanRoot := absPath
+	if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
+		scanRoot = filepath.Dir(absPath)
+	} else {
+		scanRoot = filepath.Dir(absPath)
+	}
+
+	models, err := model.Scan(ctx, model.ScanOptions{
+		Paths:             []string{scanRoot},
+		MinModelSizeBytes: 1,
+	})
+	if err != nil {
+		return fmt.Errorf("scan existing model %s: %w", modelPath, err)
+	}
+
+	targetDir := absPath + string(filepath.Separator)
+	for _, m := range models {
+		if m.Path == absPath || strings.HasPrefix(m.Path, targetDir) {
+			return upsertScannedModelInfo(ctx, m, db)
+		}
+	}
+	return nil
+}
+
+func upsertScannedModelInfo(ctx context.Context, info *model.ModelInfo, db *state.DB) error {
+	if info == nil {
+		return nil
+	}
 	return db.UpsertScannedModel(ctx, &state.Model{
 		ID:             info.ID,
 		Name:           info.Name,
@@ -1328,6 +1364,19 @@ func registerPulledModel(ctx context.Context, destPath, dataDir string, db *stat
 		QuantSrc:       info.QuantSrc,
 		Status:         "registered",
 	})
+}
+
+func variantQuantizationHint(variant *knowledge.ModelVariant) string {
+	if variant == nil {
+		return ""
+	}
+	if variant.Source != nil && variant.Source.Quantization != "" {
+		return strings.ToLower(variant.Source.Quantization)
+	}
+	if q, ok := variant.DefaultConfig["quantization"].(string); ok && q != "" {
+		return strings.ToLower(q)
+	}
+	return ""
 }
 
 // catalogModelNames returns a comma-separated list of available model names.
@@ -2699,20 +2748,20 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		if ma == nil {
 			return fmt.Errorf("model %q not found in catalog\navailable: %s", name, catalogModelNames(cat))
 		}
-		if matchedVariant != nil && matchedVariant.Source != nil {
-			slog.Info("model pull: using variant source", "variant", matchedVariant.Name, "repo", matchedVariant.Source.Repo)
-			destPath := filepath.Join(dataDir, "models", ma.Metadata.Name)
-			sources := []model.Source{{Type: matchedVariant.Source.Type, Repo: matchedVariant.Source.Repo}}
-			if err := model.DownloadFromSource(ctx, sources, destPath); err != nil {
-				return fmt.Errorf("download model %s: %w", name, err)
-			}
-			return registerPulledModel(ctx, destPath, dataDir, db)
-		}
+		destPath := filepath.Join(dataDir, "models", ma.Metadata.Name)
 		hwInfo := buildHardwareInfo(ctx, cat, rt.Name())
-		_, resolvedVariant, engineType, _ := cat.ResolveVariantForPull(ma.Metadata.Name, hwInfo)
+		resolvedVariant := matchedVariant
+		engineType := ""
+		if resolvedVariant == nil {
+			_, resolvedVariant, engineType, _ = cat.ResolveVariantForPull(ma.Metadata.Name, hwInfo)
+		} else {
+			engineType = resolvedVariant.Engine
+		}
 		requiredFormat := ""
+		requiredQuantization := ""
 		if resolvedVariant != nil {
 			requiredFormat = resolvedVariant.Format
+			requiredQuantization = variantQuantizationHint(resolvedVariant)
 		}
 		if engineType != "" {
 			variantName := ""
@@ -2721,16 +2770,54 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			}
 			slog.Info("model pull: inferred format", "engine", engineType, "format", requiredFormat, "variant", variantName)
 		}
-		if resolvedVariant != nil && resolvedVariant.Source != nil {
+
+		localCandidates := make([]string, 0, 4)
+		if matchedVariant != nil && matchedVariant.Source != nil && matchedVariant.Source.Type == "local_path" && matchedVariant.Source.Path != "" {
+			localCandidates = append(localCandidates, matchedVariant.Source.Path)
+		}
+		if resolvedVariant != nil && resolvedVariant.Source != nil && resolvedVariant.Source.Type == "local_path" && resolvedVariant.Source.Path != "" {
+			localCandidates = append(localCandidates, resolvedVariant.Source.Path)
+		}
+		for _, s := range ma.Storage.Sources {
+			if s.Type == "local_path" && s.Path != "" {
+				localCandidates = append(localCandidates, s.Path)
+			}
+		}
+		if dbModel, err := db.FindModelByName(ctx, ma.Metadata.Name); err == nil && dbModel.Path != "" {
+			localCandidates = append(localCandidates, dbModel.Path)
+		}
+		localCandidates = append(localCandidates, destPath)
+		for _, candidate := range localCandidates {
+			if candidate == "" || !model.PathLooksUsable(candidate, requiredFormat) {
+				continue
+			}
+			slog.Info("model already available locally", "model", ma.Metadata.Name, "path", candidate, "format", requiredFormat)
+			if err := registerExistingModel(ctx, candidate, db); err != nil {
+				slog.Warn("register existing model failed", "path", candidate, "error", err)
+			}
+			return nil
+		}
+
+		if resolvedVariant != nil && resolvedVariant.Source != nil && resolvedVariant.Source.Type != "local_path" {
 			slog.Info("model pull: using variant source", "variant", resolvedVariant.Name, "repo", resolvedVariant.Source.Repo)
-			destPath := filepath.Join(dataDir, "models", ma.Metadata.Name)
-			sources := []model.Source{{Type: resolvedVariant.Source.Type, Repo: resolvedVariant.Source.Repo}}
-			if err := model.DownloadFromSource(ctx, sources, destPath); err != nil {
+			sources := []model.Source{{
+				Type:         resolvedVariant.Source.Type,
+				Repo:         resolvedVariant.Source.Repo,
+				Path:         resolvedVariant.Source.Path,
+				Format:       resolvedVariant.Source.Format,
+				Quantization: resolvedVariant.Source.Quantization,
+			}}
+			if err := model.DownloadFromSource(ctx, sources, destPath, model.DownloadPlan{
+				Format:       requiredFormat,
+				Quantization: requiredQuantization,
+			}); err != nil {
 				return fmt.Errorf("download model %s: %w", name, err)
 			}
 			return registerPulledModel(ctx, destPath, dataDir, db)
 		}
-		destPath := filepath.Join(dataDir, "models", ma.Metadata.Name)
+
+		exactQuantSources := make([]model.Source, 0)
+		fallbackSources := make([]model.Source, 0)
 		var sources []model.Source
 		for _, s := range ma.Storage.Sources {
 			if s.Type == "local_path" {
@@ -2739,12 +2826,34 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if requiredFormat != "" && s.Format != "" && s.Format != requiredFormat {
 				continue
 			}
-			sources = append(sources, model.Source{Type: s.Type, Repo: s.Repo})
+			src := model.Source{
+				Type:         s.Type,
+				Repo:         s.Repo,
+				Path:         s.Path,
+				Format:       s.Format,
+				Quantization: s.Quantization,
+			}
+			if requiredQuantization != "" && strings.EqualFold(s.Quantization, requiredQuantization) {
+				exactQuantSources = append(exactQuantSources, src)
+				continue
+			}
+			if requiredQuantization != "" && s.Quantization != "" {
+				continue
+			}
+			fallbackSources = append(fallbackSources, src)
+		}
+		if len(exactQuantSources) > 0 {
+			sources = append(sources, exactQuantSources...)
+		} else {
+			sources = append(sources, fallbackSources...)
 		}
 		if len(sources) == 0 {
-			return fmt.Errorf("no download source for model %q with format %q", name, requiredFormat)
+			return fmt.Errorf("no download source for model %q with format %q quantization %q", name, requiredFormat, requiredQuantization)
 		}
-		if err := model.DownloadFromSource(ctx, sources, destPath); err != nil {
+		if err := model.DownloadFromSource(ctx, sources, destPath, model.DownloadPlan{
+			Format:       requiredFormat,
+			Quantization: requiredQuantization,
+		}); err != nil {
 			return fmt.Errorf("download model %s: %w", name, err)
 		}
 		return registerPulledModel(ctx, destPath, dataDir, db)
@@ -2759,6 +2868,69 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		notify := func(phase, msg string) {
 			if onPhase != nil {
 				onPhase(phase, msg)
+			}
+		}
+
+		waitForDeployment := func(deployName, runtimeName, resolvedEngine string) (json.RawMessage, error) {
+			notify("waiting", deployName)
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			timer := time.NewTimer(10 * time.Minute)
+			defer timer.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-timer.C:
+					return json.Marshal(map[string]any{
+						"name": deployName, "status": "timeout",
+						"message": "deployment started but not ready within 10 minutes",
+					})
+				case <-ticker.C:
+					statusData, err := deps.DeployStatus(ctx, deployName)
+					if err != nil {
+						continue
+					}
+					var status struct {
+						Phase           string `json:"phase"`
+						Ready           bool   `json:"ready"`
+						Address         string `json:"address"`
+						Runtime         string `json:"runtime"`
+						StartupPhase    string `json:"startup_phase"`
+						StartupProgress int    `json:"startup_progress"`
+						StartupMessage  string `json:"startup_message"`
+						Message         string `json:"message,omitempty"`
+					}
+					if err := json.Unmarshal(statusData, &status); err != nil {
+						continue
+					}
+					if status.Ready {
+						notify("ready", status.Address)
+						if status.Runtime != "" {
+							runtimeName = status.Runtime
+						}
+						return json.Marshal(map[string]any{
+							"name": deployName, "model": model, "engine": resolvedEngine,
+							"runtime": runtimeName, "address": status.Address, "status": "ready",
+						})
+					}
+					if status.Phase == "failed" {
+						msg := status.Message
+						if msg == "" {
+							msg = status.StartupMessage
+						}
+						return nil, fmt.Errorf("deployment failed: %s", msg)
+					}
+					phase := status.StartupPhase
+					if phase == "" {
+						phase = status.Phase
+					}
+					if status.StartupProgress > 0 {
+						phase = fmt.Sprintf("%s %d%%", phase, status.StartupProgress)
+					}
+					notify("startup", phase)
+				}
 			}
 		}
 
@@ -2786,6 +2958,36 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		notify("resolved", fmt.Sprintf("engine=%s runtime=%s", plan.Engine, plan.Runtime))
 		for _, warn := range plan.FitReport.Warns {
 			notify("warning", warn)
+		}
+		deployName := knowledge.SanitizePodName(model + "-" + plan.Engine)
+		if statusData, statusErr := deps.DeployStatus(ctx, deployName); statusErr == nil {
+			var status struct {
+				Phase   string `json:"phase"`
+				Ready   bool   `json:"ready"`
+				Address string `json:"address"`
+				Runtime string `json:"runtime"`
+			}
+			if err := json.Unmarshal(statusData, &status); err == nil {
+				switch {
+				case status.Ready:
+					notify("ready", status.Address)
+					runtimeName := plan.Runtime
+					if status.Runtime != "" {
+						runtimeName = status.Runtime
+					}
+					return json.Marshal(map[string]any{
+						"name": deployName, "model": model, "engine": plan.Engine,
+						"runtime": runtimeName, "address": status.Address, "status": "ready",
+					})
+				case status.Phase == "running" || status.Phase == "starting":
+					notify("reusing", deployName)
+					runtimeName := plan.Runtime
+					if status.Runtime != "" {
+						runtimeName = status.Runtime
+					}
+					return waitForDeployment(deployName, runtimeName, plan.Engine)
+				}
+			}
 		}
 
 		// Step 2: Pull engine
@@ -2821,65 +3023,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		if err := json.Unmarshal(deployData, &deployResult); err != nil || deployResult.Name == "" {
 			return deployData, nil
 		}
-
-		// Step 5: Poll until ready (context-aware, no blocking sleep)
-		notify("waiting", deployResult.Name)
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		timer := time.NewTimer(10 * time.Minute)
-		defer timer.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-timer.C:
-				return json.Marshal(map[string]any{
-					"name": deployResult.Name, "status": "timeout",
-					"message": "deployment started but not ready within 10 minutes",
-				})
-			case <-ticker.C:
-				statusData, err := deps.DeployStatus(ctx, deployResult.Name)
-				if err != nil {
-					continue
-				}
-				var status struct {
-					Phase           string `json:"phase"`
-					Ready           bool   `json:"ready"`
-					Address         string `json:"address"`
-					StartupPhase    string `json:"startup_phase"`
-					StartupProgress int    `json:"startup_progress"`
-					StartupMessage  string `json:"startup_message"`
-					Message         string `json:"message,omitempty"`
-				}
-				if err := json.Unmarshal(statusData, &status); err != nil {
-					continue
-				}
-				if status.Ready {
-					notify("ready", status.Address)
-					return json.Marshal(map[string]any{
-						"name": deployResult.Name, "model": model, "engine": plan.Engine,
-						"runtime": deployResult.Runtime, "address": status.Address, "status": "ready",
-					})
-				}
-				if status.Phase == "failed" {
-					msg := status.Message
-					if msg == "" {
-						msg = status.StartupMessage
-					}
-					return nil, fmt.Errorf("deployment failed: %s", msg)
-				}
-				// Report startup progress
-				phase := status.StartupPhase
-				if phase == "" {
-					phase = status.Phase
-				}
-				if status.StartupProgress > 0 {
-					phase = fmt.Sprintf("%s %d%%", phase, status.StartupProgress)
-				}
-				notify("startup", phase)
-			}
-		}
+		return waitForDeployment(deployResult.Name, deployResult.Runtime, plan.Engine)
 	}
 
 	deps = &mcp.ToolDeps{
@@ -3329,10 +3473,10 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				}
 			}
 			// Native binary engines require a single model file path; container engines
-			// take the directory. Use the presence of Source (native binary download) to
-			// distinguish — not the engine type name.
+			// take the directory. Collapse only file-style model directories (GGUF etc.);
+			// HuggingFace-style directories with config.json must stay as directories.
 			if resolved.Source != nil {
-				if fi, err := os.Stat(modelPath); err == nil && fi.IsDir() {
+				if fi, err := os.Stat(modelPath); err == nil && fi.IsDir() && dirRequiresSingleFileModelPath(modelPath) {
 					if f := findModelFileInDir(modelPath); f != "" {
 						modelPath = f
 					}
@@ -3621,7 +3765,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			// Gap 3: Save rollback snapshot before deletion (capture deployment state)
 			if deployments, listErr := rt.List(ctx); listErr == nil {
 				for _, d := range deployments {
-					if d.Labels["aima.dev/model"] == name || d.Name == name {
+					if deploymentMatchesQuery(d, name) {
 						if snap, snapErr := json.Marshal(d); snapErr == nil {
 							_ = db.SaveSnapshot(ctx, &state.RollbackSnapshot{
 								ToolName: "deploy.delete", ResourceType: "deployment", ResourceName: d.Name, Snapshot: string(snap),
@@ -3641,7 +3785,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				// Exact name failed — search deployments for this model name.
 				if deployments, listErr := rt.List(ctx); listErr == nil {
 					for _, d := range deployments {
-						if d.Labels["aima.dev/model"] == name || d.Name == name {
+						if deploymentMatchesQuery(d, name) {
 							if delErr := rt.Delete(ctx, d.Name); delErr == nil {
 								deleted = d.Name
 								modelKey = d.Labels["aima.dev/model"]
@@ -3658,7 +3802,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				if err != nil {
 					if nativeDeps, nErr := nativeRt.List(ctx); nErr == nil {
 						for _, d := range nativeDeps {
-							if d.Labels["aima.dev/model"] == name {
+							if deploymentMatchesQuery(d, name) {
 								if delErr := nativeRt.Delete(ctx, d.Name); delErr == nil {
 									deleted = d.Name
 									err = nil
@@ -3676,7 +3820,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				if err != nil {
 					if dockerDeps, dErr := dockerRt.List(ctx); dErr == nil {
 						for _, d := range dockerDeps {
-							if d.Labels["aima.dev/model"] == name {
+							if deploymentMatchesQuery(d, name) {
 								if delErr := dockerRt.Delete(ctx, d.Name); delErr == nil {
 									deleted = d.Name
 									err = nil
@@ -3711,7 +3855,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				// Exact pod name failed — search by model label across all runtimes.
 				allDeps := listAllRuntimes(ctx, rt, nativeRt, dockerRt)
 				for _, d := range allDeps {
-					if d.Labels["aima.dev/model"] == name || d.Name == name {
+					if deploymentMatchesQuery(d, name) {
 						s = d
 						err = nil
 						break
@@ -3757,7 +3901,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				// Exact pod name failed — search by model label across all runtimes.
 				allDeps := listAllRuntimes(ctx, rt, nativeRt, dockerRt)
 				for _, d := range allDeps {
-					if d.Labels["aima.dev/model"] == name || d.Name == name {
+					if deploymentMatchesQuery(d, name) {
 						// Try each runtime for logs by actual deployment name.
 						for _, tryRt := range []runtime.Runtime{rt, nativeRt, dockerRt} {
 							if tryRt == nil {
@@ -5161,27 +5305,46 @@ func findModelFileInDir(dir string) string {
 	return ""
 }
 
-// dirContainsModelFiles reports whether dir exists and contains at least one
-// recognized model file (config.json for HF models, or .gguf/.safetensors for single-file).
-func dirContainsModelFiles(dir string) bool {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+func deploymentMatchesQuery(d *runtime.DeploymentStatus, query string) bool {
+	if d == nil {
 		return false
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := strings.ToLower(e.Name())
-		if name == "config.json" {
-			return true
-		}
-		switch filepath.Ext(name) {
-		case ".gguf", ".ggml", ".safetensors":
-			return true
-		}
+	if d.Name == query {
+		return true
+	}
+	modelName := ""
+	engineName := ""
+	if d.Labels != nil {
+		modelName = d.Labels["aima.dev/model"]
+		engineName = d.Labels["aima.dev/engine"]
+	}
+	if modelName == query {
+		return true
+	}
+	if modelName != "" && engineName != "" {
+		return knowledge.SanitizePodName(modelName+"-"+engineName) == query
 	}
 	return false
+}
+
+// dirContainsModelFiles reports whether path already points at a usable model,
+// either as a model directory or a directly-addressable model file.
+func dirContainsModelFiles(dir string) bool {
+	return model.PathLooksUsable(dir, "")
+}
+
+func dirRequiresSingleFileModelPath(dir string) bool {
+	if !model.PathLooksUsable(dir, "") {
+		return false
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json")); err == nil {
+		return false
+	}
+	return findModelFileInDir(dir) != ""
 }
 
 // findModelDir searches alternative well-known locations for a model directory.

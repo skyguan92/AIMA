@@ -526,7 +526,7 @@ func TestDownloadHuggingFaceFallsBackToHTTPWhenCLIUnavailableToRun(t *testing.T)
 	t.Setenv("HF_ENDPOINT", server.URL)
 
 	destPath := filepath.Join(t.TempDir(), "model")
-	if err := downloadHuggingFace(context.Background(), "test/model", destPath); err != nil {
+	if err := downloadHuggingFace(context.Background(), "test/model", destPath, DownloadPlan{}); err != nil {
 		t.Fatalf("downloadHuggingFace fallback: %v", err)
 	}
 
@@ -536,6 +536,60 @@ func TestDownloadHuggingFaceFallsBackToHTTPWhenCLIUnavailableToRun(t *testing.T)
 	}
 	if string(data) != string(content) {
 		t.Fatalf("downloaded content = %q, want %q", data, content)
+	}
+}
+
+func TestPathLooksUsableGGUFFile(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "Qwen3-4B-Q4_K_M.gguf")
+	if err := os.WriteFile(filePath, []byte("gguf"), 0o644); err != nil {
+		t.Fatalf("write gguf: %v", err)
+	}
+	if !PathLooksUsable(filePath, "gguf") {
+		t.Fatal("expected GGUF file path to be reusable")
+	}
+}
+
+func TestPathLooksUsableSafetensorsRequiresAllIndexedShards(t *testing.T) {
+	dir := t.TempDir()
+	index := map[string]any{
+		"weight_map": map[string]string{
+			"model.layers.0.weight": "model-00001-of-00002.safetensors",
+			"model.layers.1.weight": "model-00002-of-00002.safetensors",
+		},
+	}
+	indexBytes, _ := json.Marshal(index)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors.index.json"), indexBytes, 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model-00001-of-00002.safetensors"), []byte("one"), 0o644); err != nil {
+		t.Fatalf("write shard: %v", err)
+	}
+	if PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected incomplete indexed safetensors model to be rejected")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model-00002-of-00002.safetensors"), []byte("two"), 0o644); err != nil {
+		t.Fatalf("write shard: %v", err)
+	}
+	if !PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected complete indexed safetensors model to be reusable")
+	}
+}
+
+func TestSelectRepoFilesPrefersMinimalGGUFQuantization(t *testing.T) {
+	files := []hfRepoFile{
+		{Type: "file", Path: "README.md", Size: 10},
+		{Type: "file", Path: "Qwen3-4B-Q4_K_M.gguf", Size: 100},
+		{Type: "file", Path: "Qwen3-4B-Q5_0.gguf", Size: 200},
+	}
+	selected, err := selectRepoFiles(files, DownloadPlan{Format: "gguf", Quantization: "int4"})
+	if err != nil {
+		t.Fatalf("selectRepoFiles: %v", err)
+	}
+	if len(selected) != 1 || selected[0].Path != "Qwen3-4B-Q4_K_M.gguf" {
+		t.Fatalf("selected = %+v, want Q4_K_M only", selected)
 	}
 }
 

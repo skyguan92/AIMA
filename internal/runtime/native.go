@@ -586,7 +586,11 @@ func (r *NativeRuntime) procToStatus(proc *nativeProcess) *DeploymentStatus {
 
 	// Enrich with log-based progress for non-ready deployments
 	if !ready && proc.logPath != "" {
-		r.enrichNativeProgress(ds, proc.logPath, proc.labels)
+		if errMsg := r.enrichNativeProgress(ds, proc.logPath, proc.labels); errMsg != "" && ds.Phase != "stopped" {
+			ds.Phase = "failed"
+			ds.Ready = false
+			ds.Message = errMsg
+		}
 	}
 
 	return ds
@@ -620,7 +624,10 @@ func (r *NativeRuntime) metaToStatus(meta *deploymentMeta) *DeploymentStatus {
 		if timeout == 0 {
 			timeout = 60
 		}
-		if time.Since(meta.StartTime) < time.Duration(timeout)*time.Second {
+		if meta.PID > 0 && !processMatchesMeta(meta) {
+			phase = "failed"
+			ready = false
+		} else if time.Since(meta.StartTime) < time.Duration(timeout)*time.Second {
 			phase = "starting"
 		} else {
 			// Port dead past health check timeout: process crashed or never started.
@@ -641,7 +648,14 @@ func (r *NativeRuntime) metaToStatus(meta *deploymentMeta) *DeploymentStatus {
 
 	// Enrich with log-based progress for non-ready deployments
 	if !ready && meta.LogPath != "" {
-		r.enrichNativeProgress(ds, meta.LogPath, meta.Labels)
+		if errMsg := r.enrichNativeProgress(ds, meta.LogPath, meta.Labels); errMsg != "" {
+			ds.Phase = "failed"
+			ds.Ready = false
+			ds.Message = errMsg
+		}
+	}
+	if ds.Phase == "failed" && ds.Message == "" && meta.PID > 0 && !processMatchesMeta(meta) {
+		ds.Message = "process exited before readiness"
 	}
 
 	return ds
@@ -841,7 +855,7 @@ func (r *NativeRuntime) findInDist(name string) string {
 }
 
 // enrichNativeProgress reads log tail and matches engine patterns to set progress fields.
-func (r *NativeRuntime) enrichNativeProgress(ds *DeploymentStatus, logPath string, labels map[string]string) {
+func (r *NativeRuntime) enrichNativeProgress(ds *DeploymentStatus, logPath string, labels map[string]string) string {
 	engineName := ""
 	if labels != nil {
 		engineName = labels["aima.dev/engine"]
@@ -859,7 +873,7 @@ func (r *NativeRuntime) enrichNativeProgress(ds *DeploymentStatus, logPath strin
 
 	logs, err := readTail(logPath, tailLines)
 	if err != nil || logs == "" {
-		return
+		return ""
 	}
 
 	if ds.Phase == "failed" {
@@ -867,11 +881,12 @@ func (r *NativeRuntime) enrichNativeProgress(ds *DeploymentStatus, logPath strin
 	}
 
 	if asset == nil || asset.Startup.LogPatterns == nil {
-		return
+		return ""
 	}
 
 	if errMsg := DetectStartupError(logs, asset.Startup.LogPatterns); errMsg != "" {
 		ds.StartupMessage = errMsg
+		return errMsg
 	}
 
 	if ds.Phase == "starting" || (ds.Phase == "running" && !ds.Ready) {
@@ -886,6 +901,7 @@ func (r *NativeRuntime) enrichNativeProgress(ds *DeploymentStatus, logPath strin
 			ds.StartupMessage = formatPhaseName("initializing")
 		}
 	}
+	return ""
 }
 
 func waitForProcessExit(proc *nativeProcess, timeout time.Duration) bool {

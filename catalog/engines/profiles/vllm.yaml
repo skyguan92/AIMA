@@ -58,6 +58,10 @@ startup:
         message: "GPU memory insufficient"
       - pattern: "torch.cuda.OutOfMemoryError"
         message: "GPU memory insufficient"
+      - pattern: "couldn't bind HTTP server socket|address already in use|bind.*address already in use"
+        message: "Port is already in use"
+      - pattern: "can only be loaded from a local folder or remote repo|must contain config.json"
+        message: "Model path is invalid for vLLM"
 api:
   protocol: openai
   base_path: /v1

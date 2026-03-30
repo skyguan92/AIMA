@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -41,13 +42,29 @@ func (r *DockerRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	name := knowledge.SanitizePodName(req.Name + "-" + req.Engine)
 
 	// Idempotent redeploy: remove existing container if any
-	_ = exec.CommandContext(ctx, "docker", "rm", "-f", name).Run()
+	r.removeContainer(ctx, name)
 
 	args := r.buildRunArgs(name, req)
 	slog.Info("docker deploy", "name", name, "args", strings.Join(args, " "))
 
 	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if shouldRetryDockerWithLegacyNVIDIAGPU(args, out) {
+		slog.Warn("docker CDI GPU path failed, retrying with --gpus all", "name", name)
+		r.removeContainer(ctx, name)
+		fallbackArgs := dockerArgsWithLegacyNVIDIAGPU(args)
+		slog.Info("docker deploy retry", "name", name, "args", strings.Join(fallbackArgs, " "))
+		retryOut, retryErr := exec.CommandContext(ctx, "docker", fallbackArgs...).CombinedOutput()
+		if retryErr == nil {
+			return nil
+		}
+		r.removeContainer(ctx, name)
+		return fmt.Errorf("docker run %s: %w\n%s", name, retryErr, string(retryOut))
+	}
 	if err != nil {
+		r.removeContainer(ctx, name)
 		return fmt.Errorf("docker run %s: %w\n%s", name, err, string(out))
 	}
 	return nil
@@ -134,9 +151,16 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 		}
 	}
 
+	modelHostPath := req.ModelPath
+	containerModelPath := "/models"
+	if isContainerModelFilePath(modelHostPath) {
+		containerModelPath = "/models/" + filepath.Base(modelHostPath)
+		modelHostPath = filepath.Dir(modelHostPath)
+	}
+
 	// Model volume
 	if req.ModelPath != "" {
-		args = append(args, "--volume", req.ModelPath+":/models:ro")
+		args = append(args, "--volume", modelHostPath+":/models:ro")
 	}
 
 	// Container volumes from hardware profile
@@ -162,7 +186,7 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 	// Build command with template substitution
 	command := make([]string, len(req.Command))
 	for i, c := range req.Command {
-		c = strings.ReplaceAll(c, "{{.ModelPath}}", "/models")
+		c = strings.ReplaceAll(c, "{{.ModelPath}}", containerModelPath)
 		c = strings.ReplaceAll(c, "{{.ModelName}}", req.Name)
 		command[i] = c
 	}
@@ -182,7 +206,7 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 	// Append config values as CLI flags, with template substitution
 	for _, f := range configToFlags(req.Config) {
 		f = strings.ReplaceAll(f, "{{.ModelName}}", req.Name)
-		f = strings.ReplaceAll(f, "{{.ModelPath}}", "/models")
+		f = strings.ReplaceAll(f, "{{.ModelPath}}", containerModelPath)
 		command = append(command, f)
 	}
 
@@ -236,7 +260,11 @@ func (r *DockerRuntime) Status(ctx context.Context, name string) (*DeploymentSta
 
 	// Enrich with log-based startup progress
 	if !ds.Ready {
-		r.enrichDockerProgress(ctx, ds)
+		if errMsg := r.enrichDockerProgress(ctx, ds); errMsg != "" {
+			ds.Phase = "failed"
+			ds.Ready = false
+			ds.Message = errMsg
+		}
 	}
 
 	return ds, nil
@@ -290,7 +318,11 @@ func (r *DockerRuntime) List(ctx context.Context) ([]*DeploymentStatus, error) {
 		}
 
 		if !ready {
-			r.enrichDockerProgress(ctx, ds)
+			if errMsg := r.enrichDockerProgress(ctx, ds); errMsg != "" {
+				ds.Phase = "failed"
+				ds.Ready = false
+				ds.Message = errMsg
+			}
 		}
 
 		statuses = append(statuses, ds)
@@ -387,7 +419,7 @@ func (r *DockerRuntime) inspectToStatus(di dockerInspect) *DeploymentStatus {
 }
 
 // enrichDockerProgress reads container logs and matches engine patterns.
-func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *DeploymentStatus) {
+func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *DeploymentStatus) string {
 	engineName := ""
 	if ds.Labels != nil {
 		engineName = ds.Labels["aima.dev/engine"]
@@ -405,7 +437,7 @@ func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *Deployment
 
 	logs, err := r.Logs(ctx, ds.Name, tailLines)
 	if err != nil || logs == "" {
-		return
+		return ""
 	}
 
 	if ds.Phase == "failed" {
@@ -413,11 +445,12 @@ func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *Deployment
 	}
 
 	if asset == nil || asset.Startup.LogPatterns == nil {
-		return
+		return ""
 	}
 
 	if errMsg := DetectStartupError(logs, asset.Startup.LogPatterns); errMsg != "" {
 		ds.StartupMessage = errMsg
+		return errMsg
 	}
 
 	if ds.Phase == "starting" || (ds.Phase == "running" && !ds.Ready) {
@@ -432,6 +465,7 @@ func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *Deployment
 			ds.StartupMessage = formatPhaseName("initializing")
 		}
 	}
+	return ""
 }
 
 // dockerStatusToPhase maps `docker ps` Status string to phase.
@@ -465,6 +499,43 @@ func dockerStatusToPhase(status string) string {
 func cdiAvailable() bool {
 	_, err := os.Stat("/etc/cdi/nvidia.yaml")
 	return err == nil
+}
+
+func (r *DockerRuntime) removeContainer(ctx context.Context, name string) {
+	_ = exec.CommandContext(ctx, "docker", "rm", "-f", name).Run()
+}
+
+func shouldRetryDockerWithLegacyNVIDIAGPU(args []string, output []byte) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--device" && args[i+1] == "nvidia.com/gpu=all" {
+			text := strings.ToLower(string(output))
+			return strings.Contains(text, `device driver "cdi"`) ||
+				strings.Contains(text, "nvidia.com/gpu=all")
+		}
+	}
+	return false
+}
+
+func dockerArgsWithLegacyNVIDIAGPU(args []string) []string {
+	rewritten := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if i < len(args)-1 && args[i] == "--device" && args[i+1] == "nvidia.com/gpu=all" {
+			rewritten = append(rewritten, "--gpus", "all")
+			i++
+			continue
+		}
+		rewritten = append(rewritten, args[i])
+	}
+	return rewritten
+}
+
+func isContainerModelFilePath(modelPath string) bool {
+	switch strings.ToLower(filepath.Ext(modelPath)) {
+	case ".gguf", ".ggml", ".bin":
+		return true
+	default:
+		return false
+	}
 }
 
 // httpHealthy checks whether the engine's HTTP health endpoint returns 200.
