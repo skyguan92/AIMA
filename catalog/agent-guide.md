@@ -318,7 +318,7 @@ deploy.apply("qwen3-0.6b")
 
 | Tool | Parameters | Returns | Description |
 |------|-----------|---------|-------------|
-| `agent.ask` | `query`, `local?`, `dangerously_skip_permissions?`, `session?` | response | Route query to Go Agent (L3a) |
+| `agent.ask` | `query`, `dangerously_skip_permissions?`, `session_id?` | response | Route query to Go Agent (L3a) |
 | `agent.status` | (none) | availability | Check agent layer availability |
 | `agent.guide` | (none) | full reference | Get complete agent usage guide |
 

@@ -230,6 +230,46 @@ func TestOpenAIClient_Available(t *testing.T) {
 	}
 }
 
+func TestOpenAIClient_Available_NoModels_NoDiscovery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(modelsResponse{Data: []modelData{}})
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL + "/v1")
+	if client.Available(context.Background()) {
+		t.Error("Available() = true with empty model list, want false")
+	}
+}
+
+func TestOpenAIClient_Available_UsesFleetDiscovery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(modelsResponse{Data: []modelData{}})
+	}))
+	defer srv.Close()
+
+	discover := func(ctx context.Context, apiKey string) []FleetEndpoint {
+		return []FleetEndpoint{{BaseURL: "http://10.0.0.1:6188/v1", Model: "remote-model"}}
+	}
+
+	client := NewOpenAIClient(srv.URL+"/v1", WithDiscoverFunc(discover))
+	if !client.Available(context.Background()) {
+		t.Error("Available() = false with fleet fallback, want true")
+	}
+}
+
+func TestOpenAIClient_Available_ConfiguredModelMustExist(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(modelsResponse{Data: []modelData{{ID: "other-model"}}})
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL+"/v1", WithModel("expected-model"))
+	if client.Available(context.Background()) {
+		t.Error("Available() = true when configured model is missing, want false")
+	}
+}
+
 func TestOpenAIClient_FleetDiscovery_EmptyModels(t *testing.T) {
 	// Local server returns empty model list
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

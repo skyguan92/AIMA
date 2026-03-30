@@ -260,9 +260,6 @@ func (c *OpenAIClient) resolveModel(ctx context.Context) (string, error) {
 	// Snapshot mutable fields under read lock
 	c.mu.RLock()
 	model := c.model
-	baseURL := c.baseURL
-	apiKey := c.apiKey
-	userAgent := c.userAgent
 	cached := c.cachedModel
 	cachedAt := c.modelCachedAt
 	c.mu.RUnlock()
@@ -275,19 +272,7 @@ func (c *OpenAIClient) resolveModel(ctx context.Context) (string, error) {
 		return cached, nil
 	}
 
-	// Fetch from /models endpoint (no lock held during I/O)
-	httpReq, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/models", nil)
-	if err != nil {
-		return "", fmt.Errorf("create models request: %w", err)
-	}
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	if userAgent != "" {
-		httpReq.Header.Set("User-Agent", userAgent)
-	}
-
-	httpResp, err := c.httpClient.Do(httpReq)
+	models, err := c.fetchModels(ctx)
 	if err != nil {
 		// Local endpoint unreachable — try fleet discovery
 		if ep, fErr := c.discoverFleetEndpoint(ctx); fErr == nil {
@@ -295,31 +280,20 @@ func (c *OpenAIClient) resolveModel(ctx context.Context) (string, error) {
 		}
 		return "", fmt.Errorf("fetch models: %w", err)
 	}
-	defer httpResp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(httpResp.Body, 10*1024*1024)) // 10 MB limit
-	if err != nil {
-		return "", fmt.Errorf("read models response: %w", err)
-	}
-	if httpResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("models endpoint: HTTP %d: %s", httpResp.StatusCode, body)
-	}
-
-	var modelsResp modelsResponse
-	if err := json.Unmarshal(body, &modelsResp); err != nil {
-		return "", fmt.Errorf("decode models: %w", err)
-	}
-	if len(modelsResp.Data) == 0 {
+	if len(models) == 0 {
 		// Local has no models — try fleet discovery
 		if ep, fErr := c.discoverFleetEndpoint(ctx); fErr == nil {
 			return ep.Model, nil
 		}
+		c.mu.RLock()
+		baseURL := c.baseURL
+		c.mu.RUnlock()
 		return "", fmt.Errorf("no models available at %s/models", baseURL)
 	}
 
 	// Update cache under write lock
 	c.mu.Lock()
-	c.cachedModel = modelsResp.Data[0].ID
+	c.cachedModel = models[0].ID
 	c.modelCachedAt = time.Now()
 	result := c.cachedModel
 	c.mu.Unlock()
@@ -359,18 +333,40 @@ func (c *OpenAIClient) discoverFleetEndpoint(ctx context.Context) (*FleetEndpoin
 
 // Available checks if the LLM endpoint is reachable.
 func (c *OpenAIClient) Available(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	c.mu.RLock()
+	model := c.model
+	c.mu.RUnlock()
+
+	if model != "" {
+		models, err := c.fetchModels(ctx)
+		if err != nil {
+			return false
+		}
+		for _, candidate := range models {
+			if candidate.ID == model {
+				return true
+			}
+		}
+		return false
+	}
+
+	_, err := c.resolveModel(ctx)
+	return err == nil
+}
+
+func (c *OpenAIClient) fetchModels(ctx context.Context) ([]modelData, error) {
 	c.mu.RLock()
 	baseURL := c.baseURL
 	apiKey := c.apiKey
 	userAgent := c.userAgent
 	c.mu.RUnlock()
 
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
 	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/models", nil)
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("create models request: %w", err)
 	}
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -378,12 +374,26 @@ func (c *OpenAIClient) Available(ctx context.Context) bool {
 	if userAgent != "" {
 		req.Header.Set("User-Agent", userAgent)
 	}
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return false
+		return nil, err
 	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("read models response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("models endpoint: HTTP %d: %s", resp.StatusCode, body)
+	}
+
+	var modelsResp modelsResponse
+	if err := json.Unmarshal(body, &modelsResp); err != nil {
+		return nil, fmt.Errorf("decode models: %w", err)
+	}
+	return modelsResp.Data, nil
 }
 
 // --- JSON wire types ---

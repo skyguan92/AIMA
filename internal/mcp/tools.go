@@ -78,8 +78,8 @@ type ToolDeps struct {
 	DeployApprove func(ctx context.Context, id int64) (json.RawMessage, error)
 
 	// Agent
-	DispatchAsk  func(ctx context.Context, query string, skipPerms bool, sessionID string) (json.RawMessage, string, error)
-	AgentStatus  func(ctx context.Context) (json.RawMessage, error)
+	DispatchAsk       func(ctx context.Context, query string, skipPerms bool, sessionID string) (json.RawMessage, string, error)
+	AgentStatus       func(ctx context.Context) (json.RawMessage, error)
 	AgentGuide        func(ctx context.Context) (json.RawMessage, error)
 	RollbackList      func(ctx context.Context) (json.RawMessage, error)
 	RollbackRestore   func(ctx context.Context, id int64) (json.RawMessage, error)
@@ -1948,7 +1948,6 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			`"kind":{"type":"string","enum":["tune","validate","open_question"],"description":"Exploration kind."},`+
 				`"goal":{"type":"string","description":"Human-readable objective for the run."},`+
 				`"requested_by":{"type":"string","description":"Who requested the run."},`+
-				`"planner":{"type":"string","description":"Planner identity.","enum":["none"]},`+
 				`"executor":{"type":"string","description":"Executor identity. Currently only local_go is supported."},`+
 				`"approval_mode":{"type":"string","description":"Approval mode metadata for the run."},`+
 				`"source_ref":{"type":"string","description":"Optional source reference such as gap_id, open_question_id, or alert_id."},`+
@@ -2196,7 +2195,6 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 				`"model":{"type":"string","description":"Model used for automated validation runs"},` +
 				`"engine":{"type":"string","description":"Engine used for automated validation runs"},` +
 				`"endpoint":{"type":"string","description":"Inference endpoint override for automated validation runs"},` +
-				`"planner":{"type":"string","description":"Planner to use when launching a run","enum":["","none"]},` +
 				`"requested_by":{"type":"string","description":"Who requested the run"},` +
 				`"concurrency":{"type":"integer","description":"Benchmark concurrency for automated validation runs"},` +
 				`"rounds":{"type":"integer","description":"Benchmark rounds for automated validation runs"}`,

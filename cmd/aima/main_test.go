@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	state "github.com/jguan/aima/internal"
+	"github.com/jguan/aima/internal/agent"
 	benchpkg "github.com/jguan/aima/internal/benchmark"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
@@ -124,6 +127,38 @@ func TestFleetBlockedTools(t *testing.T) {
 			t.Errorf("fleetBlockedTools should not block %q", tool)
 		}
 	}
+}
+
+func TestAgentAvailable(t *testing.T) {
+	t.Run("nil client is unavailable", func(t *testing.T) {
+		if agentAvailable(context.Background(), nil) {
+			t.Fatal("expected nil client to be unavailable")
+		}
+	})
+
+	t.Run("unreachable endpoint is unavailable", func(t *testing.T) {
+		client := agent.NewOpenAIClient("http://127.0.0.1:1/v1")
+		if agentAvailable(context.Background(), client) {
+			t.Fatal("expected unreachable endpoint to be unavailable")
+		}
+	})
+
+	t.Run("reachable models endpoint is available", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"qwen3-8b"}]}`))
+		}))
+		defer server.Close()
+
+		client := agent.NewOpenAIClient(server.URL + "/v1")
+		if !agentAvailable(context.Background(), client) {
+			t.Fatal("expected reachable endpoint to be available")
+		}
+	})
 }
 
 func TestQueryGoldenOverrides(t *testing.T) {

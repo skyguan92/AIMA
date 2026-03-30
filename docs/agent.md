@@ -55,7 +55,6 @@ Go Agent Loop (最多 30 轮):
 
 ```bash
 aima ask "..."                # Go Agent 处理
-aima ask --local "..."        # 强制 Go Agent (L3a)
 aima ask --session <id> "..." # 继续会话
 ```
 

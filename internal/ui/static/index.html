@@ -2451,8 +2451,7 @@ function aimaApp() {
 
       // Update agentAvailable based on combined info
       this.agentAvailable = this.agentInfo.agentAvailableFromStatus === true ||
-        this._agentConfirmed === true ||
-        (this.agentInfo.llmEndpoint !== '' && this.agentInfo.llmModel !== '');
+        this._agentConfirmed === true;
     },
     _agentConfirmed: false,
 

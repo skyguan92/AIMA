@@ -209,7 +209,7 @@ func run() error {
 			activeRuns = explorationMgr.ActiveCount()
 		}
 		return json.Marshal(map[string]any{
-			"agent_available":         llmClient != nil,
+			"agent_available":         agentAvailable(ctx, llmClient),
 			"active_exploration_runs": activeRuns,
 		})
 	}
@@ -726,7 +726,6 @@ func run() error {
 			Model       string `json:"model"`
 			Engine      string `json:"engine"`
 			Endpoint    string `json:"endpoint"`
-			Planner     string `json:"planner"`
 			RequestedBy string `json:"requested_by"`
 			Concurrency int    `json:"concurrency"`
 			Rounds      int    `json:"rounds"`
@@ -774,7 +773,6 @@ func run() error {
 					Model:    p.Model,
 					Engine:   p.Engine,
 				},
-				Planner:      p.Planner,
 				RequestedBy:  requestedBy,
 				SourceRef:    p.ID,
 				ApprovalMode: "none",
@@ -1898,6 +1896,13 @@ func buildLLMClient(ctx context.Context, db *state.DB) *agent.OpenAIClient {
 		opts = append(opts, agent.WithExtraParams(settings.ExtraParams))
 	}
 	return agent.NewOpenAIClient(settings.Endpoint, opts...)
+}
+
+func agentAvailable(ctx context.Context, llmClient *agent.OpenAIClient) bool {
+	if llmClient == nil {
+		return false
+	}
+	return llmClient.Available(ctx)
 }
 
 func loadLLMSettings(ctx context.Context, db *state.DB) llmSettings {

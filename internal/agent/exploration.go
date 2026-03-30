@@ -50,7 +50,6 @@ type ExplorationStart struct {
 	Kind         string                      `json:"kind"`
 	Goal         string                      `json:"goal"`
 	Target       ExplorationTarget           `json:"target"`
-	Planner      string                      `json:"planner,omitempty"`
 	Executor     string                      `json:"executor,omitempty"`
 	RequestedBy  string                      `json:"requested_by,omitempty"`
 	ApprovalMode string                      `json:"approval_mode,omitempty"`
@@ -495,11 +494,6 @@ func (m *ExplorationManager) newRun(ctx context.Context, req ExplorationStart) (
 	if req.Kind != "tune" && req.Kind != "validate" && req.Kind != "open_question" {
 		return nil, fmt.Errorf("exploration kind %q not implemented", req.Kind)
 	}
-	if req.Planner == "" || req.Planner == "none" {
-		req.Planner = "none"
-	} else {
-		return nil, fmt.Errorf("planner %q not supported; use planner=none", req.Planner)
-	}
 	if req.Kind == "open_question" && req.SourceRef == "" {
 		return nil, fmt.Errorf("source_ref is required for open_question exploration")
 	}
@@ -558,7 +552,7 @@ func (m *ExplorationManager) newRun(ctx context.Context, req ExplorationStart) (
 		Goal:         plan.Goal,
 		RequestedBy:  req.RequestedBy,
 		Executor:     req.Executor,
-		Planner:      req.Planner,
+		Planner:      "none",
 		Status:       "queued",
 		HardwareID:   plan.Target.Hardware,
 		EngineID:     plan.Target.Engine,

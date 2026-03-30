@@ -493,6 +493,37 @@ func TestAgentStatusCmd(t *testing.T) {
 	}
 }
 
+func TestExploreStartDoesNotExposePlannerFlag(t *testing.T) {
+	app := testApp(t)
+	root := NewRootCmd(app)
+
+	var exploreCmd *cobra.Command
+	for _, c := range root.Commands() {
+		if c.Name() == "explore" {
+			exploreCmd = c
+			break
+		}
+	}
+	if exploreCmd == nil {
+		t.Fatal("explore command not found")
+	}
+
+	var startCmd *cobra.Command
+	for _, c := range exploreCmd.Commands() {
+		if c.Name() == "start" {
+			startCmd = c
+			break
+		}
+	}
+	if startCmd == nil {
+		t.Fatal("explore start command not found")
+	}
+
+	if startCmd.Flags().Lookup("planner") != nil {
+		t.Fatal("planner flag should not be exposed")
+	}
+}
+
 func TestDeployListCmd(t *testing.T) {
 	app := testApp(t)
 	root := NewRootCmd(app)
