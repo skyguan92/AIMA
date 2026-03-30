@@ -15,6 +15,7 @@ import (
 	benchpkg "github.com/jguan/aima/internal/benchmark"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
+	aimaRuntime "github.com/jguan/aima/internal/runtime"
 )
 
 func TestValidateOverlayAssetName(t *testing.T) {
@@ -211,6 +212,41 @@ func TestDeployAutoPullAllowed(t *testing.T) {
 	}
 	if !deployAutoPullAllowed(withDeployAutoPull(context.Background(), true)) {
 		t.Fatal("deploy auto-pull override=true was not honored")
+	}
+}
+
+func TestDeploymentMatchesQuery(t *testing.T) {
+	ds := &aimaRuntime.DeploymentStatus{
+		Name: "qwen3-8b",
+		Labels: map[string]string{
+			"aima.dev/model":  "qwen3-8b",
+			"aima.dev/engine": "vllm",
+		},
+	}
+	if !deploymentMatchesQuery(ds, "qwen3-8b") {
+		t.Fatal("expected model-name query to match deployment")
+	}
+	if !deploymentMatchesQuery(ds, "qwen3-8b-vllm") {
+		t.Fatal("expected canonical deployment alias to match deployment")
+	}
+	if deploymentMatchesQuery(ds, "other-model") {
+		t.Fatal("unexpected match for unrelated deployment query")
+	}
+}
+
+func TestVariantQuantizationHint(t *testing.T) {
+	if got := variantQuantizationHint(&knowledge.ModelVariant{
+		DefaultConfig: map[string]any{"quantization": "gptq"},
+	}); got != "gptq" {
+		t.Fatalf("variantQuantizationHint(config) = %q, want gptq", got)
+	}
+	if got := variantQuantizationHint(&knowledge.ModelVariant{
+		Source: &knowledge.ModelSource{Quantization: "fp8"},
+	}); got != "fp8" {
+		t.Fatalf("variantQuantizationHint(source) = %q, want fp8", got)
+	}
+	if got := variantQuantizationHint(&knowledge.ModelVariant{Name: "qwen3-4b-universal-llamacpp-q4"}); got != "" {
+		t.Fatalf("variantQuantizationHint(name-only) = %q, want empty string", got)
 	}
 }
 

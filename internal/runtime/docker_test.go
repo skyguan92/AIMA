@@ -26,7 +26,9 @@ func TestBuildRunArgs_NVIDIA(t *testing.T) {
 	args := r.buildRunArgs("test-model-vllm", req)
 	argStr := joinArgs(args)
 
-	assertContains(t, argStr, "--gpus all", "NVIDIA GPU flag")
+	if !strings.Contains(argStr, "--gpus all") && !strings.Contains(argStr, "--device nvidia.com/gpu=all") {
+		t.Fatalf("NVIDIA GPU flag missing, got: %s", argStr)
+	}
 	assertContains(t, argStr, "--ipc=host", "IPC host")
 	assertContains(t, argStr, "--env NVIDIA_VISIBLE_DEVICES=all", "NVIDIA env")
 	assertContains(t, argStr, "--env VLLM_WORKER_MULTIPROC_METHOD=spawn", "extra env")
@@ -102,6 +104,24 @@ func TestBuildRunArgs_ModelVolume(t *testing.T) {
 
 	assertContains(t, argStr, "--volume /mnt/data/models/phi3:/models:ro", "model volume mount")
 	assertContains(t, argStr, "/models/model.gguf", "model path replaced in command")
+}
+
+func TestBuildRunArgs_ModelFileVolume(t *testing.T) {
+	r := &DockerRuntime{}
+	req := &DeployRequest{
+		Name:      "test",
+		Engine:    "llamacpp",
+		Image:     "ghcr.io/ggerganov/llama.cpp:server",
+		Command:   []string{"llama-server", "--model", "{{.ModelPath}}"},
+		ModelPath: "/mnt/data/models/phi3/Qwen3-4B-Q4_K_M.gguf",
+		Port:      8080,
+	}
+
+	args := r.buildRunArgs("test-llamacpp", req)
+	argStr := joinArgs(args)
+
+	assertContains(t, argStr, "--volume /mnt/data/models/phi3:/models:ro", "model file parent volume mount")
+	assertContains(t, argStr, "/models/Qwen3-4B-Q4_K_M.gguf", "container command should point to mounted file")
 }
 
 func TestBuildRunArgs_ConfigFlags(t *testing.T) {
@@ -230,6 +250,15 @@ func TestBuildRunArgs_ExistingUnchanged(t *testing.T) {
 	assertNotContains(t, argStr, "--init", "no init flag")
 	assertNotContains(t, argStr, "--network", "no network flag")
 	assertNotContains(t, argStr, "--shm-size", "no shm-size flag")
+}
+
+func TestDockerArgsWithLegacyNVIDIAGPU(t *testing.T) {
+	args := []string{"run", "--device", "nvidia.com/gpu=all", "--env", "NVIDIA_VISIBLE_DEVICES=all", "image", "serve"}
+	rewritten := dockerArgsWithLegacyNVIDIAGPU(args)
+	argStr := joinArgs(rewritten)
+
+	assertContains(t, argStr, "--gpus all", "legacy NVIDIA fallback")
+	assertNotContains(t, argStr, "--device nvidia.com/gpu=all", "CDI device should be removed")
 }
 
 func TestDockerInspectToStatus(t *testing.T) {

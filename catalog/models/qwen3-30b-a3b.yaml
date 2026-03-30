@@ -95,6 +95,7 @@ variants:
     source:
       type: modelscope
       repo: Qwen/Qwen3-30B-A3B-GPTQ-Int4
+      quantization: gptq
     default_config:
       gpu_memory_utilization: 0.70
       max_model_len: 8192
@@ -148,6 +149,7 @@ variants:
     engine: llamacpp
     format: gguf
     default_config:
+      quantization: int4
       n_gpu_layers: 999
       ctx_size: 4096
     expected_performance:

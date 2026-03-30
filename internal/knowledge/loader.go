@@ -311,10 +311,11 @@ type ModelStorage struct {
 }
 
 type ModelSource struct {
-	Type   string `yaml:"type"`
-	Repo   string `yaml:"repo"`
-	Path   string `yaml:"path"`
-	Format string `yaml:"format,omitempty"` // e.g. "gguf", "safetensors" — used to pick correct source for engine
+	Type         string `yaml:"type"`
+	Repo         string `yaml:"repo"`
+	Path         string `yaml:"path"`
+	Format       string `yaml:"format,omitempty"`       // e.g. "gguf", "safetensors" — used to pick correct source for engine
+	Quantization string `yaml:"quantization,omitempty"` // e.g. "gptq", "fp8" — used to pick the correct repo/source for the resolved variant
 }
 
 type ModelVariant struct {

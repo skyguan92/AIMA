@@ -28,6 +28,8 @@ startup:
     errors:
       - pattern: "failed to load model|unable to load model"
         message: "Model load failed"
+      - pattern: "couldn't bind HTTP server socket|address already in use|bind.*address already in use"
+        message: "Port is already in use"
 api:
   protocol: openai
   base_path: /v1

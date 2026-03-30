@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -150,23 +152,37 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 
 // Source describes a model download source.
 type Source struct {
-	Type string
-	Repo string
+	Type         string
+	Repo         string
+	Path         string
+	Format       string
+	Quantization string
+}
+
+// DownloadPlan describes the minimal local/downloaded asset set needed for a model pull.
+type DownloadPlan struct {
+	Format       string
+	Quantization string
 }
 
 // DownloadFromSource tries each source in order until one succeeds.
-func DownloadFromSource(ctx context.Context, sources []Source, destPath string) error {
+func DownloadFromSource(ctx context.Context, sources []Source, destPath string, plan DownloadPlan) error {
 	if len(sources) == 0 {
 		return fmt.Errorf("no download sources available")
+	}
+	if PathLooksUsable(destPath, plan.Format) {
+		return nil
 	}
 	var attemptErrs []string
 	for _, src := range sources {
 		var err error
 		switch src.Type {
 		case "huggingface":
-			err = downloadHuggingFace(ctx, src.Repo, destPath)
+			err = downloadHuggingFace(ctx, src.Repo, destPath, plan)
 		case "modelscope":
-			err = downloadModelScope(ctx, src.Repo, destPath)
+			err = downloadModelScope(ctx, src.Repo, destPath, plan)
+		case "local_path":
+			err = fmt.Errorf("local_path source %s is not downloadable", src.Path)
 		default:
 			err = Download(ctx, DownloadOptions{URL: src.Repo, DestPath: destPath})
 		}
@@ -205,15 +221,18 @@ func huggingFaceCLIEnv(destPath, endpoint string) []string {
 	)
 }
 
-func downloadHuggingFace(ctx context.Context, repo, destPath string) error {
+func downloadHuggingFace(ctx context.Context, repo, destPath string, plan DownloadPlan) error {
 	if err := os.MkdirAll(destPath, 0o755); err != nil {
 		return fmt.Errorf("create dest dir %s: %w", destPath, err)
+	}
+	if PathLooksUsable(destPath, plan.Format) {
+		return nil
 	}
 
 	endpoints := hfEndpoints()
 	if hasResumeFriendlyDownloadState(destPath) {
 		slog.Info("resuming HuggingFace download via HTTP", "repo", repo, "dest", destPath)
-		return downloadHFRepoViaEndpoints(ctx, endpoints, repo, destPath)
+		return downloadHFRepoViaEndpoints(ctx, endpoints, repo, destPath, plan)
 	}
 
 	// Prefer huggingface-cli if available (handles auth, multi-file, resume).
@@ -229,14 +248,14 @@ func downloadHuggingFace(ctx context.Context, repo, destPath string) error {
 		slog.Warn("huggingface-cli failed, falling back to HTTP repo download", "repo", repo, "error", err)
 	}
 
-	return downloadHFRepoViaEndpoints(ctx, endpoints, repo, destPath)
+	return downloadHFRepoViaEndpoints(ctx, endpoints, repo, destPath, plan)
 }
 
-func downloadHFRepoViaEndpoints(ctx context.Context, endpoints []string, repo, destPath string) error {
+func downloadHFRepoViaEndpoints(ctx context.Context, endpoints []string, repo, destPath string, plan DownloadPlan) error {
 	var attemptErrs []string
 	for _, ep := range endpoints {
 		slog.Info("downloading via HuggingFace HTTP", "repo", repo, "endpoint", ep)
-		if err := downloadHFRepo(ctx, ep, repo, destPath); err != nil {
+		if err := downloadHFRepo(ctx, ep, repo, destPath, plan); err != nil {
 			slog.Warn("HF endpoint failed", "endpoint", ep, "error", err)
 			attemptErrs = append(attemptErrs, fmt.Sprintf("%s: %v", ep, err))
 			continue
@@ -253,11 +272,11 @@ type hfRepoFile struct {
 	Size int64  `json:"size"`
 }
 
-// downloadHFRepo lists all files in a HuggingFace repo (with recursion and pagination)
-// and downloads them, verifying file sizes after download.
-func downloadHFRepo(ctx context.Context, endpoint, repo, destPath string) error {
+// downloadHFRepo lists files in a HuggingFace repo, selects the minimal subset
+// required by the resolved variant, and downloads only those files.
+func downloadHFRepo(ctx context.Context, endpoint, repo, destPath string, plan DownloadPlan) error {
 	// Collect all files via paginated, recursive tree API calls.
-	var toDownload []hfRepoFile
+	var repoFiles []hfRepoFile
 	var totalSize int64
 
 	// Use a queue for recursive directory traversal.
@@ -275,12 +294,19 @@ func downloadHFRepo(ctx context.Context, endpoint, repo, destPath string) error 
 				queue = append(queue, f.Path)
 				continue
 			}
-			if f.Type != "file" || strings.HasPrefix(filepath.Base(f.Path), ".") {
+			if f.Type != "file" || strings.HasPrefix(path.Base(f.Path), ".") {
 				continue
 			}
-			toDownload = append(toDownload, f)
-			totalSize += f.Size
+			repoFiles = append(repoFiles, f)
 		}
+	}
+
+	toDownload, err := selectRepoFiles(repoFiles, plan)
+	if err != nil {
+		return err
+	}
+	for _, f := range toDownload {
+		totalSize += f.Size
 	}
 
 	slog.Info("repo file list retrieved",
@@ -290,7 +316,7 @@ func downloadHFRepo(ctx context.Context, endpoint, repo, destPath string) error 
 
 	// Download each file, skipping already completed ones
 	for i, f := range toDownload {
-		fileDest := filepath.Join(destPath, f.Path)
+		fileDest := filepath.Join(destPath, filepath.FromSlash(f.Path))
 		// Guard against path traversal from API-provided paths
 		if !isSubPath(destPath, fileDest) {
 			return fmt.Errorf("path traversal blocked: %s", f.Path)
@@ -398,14 +424,17 @@ func hfEndpoints() []string {
 	return []string{"https://hf-mirror.com", "https://huggingface.co"}
 }
 
-func downloadModelScope(ctx context.Context, repo, destPath string) error {
+func downloadModelScope(ctx context.Context, repo, destPath string, plan DownloadPlan) error {
 	if err := os.MkdirAll(destPath, 0o755); err != nil {
 		return fmt.Errorf("create dest dir %s: %w", destPath, err)
+	}
+	if PathLooksUsable(destPath, plan.Format) {
+		return nil
 	}
 
 	if hasResumeFriendlyDownloadState(destPath) {
 		slog.Info("resuming ModelScope download via HTTP", "repo", repo, "dest", destPath)
-		return downloadModelScopeHTTP(ctx, repo, destPath)
+		return downloadModelScopeHTTP(ctx, repo, destPath, plan)
 	}
 
 	// Prefer modelscope CLI if available
@@ -420,10 +449,10 @@ func downloadModelScope(ctx context.Context, repo, destPath string) error {
 		slog.Warn("modelscope CLI failed, falling back to HTTP repo download", "repo", repo, "error", err)
 	}
 
-	return downloadModelScopeHTTP(ctx, repo, destPath)
+	return downloadModelScopeHTTP(ctx, repo, destPath, plan)
 }
 
-func downloadModelScopeHTTP(ctx context.Context, repo, destPath string) error {
+func downloadModelScopeHTTP(ctx context.Context, repo, destPath string, plan DownloadPlan) error {
 	// Fallback: list files via ModelScope API, download each
 	apiURL := fmt.Sprintf("https://modelscope.cn/api/v1/models/%s/repo/tree?Revision=master&Root=&Recursive=true", repo)
 	slog.Info("downloading via ModelScope HTTP", "repo", repo)
@@ -453,43 +482,249 @@ func downloadModelScopeHTTP(ctx context.Context, repo, destPath string) error {
 		return fmt.Errorf("parse ModelScope file list: %w", err)
 	}
 
-	var total int
+	repoFiles := make([]hfRepoFile, 0, len(msResp.Data.Files))
 	for _, f := range msResp.Data.Files {
-		if f.Type != "file" || strings.HasPrefix(f.Name, ".") {
+		if f.Type != "file" || strings.HasPrefix(path.Base(f.Name), ".") {
 			continue
 		}
-		total++
+		repoFiles = append(repoFiles, hfRepoFile{Type: "file", Path: f.Name, Size: f.Size})
+	}
+	selected, err := selectRepoFiles(repoFiles, plan)
+	if err != nil {
+		return err
 	}
 
 	idx := 0
-	for _, f := range msResp.Data.Files {
-		if f.Type != "file" || strings.HasPrefix(f.Name, ".") {
-			continue
-		}
+	for _, f := range selected {
 		idx++
-		fileDest := filepath.Join(destPath, f.Name)
+		fileDest := filepath.Join(destPath, filepath.FromSlash(f.Path))
 		// Guard against path traversal from API-provided paths
 		if !isSubPath(destPath, fileDest) {
-			return fmt.Errorf("path traversal blocked: %s", f.Name)
+			return fmt.Errorf("path traversal blocked: %s", f.Path)
 		}
 		if info, err := os.Stat(fileDest); err == nil && info.Size() == f.Size {
 			slog.Info("skipping already downloaded",
-				"progress", fmt.Sprintf("[%d/%d]", idx, total),
-				"file", f.Name,
+				"progress", fmt.Sprintf("[%d/%d]", idx, len(selected)),
+				"file", f.Path,
 			)
 			continue
 		}
-		fileURL := fmt.Sprintf("https://modelscope.cn/models/%s/resolve/master/%s", repo, f.Name)
+		fileURL := fmt.Sprintf("https://modelscope.cn/models/%s/resolve/master/%s", repo, f.Path)
 		slog.Info("downloading file",
-			"progress", fmt.Sprintf("[%d/%d]", idx, total),
-			"file", f.Name,
+			"progress", fmt.Sprintf("[%d/%d]", idx, len(selected)),
+			"file", f.Path,
 			"size_mb", f.Size/(1024*1024),
 		)
 		if err := Download(ctx, DownloadOptions{URL: fileURL, DestPath: fileDest}); err != nil {
-			return fmt.Errorf("download %s: %w", f.Name, err)
+			return fmt.Errorf("download %s: %w", f.Path, err)
 		}
 	}
 	return nil
+}
+
+// PathLooksUsable reports whether a local path already contains a usable model
+// for the requested format, so pull can reuse it without touching the network.
+func PathLooksUsable(modelPath, format string) bool {
+	info, err := os.Stat(modelPath)
+	if err != nil {
+		return false
+	}
+	if !info.IsDir() {
+		return fileMatchesFormat(modelPath, format)
+	}
+
+	switch strings.ToLower(format) {
+	case "gguf":
+		return dirHasAnyExt(modelPath, ".gguf", ".ggml", ".bin")
+	case "safetensors":
+		return dirHasCompleteSafetensorsModel(modelPath)
+	case "":
+		return dirHasAnyExt(modelPath, ".gguf", ".ggml", ".bin") || dirHasCompleteSafetensorsModel(modelPath)
+	default:
+		return dirHasCompleteSafetensorsModel(modelPath)
+	}
+}
+
+func fileMatchesFormat(modelPath, format string) bool {
+	ext := strings.ToLower(filepath.Ext(modelPath))
+	switch strings.ToLower(format) {
+	case "gguf":
+		return ext == ".gguf" || ext == ".ggml" || ext == ".bin"
+	case "safetensors":
+		return false
+	case "":
+		return ext == ".gguf" || ext == ".ggml" || ext == ".bin"
+	default:
+		return false
+	}
+}
+
+func dirHasAnyExt(dir string, exts ...string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		for _, want := range exts {
+			if ext == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func dirHasCompleteSafetensorsModel(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
+		return false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+
+	weights := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasSuffix(strings.ToLower(name), ".safetensors") {
+			weights[name] = struct{}{}
+		}
+	}
+	if len(weights) == 0 {
+		return false
+	}
+
+	indexPath := filepath.Join(dir, "model.safetensors.index.json")
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return true
+	}
+	var index struct {
+		WeightMap map[string]string `json:"weight_map"`
+	}
+	if err := json.Unmarshal(data, &index); err != nil || len(index.WeightMap) == 0 {
+		return true
+	}
+	required := make(map[string]struct{})
+	for _, shard := range index.WeightMap {
+		required[shard] = struct{}{}
+	}
+	for shard := range required {
+		if _, ok := weights[shard]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func selectRepoFiles(files []hfRepoFile, plan DownloadPlan) ([]hfRepoFile, error) {
+	switch strings.ToLower(plan.Format) {
+	case "gguf":
+		return selectGGUFFiles(files, plan.Quantization)
+	case "safetensors":
+		return selectSafetensorFiles(files)
+	default:
+		selected := make([]hfRepoFile, 0, len(files))
+		for _, f := range files {
+			if f.Type != "file" || strings.HasPrefix(path.Base(f.Path), ".") {
+				continue
+			}
+			selected = append(selected, f)
+		}
+		return selected, nil
+	}
+}
+
+func selectGGUFFiles(files []hfRepoFile, quantization string) ([]hfRepoFile, error) {
+	candidates := make([]hfRepoFile, 0)
+	for _, f := range files {
+		lower := strings.ToLower(f.Path)
+		if strings.HasSuffix(lower, ".gguf") || strings.HasSuffix(lower, ".ggml") || strings.HasSuffix(lower, ".bin") {
+			candidates = append(candidates, f)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("repo does not contain GGUF model files")
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Path < candidates[j].Path })
+
+	tokens := quantizationTokens(quantization)
+	if len(tokens) > 0 {
+		for _, f := range candidates {
+			lower := strings.ToLower(f.Path)
+			for _, token := range tokens {
+				if strings.Contains(lower, token) {
+					return []hfRepoFile{f}, nil
+				}
+			}
+		}
+	}
+	return []hfRepoFile{candidates[0]}, nil
+}
+
+func selectSafetensorFiles(files []hfRepoFile) ([]hfRepoFile, error) {
+	selected := make(map[string]hfRepoFile)
+	for _, f := range files {
+		base := strings.ToLower(path.Base(f.Path))
+		if strings.HasSuffix(base, ".safetensors") || isRequiredModelMetadataFile(base) {
+			selected[f.Path] = f
+		}
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("repo does not contain a usable safetensors model")
+	}
+	out := make([]hfRepoFile, 0, len(selected))
+	for _, f := range selected {
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+func isRequiredModelMetadataFile(base string) bool {
+	switch base {
+	case "config.json",
+		"generation_config.json",
+		"model.safetensors.index.json",
+		"tokenizer.json",
+		"tokenizer_config.json",
+		"tokenizer.model",
+		"special_tokens_map.json",
+		"added_tokens.json",
+		"vocab.json",
+		"merges.txt",
+		"chat_template.json",
+		"preprocessor_config.json",
+		"processor_config.json":
+		return true
+	default:
+		return false
+	}
+}
+
+func quantizationTokens(q string) []string {
+	q = strings.ToLower(strings.TrimSpace(q))
+	switch q {
+	case "", "unknown":
+		return nil
+	case "q4", "int4":
+		return []string{"q4_k_m", "q4_k_s", "q4_1", "q4_0", "q4", "4bit", "int4"}
+	case "q5", "int5":
+		return []string{"q5_k_m", "q5_k_s", "q5_1", "q5_0", "q5", "5bit", "int5"}
+	case "q6", "int6":
+		return []string{"q6_k", "q6", "6bit", "int6"}
+	case "q8", "int8":
+		return []string{"q8_0", "q8", "8bit", "int8"}
+	default:
+		return []string{q}
+	}
 }
 
 // isSubPath returns true if child is under parent after cleaning both paths.
