@@ -176,14 +176,11 @@ body {
   align-items: center;
 }
 .topbar-logo-img {
-  height: 22px;
+  display: block;
+  height: 20px;
   width: auto;
   object-fit: contain;
   border-radius: 4px;
-}
-:root:not([data-theme="light"]) .topbar-logo-img,
-:root:not([data-theme="light"]) .agent-avatar {
-  mix-blend-mode: lighten;
 }
 .topbar-right {
   display: flex;
@@ -465,6 +462,8 @@ body {
   width: 32px;
   height: 32px;
   flex-shrink: 0;
+  display: block;
+  object-fit: contain;
   border-radius: 8px;
   opacity: 1;
 }
@@ -1107,7 +1106,7 @@ body {
     min-height: 48px;
   }
   .topbar-logo-img {
-    height: 18px;
+    height: 17px;
   }
   .status-text {
     font-size: 12px;
@@ -1515,7 +1514,7 @@ body {
 
   <!-- Top Bar -->
   <div class="topbar">
-    <div class="topbar-logo"><img :src="theme === 'dark' ? 'logo-dark.png' : 'logo-light.png'" alt="AIMA" class="topbar-logo-img"></div>
+    <div class="topbar-logo"><img :src="theme === 'dark' ? 'logo-dark-wordmark.svg' : 'logo-light-wordmark.svg'" alt="AIMA" class="topbar-logo-img"></div>
     <button class="topbar-support-btn"
       :class="{ active: currentView === 'support', connected: supportConnected }"
       @click="toggleView('support')">
@@ -1664,7 +1663,7 @@ body {
       <!-- Chat View -->
       <div x-show="currentView === 'chat'" style="display:flex;flex-direction:column;height:100%">
         <div class="agent-header">
-          <img class="agent-avatar" :src="theme === 'dark' ? 'logo-dark.png' : 'logo-light.png'" alt="AIMA">
+          <img class="agent-avatar" src="avatar.svg" alt="AIMA Agent">
           <div>
             <div class="agent-name">AIMA Agent</div>
             <div class="agent-mode">
