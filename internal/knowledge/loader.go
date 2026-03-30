@@ -25,6 +25,24 @@ type Catalog struct {
 	ModelAssets          []ModelAsset
 	StackComponents      []StackComponent
 	DeploymentScenarios  []DeploymentScenario
+	EngineProfiles       map[string]*EngineProfile // name -> profile (loaded from engines/profiles/)
+}
+
+// EngineProfile captures the shared identity of an engine type.
+// Assets reference a profile via `_profile: <name>` and inherit all zero-value fields.
+type EngineProfile struct {
+	Kind           string          `yaml:"kind"`
+	Metadata       ProfileMeta     `yaml:"metadata"`
+	Startup        EngineStartup   `yaml:"startup"`
+	API            EngineAPI       `yaml:"api"`
+	Amplifier      EngineAmplifier `yaml:"amplifier"`
+	PartitionHints PartitionHints  `yaml:"partition_hints"`
+}
+
+type ProfileMeta struct {
+	Name             string   `yaml:"name"`
+	VersionDefault   string   `yaml:"version_default"`
+	SupportedFormats []string `yaml:"supported_formats"`
 }
 
 // --- Hardware Profile ---
@@ -111,12 +129,26 @@ type ContainerSecurity struct {
 
 // --- Engine Asset ---
 
+// EngineSourceProbe describes how to detect a pre-installed engine binary.
+type EngineSourceProbe struct {
+	Paths           []string `yaml:"paths,omitempty"            json:"paths,omitempty"`
+	VersionCommand  []string `yaml:"version_command,omitempty"  json:"version_command,omitempty"`
+	VersionPattern  string   `yaml:"version_pattern,omitempty"  json:"version_pattern,omitempty"`
+	FallbackVersion string   `yaml:"fallback_version,omitempty" json:"fallback_version,omitempty"`
+}
+
 // EngineSource describes how to obtain an engine binary for native runtime.
 type EngineSource struct {
-	Binary    string              `yaml:"binary,omitempty"    json:"binary,omitempty"`
-	Platforms []string            `yaml:"platforms,omitempty" json:"platforms,omitempty"`
-	Download  map[string]string   `yaml:"download,omitempty"  json:"download,omitempty"`
-	Mirror    map[string][]string `yaml:"mirror,omitempty"    json:"mirror,omitempty"`
+	Binary          string              `yaml:"binary,omitempty"           json:"binary,omitempty"`
+	Platforms       []string            `yaml:"platforms,omitempty"        json:"platforms,omitempty"`
+	Download        map[string]string   `yaml:"download,omitempty"         json:"download,omitempty"`
+	Mirror          map[string][]string `yaml:"mirror,omitempty"           json:"mirror,omitempty"`
+	SHA256          map[string]string   `yaml:"sha256,omitempty"           json:"sha256,omitempty"`
+	InstallType     string              `yaml:"install_type,omitempty"     json:"install_type,omitempty"`
+	Probe           *EngineSourceProbe  `yaml:"probe,omitempty"            json:"probe,omitempty"`
+	URLTemplate     string              `yaml:"url_template,omitempty"     json:"url_template,omitempty"`
+	PlatformFiles   map[string]string   `yaml:"platform_files,omitempty"   json:"platform_files,omitempty"`
+	MirrorTemplates []string            `yaml:"mirror_templates,omitempty" json:"mirror_templates,omitempty"`
 }
 
 // Supports reports whether this source supports the given platform (e.g. "linux/amd64").
@@ -137,6 +169,7 @@ type EngineRuntime struct {
 
 type EngineAsset struct {
 	Kind             string           `yaml:"kind"              json:"kind"`
+	Profile          string           `yaml:"_profile,omitempty" json:"-"`
 	Metadata         EngineMetadata   `yaml:"metadata"          json:"metadata"`
 	Image            EngineImage      `yaml:"image"             json:"image"`
 	Hardware         EngineHardware   `yaml:"hardware"          json:"hardware"`
@@ -166,6 +199,7 @@ type EngineImage struct {
 	SizeApproxMB int      `yaml:"size_approx_mb" json:"size_approx_mb"`
 	Platforms    []string `yaml:"platforms"      json:"platforms"`
 	Registries   []string `yaml:"registries"     json:"registries"`
+	Digest       string   `yaml:"digest,omitempty" json:"digest,omitempty"`
 }
 
 type EngineHardware struct {
@@ -519,13 +553,40 @@ type ScenarioVerification struct {
 
 // LoadCatalog loads and parses all YAML knowledge assets from an fs.FS.
 func LoadCatalog(fsys fs.FS) (*Catalog, error) {
-	cat := &Catalog{}
+	cat := &Catalog{
+		EngineProfiles: make(map[string]*EngineProfile),
+	}
 
+	// Phase 1: Load engine profiles first (engines/profiles/*.yaml)
+	if entries, err := fs.ReadDir(fsys, "engines/profiles"); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+				continue
+			}
+			path := "engines/profiles/" + entry.Name()
+			data, err := fs.ReadFile(fsys, path)
+			if err != nil {
+				return nil, fmt.Errorf("read %s: %w", path, err)
+			}
+			var probe kindProbe
+			if err := yaml.Unmarshal(data, &probe); err != nil {
+				return nil, fmt.Errorf("parse %s: %w", path, err)
+			}
+			if probe.Kind == "engine_profile" {
+				var ep EngineProfile
+				if err := yaml.Unmarshal(data, &ep); err != nil {
+					return nil, fmt.Errorf("parse engine profile %s: %w", path, err)
+				}
+				cat.EngineProfiles[ep.Metadata.Name] = &ep
+			}
+		}
+	}
+
+	// Phase 2: Load all assets (profiles subdir already handled, skip it)
 	dirs := []string{"hardware", "engines", "models", "partitions", "stack", "scenarios"}
 	for _, dir := range dirs {
 		entries, err := fs.ReadDir(fsys, dir)
 		if err != nil {
-			// Directory doesn't exist: skip silently
 			continue
 		}
 		for _, entry := range entries {
@@ -542,7 +603,156 @@ func LoadCatalog(fsys fs.FS) (*Catalog, error) {
 			}
 		}
 	}
+
+	// Phase 3: Merge profiles into assets and expand URL templates
+	for i := range cat.EngineAssets {
+		ea := &cat.EngineAssets[i]
+		if ea.Profile != "" {
+			if p, ok := cat.EngineProfiles[ea.Profile]; ok {
+				mergeEngineProfile(ea, p)
+			} else {
+				slog.Warn("engine asset references unknown profile", "asset", ea.Metadata.Name, "profile", ea.Profile)
+			}
+		}
+		if ea.Source != nil {
+			expandURLTemplate(ea.Source, ea.Metadata.Version)
+		}
+	}
+
 	return cat, nil
+}
+
+// mergeEngineProfile fills zero-value fields in the asset from the profile.
+// Asset-specified values always win (override). Profile provides defaults.
+func mergeEngineProfile(ea *EngineAsset, p *EngineProfile) {
+	// Metadata: inherit version_default and supported_formats if asset has none
+	if ea.Metadata.Version == "" && p.Metadata.VersionDefault != "" {
+		ea.Metadata.Version = p.Metadata.VersionDefault
+	}
+	if len(ea.Metadata.SupportedFormats) == 0 {
+		ea.Metadata.SupportedFormats = p.Metadata.SupportedFormats
+	}
+
+	// Startup: field-by-field merge
+	mergeStartup(&ea.Startup, &p.Startup)
+
+	// API
+	if ea.API.Protocol == "" {
+		ea.API.Protocol = p.API.Protocol
+	}
+	if ea.API.BasePath == "" {
+		ea.API.BasePath = p.API.BasePath
+	}
+
+	// Amplifier
+	mergeAmplifier(&ea.Amplifier, &p.Amplifier)
+
+	// PartitionHints
+	if ea.PartitionHints.MinGPUMemoryMiB == 0 {
+		ea.PartitionHints.MinGPUMemoryMiB = p.PartitionHints.MinGPUMemoryMiB
+	}
+	if ea.PartitionHints.RecommendedGPUCoresPercent == 0 {
+		ea.PartitionHints.RecommendedGPUCoresPercent = p.PartitionHints.RecommendedGPUCoresPercent
+	}
+}
+
+func mergeStartup(dst, src *EngineStartup) {
+	if len(dst.Command) == 0 {
+		dst.Command = src.Command
+	}
+	if dst.DefaultArgs == nil {
+		dst.DefaultArgs = src.DefaultArgs
+	} else if src.DefaultArgs != nil {
+		// Key-level merge: profile provides defaults, asset overrides per-key
+		merged := make(map[string]any, len(src.DefaultArgs))
+		for k, v := range src.DefaultArgs {
+			merged[k] = v
+		}
+		for k, v := range dst.DefaultArgs {
+			merged[k] = v
+		}
+		dst.DefaultArgs = merged
+	}
+	if dst.Env == nil {
+		dst.Env = src.Env
+	} else if src.Env != nil {
+		merged := make(map[string]string, len(src.Env))
+		for k, v := range src.Env {
+			merged[k] = v
+		}
+		for k, v := range dst.Env {
+			merged[k] = v
+		}
+		dst.Env = merged
+	}
+	if dst.HealthCheck.Path == "" && dst.HealthCheck.TimeoutS == 0 {
+		dst.HealthCheck = src.HealthCheck
+	}
+	if !dst.Warmup.Enabled && src.Warmup.Enabled {
+		dst.Warmup = src.Warmup
+	}
+	if dst.LogPatterns == nil {
+		dst.LogPatterns = src.LogPatterns
+	}
+}
+
+func mergeAmplifier(dst, src *EngineAmplifier) {
+	if len(dst.Features) == 0 {
+		dst.Features = src.Features
+	}
+	if dst.PerformanceGain == "" {
+		dst.PerformanceGain = src.PerformanceGain
+	}
+	if dst.ResourceExpansion == nil {
+		dst.ResourceExpansion = src.ResourceExpansion
+	}
+	if dst.PerformanceMultiplier == 0 {
+		dst.PerformanceMultiplier = src.PerformanceMultiplier
+	}
+	if dst.EffectiveVRAMMultiplier == 0 {
+		dst.EffectiveVRAMMultiplier = src.EffectiveVRAMMultiplier
+	}
+	if dst.OffloadConfigKey == "" {
+		dst.OffloadConfigKey = src.OffloadConfigKey
+	}
+	// ExtendsResourceBoundary: bool zero is false, can't distinguish "not set" from "explicitly false".
+	// Convention: if profile says true and asset doesn't override, inherit true.
+	if src.ExtendsResourceBoundary && !dst.ExtendsResourceBoundary {
+		dst.ExtendsResourceBoundary = true
+	}
+}
+
+// expandURLTemplate expands url_template + platform_files into Download/Mirror maps.
+// If Download already has entries (legacy format), this is a no-op for backward compat.
+func expandURLTemplate(src *EngineSource, version string) {
+	if src.URLTemplate == "" || len(src.PlatformFiles) == 0 {
+		return
+	}
+	// Only expand if Download is empty (template takes priority over legacy)
+	if len(src.Download) > 0 {
+		return
+	}
+
+	src.Download = make(map[string]string, len(src.PlatformFiles))
+	src.Mirror = make(map[string][]string, len(src.PlatformFiles))
+
+	for platform, platformFile := range src.PlatformFiles {
+		// Replace {version} and {platform_file} in URL template
+		primaryURL := src.URLTemplate
+		primaryURL = strings.ReplaceAll(primaryURL, "{version}", version)
+		primaryURL = strings.ReplaceAll(primaryURL, "{platform_file}", platformFile)
+		src.Download[platform] = primaryURL
+
+		// Expand mirror templates: {url} is replaced with the full primary URL
+		if len(src.MirrorTemplates) > 0 {
+			mirrors := make([]string, 0, len(src.MirrorTemplates))
+			for _, tmpl := range src.MirrorTemplates {
+				mirrorURL := strings.ReplaceAll(tmpl, "{url}", primaryURL)
+				mirrors = append(mirrors, mirrorURL)
+			}
+			src.Mirror[platform] = mirrors
+		}
+	}
 }
 
 // normalizeMap recursively converts map[interface{}]interface{} values (from YAML)
@@ -680,9 +890,40 @@ func (cat *Catalog) ParsedKind() string {
 // per-file errors instead of failing the entire load. Returns successfully
 // parsed assets plus a list of warning messages for files that failed.
 func LoadCatalogLenient(fsys fs.FS) (*Catalog, []string) {
-	cat := &Catalog{}
+	cat := &Catalog{
+		EngineProfiles: make(map[string]*EngineProfile),
+	}
 	var warnings []string
 
+	// Phase 1: Load engine profiles
+	if entries, err := fs.ReadDir(fsys, "engines/profiles"); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+				continue
+			}
+			path := "engines/profiles/" + entry.Name()
+			data, err := fs.ReadFile(fsys, path)
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("read %s: %v", path, err))
+				continue
+			}
+			var probe kindProbe
+			if err := yaml.Unmarshal(data, &probe); err != nil {
+				warnings = append(warnings, fmt.Sprintf("parse %s: %v", path, err))
+				continue
+			}
+			if probe.Kind == "engine_profile" {
+				var ep EngineProfile
+				if err := yaml.Unmarshal(data, &ep); err != nil {
+					warnings = append(warnings, fmt.Sprintf("parse engine profile %s: %v", path, err))
+					continue
+				}
+				cat.EngineProfiles[ep.Metadata.Name] = &ep
+			}
+		}
+	}
+
+	// Phase 2: Load all assets
 	dirs := []string{"hardware", "engines", "models", "partitions", "stack", "scenarios"}
 	for _, dir := range dirs {
 		entries, err := fs.ReadDir(fsys, dir)
@@ -705,6 +946,22 @@ func LoadCatalogLenient(fsys fs.FS) (*Catalog, []string) {
 			}
 		}
 	}
+
+	// Phase 3: Merge profiles + expand URL templates
+	for i := range cat.EngineAssets {
+		ea := &cat.EngineAssets[i]
+		if ea.Profile != "" {
+			if p, ok := cat.EngineProfiles[ea.Profile]; ok {
+				mergeEngineProfile(ea, p)
+			} else {
+				warnings = append(warnings, fmt.Sprintf("engine %s: unknown profile %q", ea.Metadata.Name, ea.Profile))
+			}
+		}
+		if ea.Source != nil {
+			expandURLTemplate(ea.Source, ea.Metadata.Version)
+		}
+	}
+
 	return cat, warnings
 }
 

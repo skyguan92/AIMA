@@ -33,6 +33,7 @@ type BinarySource struct {
 	Platforms []string            // e.g. ["linux/amd64", "darwin/arm64"]
 	Download  map[string]string   // platform -> URL
 	Mirror    map[string][]string // platform -> mirror URLs (tried in order)
+	SHA256    map[string]string   // platform -> expected hex digest (optional)
 }
 
 // Supports reports whether this source supports the given platform string (e.g. "linux/amd64").
@@ -82,7 +83,8 @@ func (m *BinaryManager) Resolve(ctx context.Context, source *BinarySource) (stri
 		return "", fmt.Errorf("no download URL for platform %s", platform)
 	}
 
-	if err := m.download(ctx, url, mirrorURLs, m.distDir, name); err != nil {
+	expectedSHA256 := source.SHA256[platform]
+	if err := m.download(ctx, url, mirrorURLs, m.distDir, name, expectedSHA256); err != nil {
 		return "", fmt.Errorf("download %s: %w", name, err)
 	}
 
@@ -115,11 +117,12 @@ func (m *BinaryManager) Download(ctx context.Context, source *BinarySource) erro
 		return fmt.Errorf("no download URL for platform %s", platform)
 	}
 
-	return m.download(ctx, url, mirrorURLs, m.distDir, source.Binary)
+	expectedSHA256 := source.SHA256[platform]
+	return m.download(ctx, url, mirrorURLs, m.distDir, source.Binary, expectedSHA256)
 }
 
 // download tries mirror URLs first, then primary. Extracts zip/tar.gz archives.
-func (m *BinaryManager) download(ctx context.Context, url string, mirrorURLs []string, destDir, binaryName string) error {
+func (m *BinaryManager) download(ctx context.Context, url string, mirrorURLs []string, destDir, binaryName, expectedSHA256 string) error {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("create dist dir: %w", err)
 	}
@@ -134,10 +137,19 @@ func (m *BinaryManager) download(ctx context.Context, url string, mirrorURLs []s
 	var lastErr error
 	for _, u := range urls {
 		slog.Info("downloading engine binary", "url", u, "dest", destDir)
-		if err := downloadAndExtract(ctx, u, destDir, binaryName); err != nil {
+		actualSHA256, err := downloadAndExtract(ctx, u, destDir, binaryName)
+		if err != nil {
 			slog.Warn("download failed, trying next source", "url", u, "error", err)
 			lastErr = err
 			continue
+		}
+
+		if expectedSHA256 != "" {
+			if actualSHA256 != expectedSHA256 {
+				slog.Warn("sha256 mismatch", "expected", expectedSHA256, "actual", actualSHA256, "url", u)
+			} else {
+				slog.Info("sha256 verified", "sha256", actualSHA256)
+			}
 		}
 
 		// Make binary executable on non-Windows
@@ -164,10 +176,11 @@ func (m *BinaryManager) download(ctx context.Context, url string, mirrorURLs []s
 }
 
 // downloadAndExtract downloads url to a temp file then extracts or renames it.
-func downloadAndExtract(ctx context.Context, url, destDir, binaryName string) error {
+// Returns the SHA256 hex digest of the downloaded content.
+func downloadAndExtract(ctx context.Context, url, destDir, binaryName string) (string, error) {
 	tmpFile, err := os.CreateTemp(destDir, ".download-*")
 	if err != nil {
-		return fmt.Errorf("create temp file in %s: %w", destDir, err)
+		return "", fmt.Errorf("create temp file in %s: %w", destDir, err)
 	}
 	tmpPath := tmpFile.Name()
 	defer func() {
@@ -177,43 +190,44 @@ func downloadAndExtract(ctx context.Context, url, destDir, binaryName string) er
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("create HTTP request for %s: %w", url, err)
+		return "", fmt.Errorf("create HTTP request for %s: %w", url, err)
 	}
 
 	client := &http.Client{Timeout: 30 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("download from %s: %w", url, err)
+		return "", fmt.Errorf("download from %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+		return "", fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
 	h := sha256.New()
 	written, err := io.Copy(io.MultiWriter(tmpFile, h), resp.Body)
 	if err != nil {
-		return fmt.Errorf("write: %w", err)
+		return "", fmt.Errorf("write: %w", err)
 	}
 	tmpFile.Close()
 
-	slog.Info("download complete", "bytes", written, "sha256", fmt.Sprintf("%x", h.Sum(nil))[:16])
+	actualSHA256 := fmt.Sprintf("%x", h.Sum(nil))
+	slog.Info("download complete", "bytes", written, "sha256", actualSHA256[:16])
 
 	// Detect format from URL and extract
 	urlLower := strings.ToLower(url)
 	switch {
 	case strings.HasSuffix(urlLower, ".tar.gz") || strings.HasSuffix(urlLower, ".tgz"):
-		return extractTarGz(tmpPath, destDir)
+		return actualSHA256, extractTarGz(tmpPath, destDir)
 	case strings.HasSuffix(urlLower, ".zip"):
-		return extractZip(tmpPath, destDir)
+		return actualSHA256, extractZip(tmpPath, destDir)
 	default:
 		// Plain binary — rename directly
 		binPath := filepath.Join(destDir, binaryName)
 		if goruntime.GOOS == "windows" && !strings.HasSuffix(binPath, ".exe") {
 			binPath += ".exe"
 		}
-		return os.Rename(tmpPath, binPath)
+		return actualSHA256, os.Rename(tmpPath, binPath)
 	}
 }
 

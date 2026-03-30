@@ -2,17 +2,20 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path"
 	"strings"
 )
 
 // PullOptions configures an image pull operation.
 type PullOptions struct {
-	Image      string
-	Tag        string
-	Registries []string
-	Runner     CommandRunner
+	Image          string
+	Tag            string
+	Registries     []string
+	Runner         CommandRunner
+	ExpectedDigest string // OCI content digest e.g. "sha256:abc123..." (optional)
 }
 
 // ImageExists reports whether a container image is already present in the local runtime.
@@ -49,11 +52,13 @@ func Pull(ctx context.Context, opts PullOptions) error {
 
 		// Try crictl first (with K3S fallback)
 		if _, err := runCrictl(ctx, opts.Runner, "pull", ref); err == nil {
+			verifyDigest(ctx, opts.Runner, ref, opts.ExpectedDigest)
 			return nil
 		}
 
 		// Fallback to docker
 		if _, err := opts.Runner.Run(ctx, "docker", "pull", ref); err == nil {
+			verifyDigest(ctx, opts.Runner, ref, opts.ExpectedDigest)
 			return nil
 		} else {
 			lastErr = err
@@ -96,6 +101,57 @@ func ImportDockerToContainerd(ctx context.Context, image string, runner CommandR
 		return fmt.Errorf("import %s: %w", image, err)
 	}
 	return nil
+}
+
+// verifyDigest checks the pulled image's digest against an expected value.
+// On mismatch or inspection failure it logs a warning but never returns an error
+// (graceful degradation -- digest verification is advisory).
+func verifyDigest(ctx context.Context, runner CommandRunner, ref, expectedDigest string) {
+	if expectedDigest == "" {
+		return
+	}
+
+	// Try docker inspect first.
+	out, err := runner.Run(ctx, "docker", "inspect", "--format", "{{json .RepoDigests}}", ref)
+	if err == nil {
+		var digests []string
+		if jsonErr := json.Unmarshal(out, &digests); jsonErr == nil {
+			for _, d := range digests {
+				// Each entry looks like "registry/image@sha256:abc123..."
+				if idx := strings.Index(d, "@"); idx >= 0 {
+					actual := d[idx+1:]
+					if actual == expectedDigest {
+						slog.Info("image digest verified", "ref", ref, "digest", expectedDigest)
+						return
+					}
+				}
+			}
+		}
+	}
+
+	// Try crictl inspecti as fallback.
+	out, err = runCrictl(ctx, runner, "inspecti", ref)
+	if err == nil {
+		var info struct {
+			Status struct {
+				RepoDigests []string `json:"repoDigests"`
+			} `json:"status"`
+		}
+		if jsonErr := json.Unmarshal(out, &info); jsonErr == nil {
+			for _, d := range info.Status.RepoDigests {
+				if idx := strings.Index(d, "@"); idx >= 0 {
+					actual := d[idx+1:]
+					if actual == expectedDigest {
+						slog.Info("image digest verified", "ref", ref, "digest", expectedDigest)
+						return
+					}
+				}
+			}
+		}
+	}
+
+	slog.Warn("image digest verification: no matching digest found",
+		"ref", ref, "expected", expectedDigest)
 }
 
 // buildImageRef constructs a full image reference from registry, image name, and tag.

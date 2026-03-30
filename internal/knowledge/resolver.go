@@ -62,6 +62,7 @@ type ResolvedConfig struct {
 	CPUArch               string            // CPU architecture (e.g. "amd64", "arm64") — for platform-specific paths
 	Container             *ContainerAccess  // vendor-specific container access (devices, env, volumes, security) from hardware profile
 	EngineRegistries      []string          // container image registries from engine YAML (for pre-pull fallback)
+	EngineDigest          string            // OCI content digest from engine YAML (for pull verification)
 
 	// Time estimates (zero = unknown, graceful degradation)
 	ColdStartSMin int // engine cold start lower bound (seconds)
@@ -206,6 +207,7 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 		HealthCheck:      &engine.Startup.HealthCheck,
 		Source:           engine.Source,
 		EngineRegistries: engine.Image.Registries,
+		EngineDigest:     engine.Image.Digest,
 	}
 	if engine.Startup.Warmup.Enabled {
 		resolved.Warmup = &engine.Startup.Warmup

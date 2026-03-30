@@ -1,0 +1,71 @@
+kind: engine_asset
+metadata:
+  name: litetts
+  type: litetts
+  version: "0.4d"
+  supported_formats: [mnn]
+hardware:
+  gpu_arch: "*"
+  vram_min_mib: 0
+source:
+  binary: integrated_server
+  install_type: preinstalled
+  probe:
+    paths:
+      - /opt/mt-ai/tts/start_server.sh
+      - /opt/mt-ai/tts/integrated_server
+    version_command: ["./integrated_server", "--version"]
+    version_pattern: "([\\d.]+[a-z]?)"
+    fallback_version: "unknown"
+startup:
+  # start_server.sh uses parse_options.sh which expects --flag_name (underscores).
+  # AIMA's configToFlags converts underscores to hyphens, so we put all TTS-specific
+  # args directly in the command to avoid the mismatch.
+  command: ["./start_server.sh", "--target_voices", "AIBC006_lite", "--grpc_port_v1beta1", "32108", "--grpc_port", "32109", "--http_port", "32110"]
+  work_dir: /opt/mt-ai/tts  # AIBook factory image path -- override via ~/.aima/catalog/
+  env:
+    TARGET_DEVICE: cpu
+    PROSODY_MODEL_TARGET_DEVICE: cpu
+    PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
+    ONNX_INTRA_OP_NUM_THREADS: "2"
+    ONNX_INTER_OP_NUM_THREADS: "2"
+    TORCH_NUM_THREADS: "2"
+    OMP_NUM_THREADS: "2"
+    MKL_NUM_THREADS: "2"
+    NUM_FFMPEG_THREADS: "2"
+    TOKENIZERS_PARALLELISM: "true"
+    TOS_ACCESS_KEY: XXX  # dummy -- start.sh reads these but TOS upload is unused in offline mode
+    TOS_SECRET_KEY: XXX  # dummy -- same as above
+    LOG_DIR: /tmp
+    POD_NAME: latest_lite
+    TZ: Asia/Shanghai
+  default_args:
+    port: 32110  # AIMA uses this for health check URL; actual flag is --http_port in command
+  health_check:
+    path: /
+    timeout_s: 60
+  log_patterns:
+    phases:
+      - name: loading_models
+        pattern: "Loading model from cache|use runtime"
+        progress: 30
+      - name: loading_mnn
+        pattern: "MNNLiteTtsService.*streaming"
+        progress: 80
+      - name: ready
+        pattern: "Running on all addresses|Start TTS gRPC service"
+        progress: 100
+    errors:
+      - pattern: "Device string must not be empty"
+        message: "Missing TARGET_DEVICE=cpu env var -- prosody predictor defaults to GPU"
+      - pattern: "RuntimeError"
+        message: "Runtime error during TTS initialization"
+api:
+  protocol: http
+  base_path: /tts/api/v1
+time_constraints:
+  cold_start_s: [15, 30]
+runtime:
+  default: "native"
+  platform_recommendations:
+    linux/arm64: "native"

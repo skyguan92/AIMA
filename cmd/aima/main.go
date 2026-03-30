@@ -1746,6 +1746,7 @@ func toEngineBinarySource(src *knowledge.EngineSource) *engine.BinarySource {
 		Platforms: src.Platforms,
 		Download:  src.Download,
 		Mirror:    src.Mirror,
+		SHA256:    src.SHA256,
 	}
 }
 
@@ -2446,15 +2447,23 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				binaryAssets[ea.Source.Binary+".exe"] = ea.Metadata.Type
 			}
 		}
+		// Build preinstalled probes from engine assets with source.install_type == "preinstalled"
+		preinstalledProbes := make(map[string]*knowledge.EngineSourceProbe)
+		for _, ea := range cat.EngineAssets {
+			if ea.Source != nil && ea.Source.InstallType == "preinstalled" && ea.Source.Probe != nil {
+				preinstalledProbes[ea.Metadata.Name] = ea.Source.Probe
+			}
+		}
 		platform := goruntime.GOOS + "-" + goruntime.GOARCH
 		distDir := filepath.Join(dataDir, "dist", platform)
 		images, err := engine.ScanUnified(ctx, engine.ScanOptions{
-			AssetPatterns: assetPatterns,
-			Runner:        &execRunner{},
-			DistDir:       distDir,
-			Platform:      platform,
-			BinaryAssets:  binaryAssets,
-			AutoImport:    autoImport,
+			AssetPatterns:      assetPatterns,
+			Runner:             &execRunner{},
+			DistDir:            distDir,
+			Platform:           platform,
+			BinaryAssets:       binaryAssets,
+			AutoImport:         autoImport,
+			PreinstalledProbes: preinstalledProbes,
 		})
 		if err != nil {
 			return nil, err
@@ -2770,10 +2779,11 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 					return nil
 				}
 				return engine.Pull(ctx, engine.PullOptions{
-					Image:      ea.Image.Name,
-					Tag:        ea.Image.Tag,
-					Registries: ea.Image.Registries,
-					Runner:     &execRunner{},
+					Image:          ea.Image.Name,
+					Tag:            ea.Image.Tag,
+					Registries:     ea.Image.Registries,
+					Runner:         &execRunner{},
+					ExpectedDigest: ea.Image.Digest,
 				})
 			}
 			return fmt.Errorf("engine %q has no download source for platform %s/%s", name, goruntime.GOOS, goruntime.GOARCH)
@@ -2936,10 +2946,11 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 							imgTag = imgParts[1]
 						}
 						if pullErr := engine.Pull(ctx, engine.PullOptions{
-							Image:      imgName,
-							Tag:        imgTag,
-							Registries: resolved.EngineRegistries,
-							Runner:     &execRunner{},
+							Image:          imgName,
+							Tag:            imgTag,
+							Registries:     resolved.EngineRegistries,
+							Runner:         &execRunner{},
+							ExpectedDigest: resolved.EngineDigest,
 						}); pullErr != nil {
 							slog.Warn("pre-pull failed, K3S will try registries.yaml", "image", req.Image, "error", pullErr)
 						}

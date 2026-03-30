@@ -1,0 +1,63 @@
+kind: engine_asset
+metadata:
+  name: mooer-asr-musa
+  type: mooer
+  version: "1.5"
+  supported_formats: [safetensors]
+hardware:
+  gpu_arch: MUSA
+  vram_min_mib: 15360
+source:
+  binary: mooer_server_aibook2
+  install_type: preinstalled
+  probe:
+    paths:
+      - /opt/mt-ai/mooer/mooer_server_aibook2
+      - /usr/local/bin/mooer_server_aibook2
+    version_command: ["./mooer_server_aibook2", "--version"]
+    version_pattern: "([\\d.]+)"
+    fallback_version: "unknown"
+startup:
+  command: ["./mooer_server_aibook2"]
+  work_dir: /opt/mt-ai/mooer  # AIBook factory image path -- override via ~/.aima/catalog/
+  env:
+    LD_LIBRARY_PATH: "/usr/local/musa/lib:/usr/lib/aarch64-linux-gnu/musa:/usr/lib/aarch64-linux-gnu"
+    MUSA_HOME: "/usr/local/musa"
+  default_args:
+    port: 32107
+    only_ast: false
+    mode: zh2en
+  health_check:
+    path: /health
+    timeout_s: 120
+  log_patterns:
+    phases:
+      - name: loading
+        pattern: "Loading model|Loading checkpoint"
+        progress: 50
+      - name: ready
+        pattern: "Application startup complete|Uvicorn running|Server started"
+        progress: 100
+    errors:
+      - pattern: "OutOfMemoryError|out of memory"
+        message: "GPU memory insufficient -- MoOER needs ~15GB, check coexisting services"
+      - pattern: "MUSA initialization error|CreatePlatform failed"
+        message: "MUSA platform init failed -- check GPU device access"
+api:
+  protocol: custom
+  base_path: /
+amplifier:
+  features:
+    - flash_attention
+  performance_gain: "MoOER ASR with flash_attn for MUSA GPU acceleration"
+  resource_expansion:
+    cpu_offload: false
+    ssd_offload: false
+    npu_offload: false
+time_constraints:
+  cold_start_s: [42, 50]
+  model_switch_s: [42, 50]
+runtime:
+  default: "native"
+  platform_recommendations:
+    linux/arm64: "native"

@@ -9,9 +9,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/jguan/aima/internal/knowledge"
 )
 
 // EngineImage represents a locally available engine (container image or native binary).
@@ -25,7 +29,9 @@ type EngineImage struct {
 	RuntimeType string `json:"runtime_type"`         // "container" or "native"
 	BinaryPath  string `json:"binary_path"`          // path to native binary (native engines only)
 	Available   bool   `json:"available"`
-	DockerOnly  bool   `json:"docker_only,omitempty"` // true if image is in Docker but not K3S containerd
+	DockerOnly      bool   `json:"docker_only,omitempty"`      // true if image is in Docker but not K3S containerd
+	DetectedVersion string `json:"detected_version,omitempty"` // version found by probing
+	VersionMatch    string `json:"version_match,omitempty"`    // "exact", "compatible", "unknown", "mismatch"
 }
 
 // CommandRunner abstracts shell command execution for testability.
@@ -42,7 +48,8 @@ type ScanOptions struct {
 	DistDir      string // dist directory for native binaries (~/.aima/dist/{os}-{arch}/)
 	Platform     string // current platform (e.g., "windows-amd64")
 	BinaryAssets map[string]string // binary name -> engine type (native engines)
-	AutoImport   bool // when true, auto-import Docker-only images to K3S containerd (heavy; use only during init)
+	AutoImport         bool                                    // when true, auto-import Docker-only images to K3S containerd (heavy; use only during init)
+	PreinstalledProbes map[string]*knowledge.EngineSourceProbe // engine type -> probe config
 }
 
 // ScanUnified discovers both container images and native binaries.
@@ -110,6 +117,10 @@ func ScanUnified(ctx context.Context, opts ScanOptions) ([]*EngineImage, error) 
 			allEngines = append(allEngines, native...)
 		}
 	}
+
+	// Probe pre-installed engines
+	preinstalled := probePreinstalled(ctx, opts)
+	allEngines = append(allEngines, preinstalled...)
 
 	return allEngines, nil
 }
@@ -227,6 +238,66 @@ func ScanNative(ctx context.Context, opts ScanOptions) ([]*EngineImage, error) {
 	}
 
 	return found, nil
+}
+
+// probePreinstalled discovers pre-installed engines by checking known paths
+// and optionally running version detection commands.
+func probePreinstalled(ctx context.Context, opts ScanOptions) []*EngineImage {
+	if opts.PreinstalledProbes == nil {
+		return nil
+	}
+	var found []*EngineImage
+	for engineType, probe := range opts.PreinstalledProbes {
+		// Search probe.Paths for the binary
+		var binaryPath string
+		for _, p := range probe.Paths {
+			if _, err := os.Stat(p); err == nil {
+				binaryPath = p
+				break
+			}
+		}
+		if binaryPath == "" {
+			continue // not installed on this device
+		}
+
+		// Detect version
+		detectedVersion := probe.FallbackVersion
+		versionMatch := "unknown"
+		if len(probe.VersionCommand) > 0 && opts.Runner != nil {
+			// Execute version command with 5s timeout
+			vCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			out, err := opts.Runner.Run(vCtx, probe.VersionCommand[0], probe.VersionCommand[1:]...)
+			cancel()
+			if err == nil && probe.VersionPattern != "" {
+				re, reErr := regexp.Compile(probe.VersionPattern)
+				if reErr == nil {
+					if matches := re.FindSubmatch(out); len(matches) > 1 {
+						detectedVersion = string(matches[1])
+						versionMatch = "exact" // we found a version
+					}
+				}
+			}
+		}
+
+		info, _ := os.Stat(binaryPath)
+		var size int64
+		if info != nil {
+			size = info.Size()
+		}
+
+		found = append(found, &EngineImage{
+			ID:              binaryHash("preinstalled-" + engineType),
+			Type:            engineType,
+			SizeBytes:       size,
+			Platform:        opts.Platform,
+			RuntimeType:     "native",
+			BinaryPath:      binaryPath,
+			Available:       true,
+			DetectedVersion: detectedVersion,
+			VersionMatch:    versionMatch,
+		})
+	}
+	return found
 }
 
 func binaryHash(name string) string {
