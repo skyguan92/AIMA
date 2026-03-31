@@ -317,14 +317,14 @@ func TestDeployAutoPullAllowed(t *testing.T) {
 func TestPrepareContainerCompatibilityUsesRepairInitCommands(t *testing.T) {
 	modelPath := t.TempDir()
 	resolved := &knowledge.ResolvedConfig{
-		ModelName:           "qwen3.5-9b",
-		ModelFormat:         "safetensors",
-		EngineImage:         "vllm/vllm-openai:qwen3_5-cu130",
-		CompatibilityProbe:  "transformers_autoconfig",
-		RepairInitCommands:  []string{"python3 -m pip install --no-cache-dir --upgrade transformers"},
-		Config:              map[string]any{"trust_remote_code": true},
-		EngineDistribution:  "registry",
-		EngineRegistries:    []string{"docker.io/vllm/vllm-openai"},
+		ModelName:          "qwen3.5-9b",
+		ModelFormat:        "safetensors",
+		EngineImage:        "vllm/vllm-openai:qwen3_5-cu130",
+		CompatibilityProbe: "transformers_autoconfig",
+		RepairInitCommands: []string{"python3 -m pip install --no-cache-dir --upgrade transformers"},
+		Config:             map[string]any{"trust_remote_code": true},
+		EngineDistribution: "registry",
+		EngineRegistries:   []string{"docker.io/vllm/vllm-openai"},
 	}
 
 	repairProbeUsed := false
