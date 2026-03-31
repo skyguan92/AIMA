@@ -78,7 +78,7 @@ func TestNewRootCmd(t *testing.T) {
 		"run", "init", "hal",
 		"deploy", "undeploy", "status",
 		"model", "engine", "knowledge", "catalog",
-		"ask", "agent", "config", "serve", "discover",
+		"ask", "agent", "config", "serve", "mcp", "discover",
 	}
 	cmds := make(map[string]bool)
 	for _, c := range root.Commands() {

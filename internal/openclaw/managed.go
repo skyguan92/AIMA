@@ -19,6 +19,7 @@ type ManagedState struct {
 	TTSModel                string   `json:"tts_model,omitempty"`
 	ImageGenerationProvider string   `json:"image_generation_provider,omitempty"`
 	ImageGenerationModels   []string `json:"image_generation_models,omitempty"`
+	MCPServerName           string   `json:"mcp_server_name,omitempty"`
 }
 
 func ManagedStatePath(configPath string) string {
@@ -71,7 +72,8 @@ func (s *ManagedState) Empty() bool {
 		len(s.VisionModels) == 0 &&
 		s.TTSModel == "" &&
 		s.ImageGenerationProvider == "" &&
-		len(s.ImageGenerationModels) == 0
+		len(s.ImageGenerationModels) == 0 &&
+		s.MCPServerName == ""
 }
 
 func normalizeManagedState(state *ManagedState) {

@@ -568,12 +568,17 @@ func run() error {
 	})
 
 	// OpenClaw integration: wire adapters + routes + sync tool
+	mcpCommand := "aima"
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		mcpCommand = exe
+	}
 	openclawDeps := &openclaw.Deps{
 		Backends:   proxyBackendAdapter{proxyServer},
 		Catalog:    catalogAdapter{cat},
 		ConfigPath: openclaw.DefaultConfigPath(),
 		ProxyAddr:  fmt.Sprintf("http://127.0.0.1:%d/v1", proxy.DefaultPort),
 		APIKey:     proxyServer.APIKey,
+		MCPCommand: mcpCommand,
 	}
 	openclawRoutes := openclaw.RegisterRoutes(openclawDeps)
 	refreshOpenClawBackends := func(ctx context.Context) {

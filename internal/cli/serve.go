@@ -208,6 +208,10 @@ func resolveMCPProfile(mcpEnabled bool, profile string) (mcp.Profile, error) {
 	if !mcpEnabled {
 		return mcp.ProfileFull, fmt.Errorf("--mcp-profile requires --mcp")
 	}
+	return parseMCPProfile(profile)
+}
+
+func parseMCPProfile(profile string) (mcp.Profile, error) {
 	p := mcp.Profile(profile)
 	if !mcp.IsValidProfile(p) {
 		return mcp.ProfileFull, fmt.Errorf("unknown MCP profile %q; valid profiles: operator, patrol, explorer", profile)

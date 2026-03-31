@@ -18,19 +18,20 @@ var gatewayListenRE = regexp.MustCompile(`ws://(?:127\.0\.0\.1|\[::1\]):([0-9]+)
 
 // Status describes how completely AIMA is integrated with the local OpenClaw instance.
 type Status struct {
-	Connected      bool         `json:"connected"`
-	GatewayLive    bool         `json:"gateway_live"`
-	GatewayURL     string       `json:"gateway_url,omitempty"`
-	ConfigPath     string       `json:"config_path"`
-	ConfigExists   bool         `json:"config_exists"`
-	ProxyAddr      string       `json:"proxy_addr"`
-	AIMAConfigured bool         `json:"aima_configured"`
-	ClaimNeeded    bool         `json:"claim_needed"`
-	SyncReady      bool         `json:"sync_ready"`
-	Expected       ModelSummary `json:"expected"`
-	Configured     ModelSummary `json:"configured"`
-	Claimable      ModelSummary `json:"claimable,omitempty"`
-	Issues         []string     `json:"issues,omitempty"`
+	Connected      bool            `json:"connected"`
+	GatewayLive    bool            `json:"gateway_live"`
+	GatewayURL     string          `json:"gateway_url,omitempty"`
+	ConfigPath     string          `json:"config_path"`
+	ConfigExists   bool            `json:"config_exists"`
+	ProxyAddr      string          `json:"proxy_addr"`
+	AIMAConfigured bool            `json:"aima_configured"`
+	ClaimNeeded    bool            `json:"claim_needed"`
+	SyncReady      bool            `json:"sync_ready"`
+	MCPServer      *MCPServerEntry `json:"mcp_server,omitempty"`
+	Expected       ModelSummary    `json:"expected"`
+	Configured     ModelSummary    `json:"configured"`
+	Claimable      ModelSummary    `json:"claimable,omitempty"`
+	Issues         []string        `json:"issues,omitempty"`
 }
 
 // ModelSummary captures the OpenClaw-facing models that AIMA expects or has configured.
@@ -80,6 +81,7 @@ func Inspect(ctx context.Context, deps *Deps) (*Status, error) {
 			status.Claimable = summaryFromManagedState(cfg, claimableState(cfg, managed, status.Expected, deps.ProxyAddr))
 			status.ClaimNeeded = summaryCount(status.Claimable) > 0
 			status.AIMAConfigured = summaryCount(status.Configured) > 0
+			status.MCPServer = inspectMCPServer(cfg, managed, expectedResult.MCPServer)
 		}
 	}
 
@@ -91,9 +93,20 @@ func Inspect(ctx context.Context, deps *Deps) (*Status, error) {
 		}
 	}
 
-	status.SyncReady = summariesEqual(status.Expected, status.Configured)
+	mcpReady := status.MCPServer == nil || status.MCPServer.Registered
+	status.SyncReady = summariesEqual(status.Expected, status.Configured) && mcpReady
 	if status.ClaimNeeded {
 		status.Issues = append(status.Issues, "legacy OpenClaw config points to the AIMA proxy but is not yet claimed; run openclaw.claim")
+	}
+	if status.MCPServer != nil {
+		switch {
+		case !status.ConfigExists:
+			status.Issues = append(status.Issues, "openclaw.json not found; run openclaw.sync to register the AIMA MCP server")
+		case !status.MCPServer.Registered:
+			status.Issues = append(status.Issues, "mcp.servers.aima is missing from openclaw.json")
+		case !status.MCPServer.Managed:
+			status.Issues = append(status.Issues, "mcp.servers.aima exists but is not AIMA-managed; AIMA will preserve it")
+		}
 	}
 	if summaryCount(status.Expected) > 0 {
 		switch {
@@ -328,6 +341,43 @@ func parseModelRef(raw string) *modelRef {
 		Provider: strings.TrimSpace(raw[:slash]),
 		Model:    strings.TrimSpace(raw[slash+1:]),
 	}
+}
+
+func inspectMCPServer(cfg map[string]any, managed *ManagedState, desired *MCPServerEntry) *MCPServerEntry {
+	if desired == nil {
+		return nil
+	}
+	status := &MCPServerEntry{
+		Name:    desired.Name,
+		Command: desired.Command,
+		Args:    append([]string(nil), desired.Args...),
+	}
+	servers := lookupMap(cfg, "mcp", "servers")
+	if servers == nil {
+		return status
+	}
+	raw, ok := servers[desired.Name]
+	if !ok {
+		return status
+	}
+	status.Registered = true
+	entry, ok := raw.(map[string]any)
+	if !ok {
+		status.Managed = false
+		status.Action = "preserved_unmanaged"
+		status.Reason = fmt.Sprintf("existing mcp.servers.%s is not an object", desired.Name)
+		return status
+	}
+	status.Command = asString(entry["command"])
+	status.Args = stringArgs(entry["args"])
+	status.Managed = managed != nil && managed.MCPServerName == desired.Name
+	if status.Managed {
+		status.Action = "managed"
+	} else {
+		status.Action = "preserved_unmanaged"
+		status.Reason = fmt.Sprintf("existing mcp.servers.%s is not AIMA-managed", desired.Name)
+	}
+	return status
 }
 
 func summariesEqual(a, b ModelSummary) bool {

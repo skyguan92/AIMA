@@ -58,6 +58,7 @@ func (m *mockCatalog) ModelFamily(name string) string {
 }
 
 func TestSyncDryRun(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "openclaw.json")
 	deps := &Deps{
 		Backends: &mockBackends{backends: map[string]*Backend{
 			"qwen3-8b":       {ModelName: "qwen3-8b", EngineType: "vllm", Address: "http://127.0.0.1:8000", Ready: true},
@@ -67,8 +68,9 @@ func TestSyncDryRun(t *testing.T) {
 			"remote-model":   {ModelName: "remote-model", EngineType: "vllm", Address: "http://192.168.1.5:8000", Ready: true, Remote: true},
 		}},
 		Catalog:    &mockCatalog{},
-		ConfigPath: "/tmp/test-openclaw.json",
+		ConfigPath: configPath,
 		ProxyAddr:  "http://127.0.0.1:6188/v1",
+		MCPCommand: "/usr/local/bin/aima",
 	}
 
 	result, err := Sync(context.Background(), deps, true)
@@ -93,6 +95,18 @@ func TestSyncDryRun(t *testing.T) {
 	}
 	if result.TTSModel == nil || result.TTSModel.ID != "qwen3-tts-0.6b" {
 		t.Errorf("expected TTS model qwen3-tts-0.6b, got %v", result.TTSModel)
+	}
+	if result.MCPServer == nil {
+		t.Fatal("expected MCP server state")
+	}
+	if !result.MCPServer.Registered || !result.MCPServer.Managed {
+		t.Fatalf("expected managed MCP server, got %+v", result.MCPServer)
+	}
+	if result.MCPServer.Action != "managed" {
+		t.Fatalf("mcp action = %q, want managed", result.MCPServer.Action)
+	}
+	if result.ConfigExists {
+		t.Fatal("configExists = true, want false")
 	}
 }
 
@@ -122,6 +136,7 @@ func TestSyncWritesConfig(t *testing.T) {
 		ConfigPath: configPath,
 		ProxyAddr:  "http://127.0.0.1:6188/v1",
 		APIKey:     func() string { return "test-key" },
+		MCPCommand: "/usr/local/bin/aima",
 	}
 
 	result, err := Sync(context.Background(), deps, false)
@@ -163,6 +178,19 @@ func TestSyncWritesConfig(t *testing.T) {
 	}
 	if managed.LLMProvider != "aima" {
 		t.Fatalf("managed llm provider = %q, want aima", managed.LLMProvider)
+	}
+	if managed.MCPServerName != "aima" {
+		t.Fatalf("managed mcp server = %q, want aima", managed.MCPServerName)
+	}
+	server := lookupMap(cfg, "mcp", "servers", "aima")
+	if server == nil {
+		t.Fatal("mcp.servers.aima missing after sync")
+	}
+	if got := server["command"]; got != "/usr/local/bin/aima" {
+		t.Fatalf("mcp.servers.aima.command = %v, want /usr/local/bin/aima", got)
+	}
+	if got := stringArgs(server["args"]); len(got) != 3 || got[0] != "mcp" || got[1] != "--profile" || got[2] != "operator" {
+		t.Fatalf("mcp.servers.aima.args = %v, want [mcp --profile operator]", got)
 	}
 }
 
@@ -401,8 +429,9 @@ func TestSyncVLMInput(t *testing.T) {
 			"glm-4.1v-9b": {ModelName: "glm-4.1v-9b", EngineType: "vllm", Address: "http://127.0.0.1:8000", Ready: true},
 		}},
 		Catalog:    &mockCatalog{},
-		ConfigPath: "/tmp/test-openclaw.json",
+		ConfigPath: filepath.Join(t.TempDir(), "openclaw.json"),
 		ProxyAddr:  "http://127.0.0.1:6188/v1",
+		MCPCommand: "/usr/local/bin/aima",
 	}
 
 	result, err := Sync(context.Background(), deps, true)
@@ -415,6 +444,167 @@ func TestSyncVLMInput(t *testing.T) {
 	// VLM models should have ["text", "image"] input
 	if len(result.LLMModels[0].Input) != 2 || result.LLMModels[0].Input[1] != "image" {
 		t.Errorf("VLM input should be [text, image], got %v", result.LLMModels[0].Input)
+	}
+}
+
+func TestSyncPreservesUnmanagedMCPServer(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "openclaw.json")
+	existing := map[string]any{
+		"mcp": map[string]any{
+			"servers": map[string]any{
+				"aima": map[string]any{
+					"command": "custom-aima",
+					"args":    []any{"mcp", "--profile", "explorer"},
+				},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(existing, "", "  ")
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	deps := &Deps{
+		Backends: &mockBackends{backends: map[string]*Backend{
+			"qwen3-8b": {ModelName: "qwen3-8b", EngineType: "vllm", Address: "http://127.0.0.1:8000", Ready: true},
+		}},
+		Catalog:    &mockCatalog{},
+		ConfigPath: configPath,
+		ProxyAddr:  "http://127.0.0.1:6188/v1",
+		MCPCommand: "/usr/local/bin/aima",
+	}
+
+	result, err := Sync(context.Background(), deps, false)
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+	if result.MCPServer == nil {
+		t.Fatal("expected MCP server state")
+	}
+	if result.MCPServer.Action != "preserved_unmanaged" {
+		t.Fatalf("mcp action = %q, want preserved_unmanaged", result.MCPServer.Action)
+	}
+	if result.MCPServer.Managed {
+		t.Fatalf("expected unmanaged MCP server, got %+v", result.MCPServer)
+	}
+
+	cfg, err := ReadConfig(configPath)
+	if err != nil {
+		t.Fatalf("ReadConfig failed: %v", err)
+	}
+	server := lookupMap(cfg, "mcp", "servers", "aima")
+	if server == nil {
+		t.Fatal("expected preserved unmanaged mcp.servers.aima")
+	}
+	if got := server["command"]; got != "custom-aima" {
+		t.Fatalf("command = %v, want custom-aima", got)
+	}
+
+	managed, err := ReadManagedState(configPath)
+	if err != nil {
+		t.Fatalf("ReadManagedState failed: %v", err)
+	}
+	if managed.MCPServerName != "" {
+		t.Fatalf("managed mcp server = %q, want empty", managed.MCPServerName)
+	}
+}
+
+func TestSyncKeepsManagedMCPServerWithoutReadyBackends(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "openclaw.json")
+	existing := map[string]any{
+		"models": map[string]any{
+			"providers": map[string]any{
+				"aima": map[string]any{
+					"baseUrl": "http://127.0.0.1:6188/v1",
+					"models":  []any{map[string]any{"id": "qwen3-8b"}},
+				},
+			},
+		},
+		"mcp": map[string]any{
+			"servers": map[string]any{
+				"aima": map[string]any{
+					"command": "/usr/local/bin/aima",
+					"args":    []any{"mcp", "--profile", "operator"},
+				},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(existing, "", "  ")
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := WriteManagedState(configPath, &ManagedState{
+		Version:       managedStateVersion,
+		LLMProvider:   "aima",
+		MCPServerName: "aima",
+	}); err != nil {
+		t.Fatalf("WriteManagedState: %v", err)
+	}
+
+	deps := &Deps{
+		Backends:   &mockBackends{backends: map[string]*Backend{}},
+		Catalog:    &mockCatalog{},
+		ConfigPath: configPath,
+		ProxyAddr:  "http://127.0.0.1:6188/v1",
+		MCPCommand: "/usr/local/bin/aima",
+	}
+
+	result, err := Sync(context.Background(), deps, false)
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+	if result.MCPServer == nil || !result.MCPServer.Managed || !result.MCPServer.Registered {
+		t.Fatalf("expected managed MCP server, got %+v", result.MCPServer)
+	}
+
+	cfg, err := ReadConfig(configPath)
+	if err != nil {
+		t.Fatalf("ReadConfig failed: %v", err)
+	}
+	if provider := lookupMap(cfg, "models", "providers", "aima"); provider != nil {
+		t.Fatalf("stale aima provider should be removed when no ready backends remain: %v", provider)
+	}
+	server := lookupMap(cfg, "mcp", "servers", "aima")
+	if server == nil {
+		t.Fatal("expected managed mcp server to remain registered")
+	}
+}
+
+func TestReadConfigSupportsJSON5LikeSyntax(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "openclaw.json")
+	data := []byte(`{
+  // comments are valid in OpenClaw's config
+  "mcp": {
+    "servers": {
+      "aima": {
+        "command": "aima",
+        "args": ["mcp",],
+      },
+    },
+  },
+}`)
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := ReadConfig(configPath)
+	if err != nil {
+		t.Fatalf("ReadConfig failed: %v", err)
+	}
+	server := lookupMap(cfg, "mcp", "servers", "aima")
+	if server == nil {
+		t.Fatal("mcp.servers.aima missing after JSON5 parse")
+	}
+	if got := server["command"]; got != "aima" {
+		t.Fatalf("command = %v, want aima", got)
 	}
 }
 

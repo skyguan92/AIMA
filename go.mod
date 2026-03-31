@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/hashicorp/mdns v1.0.6
 	github.com/spf13/cobra v1.10.2
+	github.com/yosuke-furukawa/json5 v0.1.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.46.1
 )

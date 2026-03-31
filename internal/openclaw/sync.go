@@ -20,10 +20,23 @@ type SyncResult struct {
 	ASRModels      []AudioEntry    `json:"asrModels,omitempty"`
 	TTSModel       *TTSEntry       `json:"ttsModel,omitempty"`
 	ImageGenModels []ImageGenEntry `json:"imageGenModels,omitempty"`
+	MCPServer      *MCPServerEntry `json:"mcpServer,omitempty"`
 	ProxyAddr      string          `json:"proxyAddr"`
 	APIKey         string          `json:"apiKey,omitempty"`
 	ConfigPath     string          `json:"configPath"`
+	ConfigExists   bool            `json:"configExists"`
 	Written        bool            `json:"written"`
+}
+
+// MCPServerEntry describes the stdio MCP server entry AIMA wants OpenClaw to use.
+type MCPServerEntry struct {
+	Name       string   `json:"name"`
+	Command    string   `json:"command,omitempty"`
+	Args       []string `json:"args,omitempty"`
+	Registered bool     `json:"registered"`
+	Managed    bool     `json:"managed"`
+	Action     string   `json:"action,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
 }
 
 // ModelEntry represents an LLM/VLM model for OpenClaw's provider config.
@@ -59,6 +72,7 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 		ProxyAddr:  deps.ProxyAddr,
 		APIKey:     deps.proxyAPIKey(),
 		ConfigPath: deps.ConfigPath,
+		MCPServer:  desiredMCPServer(deps),
 	}
 	var ttsIDs []string
 
@@ -105,10 +119,6 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 		result.TTSModel = &TTSEntry{ID: ttsIDs[0]}
 	}
 
-	if dryRun {
-		return result, nil
-	}
-
 	// Read existing config (may not exist yet)
 	existing, err := ReadConfig(deps.ConfigPath)
 	if err != nil {
@@ -116,6 +126,8 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 			return result, fmt.Errorf("openclaw sync: %w", err)
 		}
 		existing = make(map[string]any)
+	} else {
+		result.ConfigExists = true
 	}
 
 	managed, err := ReadManagedState(deps.ConfigPath)
@@ -124,6 +136,9 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 	}
 
 	merged, nextManaged := MergeAIMAConfigWithState(existing, managed, result)
+	if dryRun {
+		return result, nil
+	}
 	if err := WriteConfig(deps.ConfigPath, merged); err != nil {
 		return result, err
 	}
@@ -146,6 +161,21 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 		"config", deps.ConfigPath)
 
 	return result, nil
+}
+
+func desiredMCPServer(deps *Deps) *MCPServerEntry {
+	if deps == nil {
+		return nil
+	}
+	command := strings.TrimSpace(deps.MCPCommand)
+	if command == "" {
+		command = "aima"
+	}
+	return &MCPServerEntry{
+		Name:    aimaMCPServerID,
+		Command: command,
+		Args:    []string{"mcp", "--profile", "operator"},
+	}
 }
 
 // DeploySkills copies embedded AIMA skills to the target directory.

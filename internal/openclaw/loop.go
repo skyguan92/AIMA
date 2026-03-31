@@ -18,7 +18,7 @@ func StartSyncLoop(ctx context.Context, deps *Deps, interval time.Duration) {
 		if status == nil || status.SyncReady {
 			return
 		}
-		if summaryCount(status.Expected) == 0 && !status.AIMAConfigured {
+		if summaryCount(status.Expected) == 0 && !status.AIMAConfigured && (status.MCPServer == nil || status.MCPServer.Registered) {
 			return
 		}
 		if _, err := Sync(ctx, deps, false); err != nil {

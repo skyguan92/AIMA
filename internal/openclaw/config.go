@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+
+	json5 "github.com/yosuke-furukawa/json5/encoding/json5"
 )
 
 const (
 	aimaLLMProviderID         = "aima"
+	aimaMCPServerID           = "aima"
 	legacyLLMProviderID       = "vllm"
 	openAIImageProviderID     = "openai"
 	localOpenAIAPIKeyFallback = "local"
@@ -21,7 +25,10 @@ func ReadConfig(path string) (map[string]any, error) {
 		return nil, fmt.Errorf("read openclaw config: %w", err)
 	}
 	var cfg map[string]any
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(data, &cfg); err == nil {
+		return cfg, nil
+	}
+	if err := json5.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse openclaw config: %w", err)
 	}
 	return cfg, nil
@@ -34,6 +41,9 @@ func WriteConfig(path string, cfg map[string]any) error {
 		return fmt.Errorf("marshal openclaw config: %w", err)
 	}
 	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create openclaw config dir: %w", err)
+	}
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("write openclaw config: %w", err)
 	}
@@ -61,6 +71,7 @@ func MergeAIMAConfigWithState(existing map[string]any, managed *ManagedState, re
 	next.VisionModels = mergeMediaModels(existing, "image", modelIDs(vlmFromLLMs(result.LLMModels)), managedSet(managedVisionModels(managed)), result.ProxyAddr, false)
 	mergeTTS(existing, managed, next, result)
 	mergeImageGeneration(existing, managed, next, result)
+	mergeMCPServer(existing, managed, next, result)
 
 	pruneEmptyMaps(existing)
 	normalizeManagedState(next)
@@ -436,6 +447,69 @@ func removeProviderIfPresent(cfg map[string]any, providerID string) {
 	delete(providers, providerID)
 }
 
+func mergeMCPServer(cfg map[string]any, managed, next *ManagedState, result *SyncResult) {
+	status := result.MCPServer
+	if status == nil {
+		return
+	}
+	if strings.TrimSpace(status.Command) == "" {
+		status.Action = "skipped"
+		status.Reason = "aima mcp command unavailable"
+		return
+	}
+
+	servers := ensureMap(ensureMap(cfg, "mcp"), "servers")
+	name := status.Name
+	if name == "" {
+		name = aimaMCPServerID
+	}
+	existingRaw, exists := servers[name]
+	owns := managed != nil && managed.MCPServerName == name
+	if exists && !owns {
+		existing, ok := existingRaw.(map[string]any)
+		if !ok {
+			status.Registered = true
+			status.Managed = false
+			status.Action = "preserved_unmanaged"
+			status.Reason = fmt.Sprintf("existing mcp.servers.%s is not an object", name)
+			return
+		}
+		status.Registered = true
+		status.Managed = false
+		status.Command = asString(existing["command"])
+		status.Args = stringArgs(existing["args"])
+		status.Action = "preserved_unmanaged"
+		status.Reason = fmt.Sprintf("existing mcp.servers.%s is not AIMA-managed", name)
+		return
+	}
+
+	servers[name] = map[string]any{
+		"command": status.Command,
+		"args":    append([]string(nil), status.Args...),
+	}
+	next.MCPServerName = name
+	status.Registered = true
+	status.Managed = true
+	status.Action = "managed"
+}
+
+func stringArgs(value any) []string {
+	switch raw := value.(type) {
+	case []string:
+		return append([]string(nil), raw...)
+	case []any:
+		out := make([]string, 0, len(raw))
+		for _, item := range raw {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func vlmFromLLMs(models []ModelEntry) []ModelEntry {
 	var vlms []ModelEntry
 	for _, m := range models {
@@ -461,6 +535,8 @@ func ensureMap(cfg map[string]any, key string) map[string]any {
 func pruneEmptyMaps(cfg map[string]any) {
 	prunePath(cfg, "models", "providers")
 	prunePath(cfg, "models")
+	prunePath(cfg, "mcp", "servers")
+	prunePath(cfg, "mcp")
 	prunePath(cfg, "tools", "media")
 	prunePath(cfg, "tools")
 	prunePath(cfg, "messages")

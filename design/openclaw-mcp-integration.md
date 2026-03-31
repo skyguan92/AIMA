@@ -1,463 +1,257 @@
-# OpenClaw MCP 双向集成设计方案
+# OpenClaw MCP Integration
 
-> 版本: v1.0 | 日期: 2026-03-31 | 状态: 草案
+> Version: v2.0  
+> Date: 2026-03-31  
+> Status: implemented
 
-## 1. 背景与动机
+## 1. Goal
 
-### 现状
+Keep the existing AIMA → OpenClaw provider integration, and add the reverse
+direction so OpenClaw can operate AIMA through MCP.
 
-当前 AIMA → OpenClaw 是**单向集成**：
+That means two separate planes:
 
-```
-AIMA (80+ MCP tools, 推理引擎管理)
-  │
-  ├── openclaw sync ──→ 写入 openclaw.json providers（模型服务）
-  ├── proxy routes ──→ /v1/audio/speech, /v1/audio/transcriptions, /v1/images/generations
-  ├── skills 部署 ──→ ~/.openclaw/skills/aima-{asr,tts,image-gen}/
-  └── auto-sync loop ──→ 每 10s 检查漂移并修正
-```
+- data plane: OpenClaw uses AIMA proxy endpoints for chat, ASR, TTS, and image generation
+- control plane: OpenClaw uses AIMA MCP tools for deploy/model/engine/system operations
 
-OpenClaw 只能"使用"AIMA 的推理服务（聊天、ASR、TTS、图像生成），**无法操控 AIMA**——不能部署/删除模型、切换引擎、管理硬件、运行 benchmark、查询知识库等。
+## 2. Constraints
 
-### 目标
+### 2.1 OpenClaw currently consumes `mcp.servers` through stdio
 
-让 OpenClaw 的 AI Agent 能通过 MCP 协议调用 AIMA 的**全部 80+ 工具**，实现双向集成：
-
-```
-OpenClaw Agent
-  │
-  ├── 推理服务（现有）──→ AIMA proxy /v1/chat/completions 等
-  └── 设备操控（新增）──→ AIMA MCP Server (80+ tools)
-       ├── deploy.run / deploy.delete / deploy.status
-       ├── model.pull / model.list / engine.scan
-       ├── hardware.detect / hardware.metrics
-       ├── benchmark.run / knowledge.resolve
-       └── ... 全部工具
-```
-
-### 关键发现
-
-经过对两个系统的调研（2026-03-31），确认：
-
-| 组件 | 状态 | 说明 |
-|------|------|------|
-| AIMA MCP Server | ✅ 已完备 | stdio (`ServeStdio`) + HTTP (`ServeHTTP`), 80+ tools |
-| OpenClaw MCP Client Registry | ✅ 已完备 | `mcp.servers` 配置, `openclaw mcp set/list/show/unset` CLI |
-| OpenClaw Agent 运行时消费 MCP | ✅ 已确认 | embedded Pi agent 读取 `mcp.servers`, 支持 `command` (stdio) 和 `url` (HTTP) |
-| 连接线 | ❌ 缺失 | AIMA sync 未注册自己到 `mcp.servers` |
-
-**结论：两边基础设施都已完备，只需把管子接上。**
-
-## 2. OpenClaw MCP 能力详情
-
-### 版本信息
-
-- 测试版本: OpenClaw 2026.3.28 (f9b1079)
-- 安装位置: `~/.npm-global/lib/node_modules/openclaw/`
-
-### MCP Server 配置格式
-
-```typescript
-// openclaw.json → mcp.servers
-type McpServerConfig = {
-    command?: string;           // stdio 传输: 可执行文件路径
-    args?: string[];            // stdio 传输: 命令参数
-    env?: Record<string, string | number | boolean>;  // 环境变量
-    cwd?: string;               // 工作目录
-    workingDirectory?: string;  // 工作目录（别名）
-    url?: string;               // HTTP 传输: URL
-    [key: string]: unknown;     // 扩展字段
-};
-```
-
-### CLI 管理命令
-
-```bash
-openclaw mcp list              # 列出已注册的 MCP servers
-openclaw mcp show <name>       # 查看某个 server 配置
-openclaw mcp set <name> <json> # 注册/更新 MCP server
-openclaw mcp unset <name>      # 删除 MCP server
-```
-
-### 运行时消费路径
-
-```
-openclaw.json → mcp.servers.aima
-  → OpenClaw Agent 运行时 (embedded Pi / runtime adapters)
-    → 读取 server 配置
-    → 根据传输类型连接:
-       stdio: spawn command + args, JSON-RPC over stdin/stdout
-       HTTP:  POST url, JSON-RPC over HTTP
-    → tools/list 发现可用工具
-    → tools/call 调用工具
-```
-
-### 配置示例
+For the OpenClaw path, the working MCP registration is:
 
 ```json
 {
   "mcp": {
     "servers": {
       "aima": {
-        "command": "aima",
-        "args": ["mcp"],
-        "env": { "AIMA_API_KEY": "xxx" }
+        "command": "/absolute/path/to/aima",
+        "args": ["mcp", "--profile", "operator"]
       }
     }
   }
 }
 ```
 
-## 3. AIMA MCP Server 现状
+AIMA still supports HTTP MCP through `aima serve --mcp`, but that is not the
+OpenClaw integration path.
 
-### 传输层
+### 2.2 `profile` is discovery-only
 
-| 传输 | 实现 | 入口 | 说明 |
-|------|------|------|------|
-| stdio | `server.go:117 ServeStdio()` | 已实现，无 CLI 入口 | JSON-RPC over stdin/stdout |
-| HTTP POST | `server.go:165 ServeHTTP()` | `serve --mcp` 启动 `:9090/mcp` | JSON-RPC over HTTP |
+In AIMA today:
 
-### 工具清单（80+ tools, 16 categories）
+- `tools/list` is filtered by profile
+- `tools/call` can still invoke any registered tool name
 
-| 类别 | 工具数 | 示例 |
-|------|--------|------|
-| hardware | 2 | detect, metrics |
-| model | 6 | scan, list, pull, import, info, remove |
-| engine | 7 | scan, list, info, pull, import, remove, plan |
-| deploy | 7 | apply, run, dry_run, approve, delete, status, list, logs |
-| knowledge | 18 | resolve, search, save, generate_pod, list_profiles, list_engines, list_models, search_configs, compare, similar, lineage, gaps, aggregate, promote, export, import, list, validate |
-| benchmark | 4 | record, run, matrix, list |
-| stack | 3 | preflight, init, status |
-| agent | 5 | ask, status, guide, rollback_list, rollback |
-| patrol | 4 | patrol_status, alerts, patrol_config, patrol_actions |
-| tuning | 4 | start, status, stop, results |
-| explore | 4 | start, status, stop, result |
-| fleet | 4 | list_devices, device_info, device_tools, exec_tool |
-| app | 3 | register, provision, list |
-| system | 2 | status, config |
-| openclaw | 2 | sync, status |
-| scenario | 3 | list, show, apply |
-| discover | 1 | lan |
-| shell | 1 | exec |
-| device | 2 | power_history, power_mode |
-| catalog | 3 | override, status, validate |
-| knowledge sync | 3 | sync_push, sync_pull, sync_status |
-| support | 1 | askforhelp |
-| engine switch | 1 | engine_switch_cost |
-| open questions | 1 | open_questions |
+So `--profile operator` reduces tool discovery noise, but it is not an ACL.
 
-### Profile 机制
+### 2.3 Control plane must not depend on ready backends
 
-AIMA 已有工具分层暴露机制：
+`mcp.servers.aima` must stay available even when:
 
-```go
-ProfileFull     // 全部工具（默认）
-ProfileOperator // 日常运维子集（~50 tools）
-ProfilePatrol   // 巡检最小集
-ProfileExplorer // 探索/调优集
+- no local models are deployed
+- all backends are down
+- OpenClaw needs to recover or redeploy the device
+
+Provider sync still depends on ready local backends. MCP registration does not.
+
+### 2.4 OpenClaw config may contain JSON5 syntax
+
+`openclaw.json` may include comments and trailing commas. AIMA must read that
+format without failing before it can merge its own config.
+
+## 3. Implemented Design
+
+### 3.1 New stdio entrypoint: `aima mcp`
+
+Add:
+
+```bash
+aima mcp
+aima mcp --profile operator
 ```
 
-## 4. 实现方案
+Behavior:
 
-### 4.1 新增 `aima mcp` CLI 命令
+- reuse the normal AIMA initialization path
+- build the full MCP registry
+- serve JSON-RPC over stdin/stdout
+- do not start the HTTP proxy server
 
-**目的**：为 OpenClaw 提供 stdio MCP 入口
+This keeps `INV-5` intact: the CLI is just a transport wrapper for the existing
+MCP server.
 
-**新文件**: `internal/cli/mcp.go`
+### 3.2 `openclaw sync` now manages the local AIMA MCP server entry
 
-```go
-// 命令用法
-aima mcp                     // stdio MCP server, 全部工具
-aima mcp --profile operator  // 仅 operator 子集
-```
+`openclaw sync` already exports provider config. It now also ensures:
 
-**实现要点**：
-
-1. 复用现有初始化链：HAL detect → catalog load → SQLite open → buildToolDeps()
-2. 构建 MCP server, 注册工具
-3. 调用 `server.ServeStdio(ctx)` — 阻塞直到 stdin 关闭
-4. **不启动** HTTP proxy — 纯 stdio 模式
-5. stdio 模式下无 proxy server，部分依赖 proxy backends 的工具需 graceful degradation
-
-**修改文件**: `cmd/aima/main.go`
-- 注册 `mcp` 子命令
-- 提供轻量初始化路径（无 proxy, 无 fleet, 无 support）
-
-**设计约束**：
-- stdio 模式读 SQLite 获取部署状态，不依赖运行中的 proxy
-- 如 AIMA serve 已在运行，两者共享 SQLite（`MaxOpenConns(1)` 无碍，MCP 调用是串行的）
-- API key 通过环境变量 `AIMA_API_KEY` 传入（OpenClaw 的 `env` 字段支持）
-
-### 4.2 扩展 `openclaw sync` 注册 MCP Server
-
-**目的**：sync 时自动把 AIMA 注册到 OpenClaw 的 `mcp.servers`
-
-**修改文件**:
-- `internal/openclaw/managed.go` — ManagedState 增加 MCP 字段
-- `internal/openclaw/config.go` — 增加 MCP server 注册/清理函数
-- `internal/openclaw/sync.go` — Sync() 流程增加 MCP 注册步骤
-
-**ManagedState 扩展**：
-
-```go
-type ManagedState struct {
-    // ... 现有字段
-    McpServerName string `json:"mcp_server_name,omitempty"` // 注册到 mcp.servers 的 key
-}
-```
-
-**配置写入逻辑**：
-
-```go
-// 在 MergeAIMAConfigWithState 中增加:
-func mergeMcpServer(cfg map[string]any, managed, next *ManagedState, result *SyncResult) {
-    servers := ensureMap(ensureMap(cfg, "mcp"), "servers")
-
-    if hasReadyBackends(result) {
-        // 注册 AIMA MCP server (stdio 模式)
-        serverConfig := map[string]any{
-            "command": "aima",
-            "args":    []any{"mcp"},
-        }
-        if result.APIKey != "" {
-            serverConfig["env"] = map[string]any{
-                "AIMA_API_KEY": result.APIKey,
-            }
-        }
-        servers[aimaMcpServerName] = serverConfig
-        next.McpServerName = aimaMcpServerName
-    } else if managed != nil && managed.McpServerName != "" {
-        // 无 ready backends → 清理 MCP server
-        delete(servers, managed.McpServerName)
+```json
+{
+  "mcp": {
+    "servers": {
+      "aima": {
+        "command": "/path/to/aima",
+        "args": ["mcp", "--profile", "operator"]
+      }
     }
+  }
 }
 ```
 
-**所有权保护**：
-- 如果 `mcp.servers.aima` 已存在且不是 AIMA managed 的（ManagedState 中无记录），不覆盖
-- 与现有 LLM provider 所有权逻辑一致
+The command path comes from:
 
-**清理逻辑**：
-- 当所有 backends 下线时，删除 `mcp.servers.aima`
-- 与现有 provider 清理逻辑对称
+1. `os.Executable()` when available
+2. fallback to `"aima"`
 
-### 4.3 扩展 `openclaw status` 报告 MCP 状态
+### 3.3 Ownership uses `ManagedState`, not profile filtering
 
-**修改文件**: `internal/openclaw/status.go`
+`develop` already has explicit OpenClaw ownership tracking through
+`aima-openclaw-managed.json`. This integration extends that model instead of
+guessing ownership from visible config.
 
-**Status 结构体扩展**：
+`ManagedState` now records:
 
-```go
-type Status struct {
-    // ... 现有字段
-    McpRegistered bool   `json:"mcp_registered"`
-    McpServerName string `json:"mcp_server_name,omitempty"`
-}
-```
+- provider ownership
+- media ownership
+- TTS ownership
+- image-generation ownership
+- MCP server ownership (`mcp_server_name`)
 
-**Inspect() 增加检查**：
-- 检查 `mcp.servers.aima` 是否存在且配置正确
-- 在 Issues 中报告 MCP 未注册情况
+Rules:
 
-### 4.4 部署 AIMA 能力指南 Skill
+1. If `mcp.servers.aima` is absent, AIMA creates it and records ownership.
+2. If `ManagedState` says AIMA owns it, AIMA updates it in place.
+3. If `mcp.servers.aima` exists but is not AIMA-owned, AIMA preserves it and
+   reports `preserved_unmanaged`.
 
-**新文件**: `internal/openclaw/skills/aima-control/SKILL.md`
+This matches the existing `claim`/managed-state design already present on
+`develop`.
 
-**目的**：帮助 OpenClaw Agent 理解 AIMA 工具的使用方式
+### 3.4 `openclaw status` includes MCP registration state
 
-**内容概要**：
+`openclaw status` now reports:
 
-```markdown
-# AIMA Device Control
+- whether the config file exists
+- expected provider summary
+- configured provider summary
+- MCP server registration state
+- drift / missing MCP server issues
 
-AIMA exposes 80+ MCP tools for AI inference device management.
-Tools are auto-discovered via MCP protocol — use tools/list to see all available.
+`SyncReady` is now true only when:
 
-## Quick Reference Workflows
+- provider state matches expected AIMA state
+- required AIMA MCP registration is present
 
-### Deploy a model
-1. hardware.detect → 识别设备 GPU
-2. knowledge.resolve → 获取推荐配置
-3. deploy.run → 一键部署（自动拉取引擎+模型）
-4. deploy.status → 检查部署状态
-5. openclaw.sync → 同步到 OpenClaw providers
+### 3.5 Auto-sync also covers MCP registration
 
-### Check device status
-1. system.status → 整体状态
-2. hardware.metrics → GPU 利用率/温度/显存
-3. deploy.list → 运行中的部署
+`StartSyncLoop` previously focused on provider drift. It now also converges the
+MCP server registration, including the case where there are zero ready
+backends but the control plane entry is still missing.
 
-### Run performance test
-1. benchmark.run → 执行基准测试
-2. benchmark.list → 查看历史结果
+### 3.6 Added `aima-control` skill
 
-### Manage models
-1. model.list → 已下载的模型
-2. model.pull → 下载新模型
-3. engine.list → 已安装的引擎
-4. engine.pull → 拉取引擎
-```
+AIMA now deploys an OpenClaw skill that steers the agent toward MCP tools for
+device operations such as:
 
-### 4.5 SyncResult 扩展
+- `system.status`
+- `hardware.detect`
+- `model.list`
+- `deploy.*`
+- `knowledge.resolve`
+- `benchmark.run`
+- `openclaw.status`
 
-**修改文件**: `internal/openclaw/sync.go`
+## 4. Config Semantics
 
-SyncResult 增加 MCP 信息：
+### 4.1 Provider sections
 
-```go
-type SyncResult struct {
-    // ... 现有字段
-    McpServer *McpServerEntry `json:"mcpServer,omitempty"`
-}
+AIMA continues to manage:
 
-type McpServerEntry struct {
-    Name    string         `json:"name"`
-    Config  map[string]any `json:"config"`
-}
-```
+- `models.providers.aima`
+- `tools.media.audio`
+- `tools.media.image`
+- `messages.tts`
+- `agents.defaults.imageGenerationModel`
+- image-generation provider wiring
 
-## 5. 文件变更清单
+These remain tied to ready local backends and explicit ownership.
 
-| 文件 | 操作 | 说明 |
-|------|------|------|
-| `internal/cli/mcp.go` | **新增** | `aima mcp` CLI 命令（~50 行） |
-| `cmd/aima/main.go` | 修改 | 注册 mcp 命令, 轻量初始化路径 |
-| `internal/openclaw/managed.go` | 修改 | ManagedState 增加 McpServerName 字段 |
-| `internal/openclaw/config.go` | 修改 | 增加 mergeMcpServer() 和清理逻辑（~40 行） |
-| `internal/openclaw/sync.go` | 修改 | Sync() 和 SyncResult 增加 MCP 步骤 |
-| `internal/openclaw/status.go` | 修改 | Status + Inspect() 增加 MCP 检查（~15 行） |
-| `internal/openclaw/sync_test.go` | 修改 | MCP 注册/清理测试用例 |
-| `internal/openclaw/status_test.go` | 修改 | MCP 状态检查测试 |
-| `internal/openclaw/skills/aima-control/SKILL.md` | **新增** | 能力指南 Skill |
+### 4.2 MCP section
 
-**预估代码量**: ~200 行 Go 代码变更 + ~60 行测试 + ~40 行 Skill markdown
+AIMA additionally manages:
 
-## 6. 数据流全景
+- `mcp.servers.aima`
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        AIMA serve                               │
-│                                                                 │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
-│  │ Proxy    │  │ MCP HTTP │  │ SQLite   │  │ Knowledge     │  │
-│  │ :6188    │  │ :9090    │  │          │  │ YAML Catalog  │  │
-│  └────┬─────┘  └──────────┘  └────┬─────┘  └───────┬───────┘  │
-│       │                           │                 │          │
-│  ┌────┴─────────────────────┐     │                 │          │
-│  │  80+ MCP Tools           │─────┴─────────────────┘          │
-│  │  (buildToolDeps)         │                                  │
-│  └────┬─────────────────────┘                                  │
-│       │                                                        │
-│  ┌────┴──────────────────┐                                     │
-│  │  openclaw sync        │                                     │
-│  │  ├─ providers (现有)  │──→ openclaw.json models.providers   │
-│  │  ├─ media/tts (现有)  │──→ openclaw.json tools/messages     │
-│  │  ├─ skills (现有)     │──→ ~/.openclaw/skills/              │
-│  │  └─ MCP server (新增) │──→ openclaw.json mcp.servers.aima   │
-│  └───────────────────────┘                                     │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     OpenClaw Gateway                            │
-│                                                                 │
-│  openclaw.json                                                  │
-│  ├─ models.providers.aima  → 推理服务（LLM/VLM/ASR/TTS/IMG）  │
-│  ├─ tools.media.*          → 多模态工具                        │
-│  ├─ mcp.servers.aima       → AIMA MCP Server ──┐              │
-│  └─ ...                                        │              │
-│                                                 ▼              │
-│  ┌──────────────────────────────────────────────────────┐      │
-│  │  OpenClaw Agent Runtime                              │      │
-│  │  ├─ 读取 mcp.servers.aima                           │      │
-│  │  ├─ spawn: aima mcp (stdio JSON-RPC)                │      │
-│  │  ├─ tools/list → 发现 80+ AIMA tools                │      │
-│  │  └─ tools/call → 调用: deploy.run, model.pull, ...  │      │
-│  └──────────────────────────────────────────────────────┘      │
-└─────────────────────────────────────────────────────────────────┘
-```
+This is not tied to ready backends. It is tied to whether AIMA can provide a
+local stdio MCP command.
 
-## 7. 验证方案
+## 5. Operational Examples
 
-### 单元测试
+### 5.1 Manual setup
 
 ```bash
-go test ./internal/openclaw/... -v -run TestMcp
-```
-
-覆盖场景：
-- MCP server 注册到 config（有 backends 时）
-- MCP server 清理（无 backends 时）
-- 不覆盖用户手动配置的 MCP server
-- ManagedState 序列化/反序列化包含 McpServerName
-- Status.McpRegistered 正确反映配置状态
-
-### 集成验证
-
-```bash
-# 1. stdio MCP 基本通信
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | aima mcp
-# 期望: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05",...}}
-
-echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | aima mcp
-# 期望: 80+ tools 列表
-
-# 2. sync 注册 MCP
-aima openclaw sync --dry-run
-# 检查输出包含 mcpServer 字段
-
 aima openclaw sync
-cat ~/.openclaw/openclaw.json | python3 -c "
-import sys, json
-cfg = json.load(sys.stdin)
-print(json.dumps(cfg.get('mcp', {}), indent=2))
-"
-# 期望: {"servers": {"aima": {"command": "aima", "args": ["mcp"]}}}
-
-# 3. OpenClaw 验证
-openclaw mcp list
-# 期望: 显示 aima server
-
-# 4. status 检查
-aima openclaw status
-# 期望: mcp_registered: true, mcp_server_name: "aima"
+openclaw mcp show aima
 ```
 
-### 远程设备端到端测试
+### 5.2 Local MCP launch
+
+OpenClaw launches:
 
 ```bash
-# 在 gb10/aima-spark 上:
-# 1. 编译 + 部署
-GOOS=linux GOARCH=arm64 go build -o build/aima-linux-arm64 ./cmd/aima
-scp build/aima-linux-arm64 qujing@100.105.58.16:~/aima
-
-# 2. 启动 serve
-ssh qujing@100.105.58.16 './aima serve --mcp &'
-
-# 3. sync + 验证
-ssh qujing@100.105.58.16 './aima openclaw sync'
-ssh qujing@100.105.58.16 'cat ~/.openclaw/openclaw.json | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get(\"mcp\",{}), indent=2))"'
-ssh qujing@100.105.58.16 'openclaw mcp list'
+/path/to/aima mcp --profile operator
 ```
 
-## 8. 后续演进
+### 5.3 Inspect drift
 
-### 短期优化（v0.2.x）
-- **Streamable HTTP MCP**: 升级 AIMA HTTP MCP 为标准 Streamable HTTP 传输，支持长连接
-- **工具描述增强**: 为每个工具添加更详细的中文描述和使用示例
-- **Profile 自动选择**: 根据 OpenClaw Agent 角色自动选择合适的 Profile
+```bash
+aima openclaw status
+```
 
-### 中期能力（v0.3.x）
-- **双向事件通知**: AIMA 部署状态变化时主动通知 OpenClaw（MCP notifications）
-- **Fleet MCP 聚合**: 通过 fleet MCP 代理多台 AIMA 设备，OpenClaw 统一管理
-- **OpenClaw Agent Skill 自动生成**: 根据 AIMA 工具清单自动生成 OpenClaw skill 文档
+Example MCP section:
 
-## 9. 风险与缓解
+```json
+{
+  "mcp_server": {
+    "name": "aima",
+    "command": "/usr/local/bin/aima",
+    "args": ["mcp", "--profile", "operator"],
+    "registered": true,
+    "managed": true,
+    "action": "managed"
+  }
+}
+```
 
-| 风险 | 影响 | 缓解 |
-|------|------|------|
-| stdio MCP 无 proxy 实时状态 | 部分工具返回不完整数据 | 工具读 SQLite 获取持久化状态，graceful degradation |
-| OpenClaw 运行时不支持 HTTP MCP | HTTP 模式不可用 | 默认用 stdio，HTTP 作为可选增强 |
-| aima binary 不在 PATH 中 | OpenClaw spawn 失败 | config 中用绝对路径, sync 时检测 binary 位置 |
-| SQLite 并发冲突 | stdio MCP + serve 同时写 | SQLite WAL 模式 + MaxOpenConns(1) 保证串行 |
-| OpenClaw 升级改变 MCP 配置格式 | sync 写入无效配置 | 配置格式简单稳定（command/args），低风险 |
+## 6. Limitations
+
+- `--profile operator` is not a permission boundary.
+- HTTP MCP is still separate from the OpenClaw integration path.
+- Reading accepts JSON5-like config, but writing normalizes it back to standard JSON.
+
+## 7. Files
+
+Primary implementation files:
+
+- `internal/cli/mcp.go`
+- `internal/cli/root.go`
+- `internal/cli/serve.go`
+- `cmd/aima/main.go`
+- `internal/openclaw/openclaw.go`
+- `internal/openclaw/managed.go`
+- `internal/openclaw/config.go`
+- `internal/openclaw/sync.go`
+- `internal/openclaw/status.go`
+- `internal/openclaw/loop.go`
+- `internal/openclaw/skills/aima-control/SKILL.md`
+
+## 8. Validation
+
+Covered by tests for:
+
+- `aima mcp` CLI registration
+- JSON5-like OpenClaw config parsing
+- MCP server registration on sync
+- unmanaged MCP entry preservation
+- MCP registration persistence with zero ready backends
+- status inspection including MCP registration

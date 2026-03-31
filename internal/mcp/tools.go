@@ -2498,7 +2498,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// openclaw.sync
 	s.RegisterTool(&Tool{
 		Name:        "openclaw.sync",
-		Description: "Sync AIMA deployed models to OpenClaw config. Categorizes by modality and writes as OpenClaw providers.",
+		Description: "Sync AIMA deployed models to OpenClaw config. Categorizes by modality, writes OpenClaw providers, and manages the local AIMA MCP server entry.",
 		InputSchema: schema(`"dry_run":{"type":"boolean","description":"If true, preview changes without writing to openclaw.json (default false)"}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.OpenClawSync == nil {
@@ -2521,7 +2521,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	// openclaw.status
 	s.RegisterTool(&Tool{
 		Name:        "openclaw.status",
-		Description: "Inspect the current OpenClaw integration state, including local gateway reachability, config presence, and AIMA sync drift.",
+		Description: "Inspect the current OpenClaw integration state, including local gateway reachability, config presence, MCP server registration, and AIMA sync drift.",
 		InputSchema: schema(""),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.OpenClawStatus == nil {

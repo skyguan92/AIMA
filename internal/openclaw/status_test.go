@@ -181,3 +181,37 @@ func TestInspectIgnoresUnexpectedLocalProxyConfig(t *testing.T) {
 		t.Fatalf("claimable = %+v, want empty", status.Claimable)
 	}
 }
+
+func TestInspectReportsMCPServer(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "openclaw.json")
+	deps := &Deps{
+		Backends: &mockBackends{backends: map[string]*Backend{
+			"qwen3-8b": {ModelName: "qwen3-8b", Address: "127.0.0.1:8000", Ready: true},
+		}},
+		Catalog:    &mockCatalog{},
+		ConfigPath: configPath,
+		ProxyAddr:  "http://127.0.0.1:6188/v1",
+		MCPCommand: "/usr/local/bin/aima",
+	}
+
+	if _, err := Sync(context.Background(), deps, false); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	status, err := Inspect(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if status.MCPServer == nil {
+		t.Fatal("mcp_server = nil, want populated")
+	}
+	if !status.MCPServer.Registered || !status.MCPServer.Managed {
+		t.Fatalf("mcp_server = %+v, want registered managed entry", status.MCPServer)
+	}
+	if !status.SyncReady {
+		t.Fatalf("sync_ready = false, issues=%v", status.Issues)
+	}
+}
