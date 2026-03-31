@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jguan/aima/catalog"
 	state "github.com/jguan/aima/internal"
 	"github.com/jguan/aima/internal/agent"
 	benchpkg "github.com/jguan/aima/internal/benchmark"
@@ -78,6 +79,30 @@ func (m *mockCommandRunner) Pipe(ctx context.Context, from, to []string) error {
 		return m.pipe(ctx, from, to)
 	}
 	return nil
+}
+
+func TestOnboardingManifestEmbeddedShape(t *testing.T) {
+	t.Parallel()
+
+	raw, err := catalog.FS.ReadFile("ui-onboarding.json")
+	if err != nil {
+		t.Fatalf("read embedded onboarding manifest: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal onboarding manifest: %v", err)
+	}
+
+	if _, ok := payload["version"].(string); !ok {
+		t.Fatalf("version missing or not a string: %#v", payload["version"])
+	}
+	if _, ok := payload["default_locale"].(string); !ok {
+		t.Fatalf("default_locale missing or not a string: %#v", payload["default_locale"])
+	}
+	if _, ok := payload["locales"].(map[string]any); !ok {
+		t.Fatalf("locales missing or not an object: %#v", payload["locales"])
+	}
 }
 
 func TestParseExtraParamsStrict(t *testing.T) {
