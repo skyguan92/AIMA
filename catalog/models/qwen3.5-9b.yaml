@@ -1,7 +1,7 @@
 kind: model_asset
 metadata:
   name: qwen3.5-9b
-  type: llm
+  type: vlm
   family: qwen
   parameter_count: "9B"
 storage:

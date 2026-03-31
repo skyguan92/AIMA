@@ -261,7 +261,7 @@ func TestSyncWritesTTSProviderSchema(t *testing.T) {
 	}
 }
 
-func TestSyncWritesLocalOpenAIProviderForASR(t *testing.T) {
+func TestSyncWritesLocalMediaProviderForASR(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -283,55 +283,55 @@ func TestSyncWritesLocalOpenAIProviderForASR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadConfig failed: %v", err)
 	}
-	openai := lookupMap(cfg, "models", "providers", "openai")
-	if openai == nil {
-		t.Fatal("models.providers.openai missing after ASR sync")
+	provider := lookupMap(cfg, "models", "providers", "aima-imagegen")
+	if provider == nil {
+		t.Fatal("models.providers.aima-imagegen missing after ASR sync")
 	}
-	if got := openai["baseUrl"]; got != "http://127.0.0.1:6188/v1" {
-		t.Fatalf("openai baseUrl = %v, want http://127.0.0.1:6188/v1", got)
+	if got := provider["baseUrl"]; got != "http://127.0.0.1:6188/v1" {
+		t.Fatalf("provider baseUrl = %v, want http://127.0.0.1:6188/v1", got)
 	}
-	if got := openai["apiKey"]; got != "local" {
-		t.Fatalf("openai apiKey = %v, want local", got)
+	if got := provider["apiKey"]; got != "local" {
+		t.Fatalf("provider apiKey = %v, want local", got)
 	}
-	models, ok := openai["models"].([]any)
+	models, ok := provider["models"].([]any)
 	if !ok || len(models) != 1 {
-		t.Fatalf("openai models = %#v, want 1 media model", openai["models"])
+		t.Fatalf("provider models = %#v, want 1 media model", provider["models"])
 	}
 	model, ok := models[0].(map[string]any)
 	if !ok {
-		t.Fatalf("openai model[0] = %T, want map", models[0])
+		t.Fatalf("provider model[0] = %T, want map", models[0])
 	}
 	if got := model["id"]; got != "qwen3-asr-1.7b" {
-		t.Fatalf("openai model[0].id = %v, want qwen3-asr-1.7b", got)
+		t.Fatalf("provider model[0].id = %v, want qwen3-asr-1.7b", got)
 	}
 	if got := stringArgs(model["input"]); len(got) != 1 || got[0] != "text" {
-		t.Fatalf("openai model[0].input = %v, want [text]", got)
+		t.Fatalf("provider model[0].input = %v, want [text]", got)
 	}
 
 	managed, err := ReadManagedState(configPath)
 	if err != nil {
 		t.Fatalf("ReadManagedState failed: %v", err)
 	}
-	if managed.MediaProvider != "openai" {
-		t.Fatalf("managed media provider = %q, want openai", managed.MediaProvider)
+	if managed.MediaProvider != "aima-imagegen" {
+		t.Fatalf("managed media provider = %q, want aima-imagegen", managed.MediaProvider)
 	}
 }
 
-func TestMergeAIMAConfigImageGenUsesOpenAIProvider(t *testing.T) {
+func TestMergeAIMAConfigImageGenUsesAIMAProvider(t *testing.T) {
 	merged := MergeAIMAConfig(nil, &SyncResult{
 		ImageGenModels: []ImageGenEntry{{ID: "z-image"}},
 		ProxyAddr:      "http://127.0.0.1:6188/v1",
 	})
 
-	openai := lookupMap(merged, "models", "providers", "openai")
-	if openai == nil {
-		t.Fatal("openai provider not found after image generation merge")
+	provider := lookupMap(merged, "models", "providers", "aima-imagegen")
+	if provider == nil {
+		t.Fatal("aima-imagegen provider not found after image generation merge")
 	}
-	if got := openai["baseUrl"]; got != "http://127.0.0.1:6188/v1" {
-		t.Fatalf("openai baseUrl = %v, want http://127.0.0.1:6188/v1", got)
+	if got := provider["baseUrl"]; got != "http://127.0.0.1:6188/v1" {
+		t.Fatalf("provider baseUrl = %v, want http://127.0.0.1:6188/v1", got)
 	}
-	if got := openai["apiKey"]; got != "local" {
-		t.Fatalf("openai apiKey = %v, want local", got)
+	if got := provider["apiKey"]; got != "local" {
+		t.Fatalf("provider apiKey = %v, want local", got)
 	}
 	defaults := lookupMap(merged, "agents", "defaults")
 	if defaults == nil {
@@ -341,8 +341,8 @@ func TestMergeAIMAConfigImageGenUsesOpenAIProvider(t *testing.T) {
 	if !ok {
 		t.Fatalf("imageGenerationModel = %T, want map", defaults["imageGenerationModel"])
 	}
-	if got := imageGen["primary"]; got != "openai/z-image" {
-		t.Fatalf("imageGenerationModel.primary = %v, want openai/z-image", got)
+	if got := imageGen["primary"]; got != "aima-imagegen/z-image" {
+		t.Fatalf("imageGenerationModel.primary = %v, want aima-imagegen/z-image", got)
 	}
 }
 

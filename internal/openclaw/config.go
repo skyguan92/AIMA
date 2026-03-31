@@ -14,7 +14,8 @@ const (
 	aimaLLMProviderID         = "aima"
 	aimaMCPServerID           = "aima"
 	legacyLLMProviderID       = "vllm"
-	openAIImageProviderID     = "openai"
+	aimaImageGenProviderID    = "aima-imagegen"
+	legacyImageGenProviderID  = "openai" // pre-v0.2.1: image gen used "openai" provider
 	localOpenAIAPIKeyFallback = "local"
 )
 
@@ -82,7 +83,7 @@ func MergeAIMAConfigWithState(existing map[string]any, managed *ManagedState, re
 func mergeLLMProvider(cfg map[string]any, managed, next *ManagedState, result *SyncResult) {
 	providers := ensureMap(ensureMap(cfg, "models"), "providers")
 	if len(result.LLMModels) > 0 {
-		providers[aimaLLMProviderID] = buildProviderConfig(result.ProxyAddr, result.APIKey, buildLLMProviderModels(result.LLMModels))
+		providers[aimaLLMProviderID] = buildProviderConfig(result.ProxyAddr, directToolAPIKey(result.APIKey), buildLLMProviderModels(result.LLMModels))
 		next.LLMProvider = aimaLLMProviderID
 	} else {
 		delete(providers, aimaLLMProviderID)
@@ -141,10 +142,16 @@ func mergeImageGeneration(cfg map[string]any, managed, next *ManagedState, resul
 	}
 
 	providers := ensureMap(ensureMap(cfg, "models"), "providers")
-	providers[openAIImageProviderID] = buildProviderConfig(result.ProxyAddr, directToolAPIKey(result.APIKey), buildImageGenProviderModels(result.ImageGenModels))
-	setAgentDefaultModel(cfg, "imageGenerationModel", openAIImageProviderID, imageGenIDs(result.ImageGenModels))
-	next.ImageGenerationProvider = openAIImageProviderID
+	providers[aimaImageGenProviderID] = buildProviderConfig(result.ProxyAddr, directToolAPIKey(result.APIKey), buildImageGenProviderModels(result.ImageGenModels))
+	setAgentDefaultModel(cfg, "imageGenerationModel", aimaImageGenProviderID, imageGenIDs(result.ImageGenModels))
+	next.ImageGenerationProvider = aimaImageGenProviderID
 	next.ImageGenerationModels = imageGenIDs(result.ImageGenModels)
+
+	// Clean up legacy "openai" provider if it was used for image gen.
+	if managed != nil && managed.ImageGenerationProvider == legacyImageGenProviderID {
+		removeProviderIfPresent(cfg, legacyImageGenProviderID)
+		removeAgentDefaultModelIfManaged(cfg, "imageGenerationModel", legacyImageGenProviderID)
+	}
 }
 
 func canManageImageGeneration(cfg map[string]any, managed *ManagedState) bool {
@@ -154,7 +161,7 @@ func canManageImageGeneration(cfg map[string]any, managed *ManagedState) bool {
 	if hasAgentDefaultModel(cfg, "imageGenerationModel") {
 		return false
 	}
-	if lookupMap(cfg, "models", "providers", openAIImageProviderID) == nil {
+	if lookupMap(cfg, "models", "providers", aimaImageGenProviderID) == nil {
 		return true
 	}
 	return managedOwnsMediaProvider(managed)
@@ -323,10 +330,10 @@ func mergeLocalMediaProvider(cfg map[string]any, managed, next *ManagedState, re
 		return
 	}
 	needsProvider := len(next.AudioModels) > 0 || len(next.VisionModels) > 0
-	provider := lookupMap(cfg, "models", "providers", openAIImageProviderID)
+	provider := lookupMap(cfg, "models", "providers", aimaImageGenProviderID)
 	if !needsProvider {
 		if managedOwnsMediaProvider(managed) && providerManagedByAIMA(provider, result.ProxyAddr) {
-			removeProviderIfPresent(cfg, openAIImageProviderID)
+			removeProviderIfPresent(cfg, aimaImageGenProviderID)
 		}
 		return
 	}
@@ -334,8 +341,8 @@ func mergeLocalMediaProvider(cfg map[string]any, managed, next *ManagedState, re
 		return
 	}
 	providers := ensureMap(ensureMap(cfg, "models"), "providers")
-	providers[openAIImageProviderID] = buildProviderConfig(result.ProxyAddr, directToolAPIKey(result.APIKey), buildLocalMediaProviderModels(result))
-	next.MediaProvider = openAIImageProviderID
+	providers[aimaImageGenProviderID] = buildProviderConfig(result.ProxyAddr, directToolAPIKey(result.APIKey), buildLocalMediaProviderModels(result))
+	next.MediaProvider = aimaImageGenProviderID
 }
 
 func keepUnmanagedMediaModels(section map[string]any, owned map[string]struct{}, proxyAddr string, allowLegacy bool) []any {

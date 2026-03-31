@@ -377,6 +377,12 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Inject chat_template_kwargs to disable thinking mode for thinking-capable models.
+	// Safe for non-thinking models (vLLM ignores unknown template variables).
+	if r.URL.Path == "/v1/chat/completions" && r.Header.Get("Content-Type") == "application/json" {
+		body = injectDisableThinking(body)
+	}
+
 	// Determine the target path: basePath + suffix from original request
 	// e.g., request to /v1/chat/completions with basePath=/v1 → forward to /v1/chat/completions
 	targetPath := s.buildTargetPath(backend.BasePath, r.URL.Path)
@@ -506,6 +512,25 @@ func (s *Server) availableModels() string {
 		return "(none)"
 	}
 	return strings.Join(models, ", ")
+}
+
+// injectDisableThinking adds chat_template_kwargs to disable thinking mode for
+// thinking-capable models (e.g., Qwen3.5). Non-thinking models ignore the field.
+// Only injects when chat_template_kwargs is not already present in the request.
+func injectDisableThinking(body []byte) []byte {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+	if _, ok := req["chat_template_kwargs"]; ok {
+		return body
+	}
+	req["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // corsMiddleware adds CORS headers, restricted to loopback origins to prevent CSRF.

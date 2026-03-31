@@ -454,6 +454,27 @@ func TestDockerStatusToPhase(t *testing.T) {
 	}
 }
 
+func TestShellJoinQuotesSpecialChars(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"simple", []string{"vllm", "serve", "/models"}, "vllm serve /models"},
+		{"json value", []string{"--chat-template-kwargs", `{"enable_thinking": false}`}, `--chat-template-kwargs '{"enable_thinking": false}'`},
+		{"empty arg", []string{"cmd", ""}, "cmd ''"},
+		{"single quotes in arg", []string{"echo", "it's"}, "echo 'it'\\''s'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellJoin(tt.args)
+			if got != tt.want {
+				t.Errorf("shellJoin(%v) = %q, want %q", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- helpers ---
 
 func joinArgs(args []string) string {

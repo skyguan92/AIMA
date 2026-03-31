@@ -128,7 +128,94 @@ func (d *Deps) handleASR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.reverseProxy(w, r, backend.Address, body)
+	d.forwardASR(w, r, backend.Address, body)
+}
+
+// forwardASR forwards the ASR request and cleans the response text.
+// vLLM Qwen3-ASR returns text like "language Chinese<asr_text>你好" —
+// we strip the metadata prefix to return clean transcription text.
+func (d *Deps) forwardASR(w http.ResponseWriter, r *http.Request, targetAddr string, body []byte) {
+	if !strings.HasPrefix(targetAddr, "http://") && !strings.HasPrefix(targetAddr, "https://") {
+		targetAddr = "http://" + targetAddr
+	}
+	target, err := url.Parse(targetAddr)
+	if err != nil {
+		slog.Error("openclaw proxy: invalid ASR backend address", "addr", targetAddr, "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
+		target.String()+r.URL.Path, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Warn("openclaw proxy: ASR backend request failed", "backend", targetAddr, "err", err)
+		http.Error(w, "backend unreachable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "failed to read backend response", http.StatusBadGateway)
+		return
+	}
+
+	// Clean ASR metadata prefix from the text field.
+	if resp.StatusCode == http.StatusOK {
+		respBody = cleanASRResponse(respBody)
+	}
+
+	for k, vals := range resp.Header {
+		if strings.EqualFold(k, "Content-Length") {
+			continue // recalculated below
+		}
+		for _, v := range vals {
+			w.Header().Add(k, v)
+		}
+	}
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+	w.WriteHeader(resp.StatusCode)
+	w.Write(respBody)
+}
+
+// cleanASRResponse strips vLLM Qwen-ASR metadata prefixes from the text field.
+// Input:  {"text":"language Chinese<asr_text>你好世界。",...}
+// Output: {"text":"你好世界。",...}
+func cleanASRResponse(body []byte) []byte {
+	var resp map[string]any
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return body
+	}
+	text, ok := resp["text"].(string)
+	if !ok {
+		return body
+	}
+	cleaned := stripASRPrefix(text)
+	if cleaned == text {
+		return body
+	}
+	resp["text"] = cleaned
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// stripASRPrefix removes "language <lang><asr_text>" prefix from ASR output.
+func stripASRPrefix(text string) string {
+	const marker = "<asr_text>"
+	if idx := strings.Index(text, marker); idx >= 0 {
+		return strings.TrimSpace(text[idx+len(marker):])
+	}
+	return text
 }
 
 // handleImageGen proxies image generation requests to the backend serving the requested model.

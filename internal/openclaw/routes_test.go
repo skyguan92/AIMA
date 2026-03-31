@@ -219,6 +219,94 @@ func TestHandleASRMooERTextResponse(t *testing.T) {
 	}
 }
 
+func TestStripASRPrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"chinese", "language Chinese<asr_text>你好，世界。", "你好，世界。"},
+		{"english", "language English<asr_text>Hello world.", "Hello world."},
+		{"no prefix", "just plain text", "just plain text"},
+		{"empty", "", ""},
+		{"marker only", "<asr_text>text", "text"},
+		{"nested markers", "language Chinese<asr_text>has <asr_text> inside", "has <asr_text> inside"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripASRPrefix(tt.in)
+			if got != tt.want {
+				t.Errorf("stripASRPrefix(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanASRResponse(t *testing.T) {
+	in := `{"text":"language Chinese<asr_text>你好世界","usage":{"type":"duration","seconds":2}}`
+	out := cleanASRResponse([]byte(in))
+	var resp map[string]any
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if resp["text"] != "你好世界" {
+		t.Fatalf("text = %q, want %q", resp["text"], "你好世界")
+	}
+	// usage should be preserved
+	usage, ok := resp["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage missing or wrong type")
+	}
+	if usage["seconds"] != float64(2) {
+		t.Fatalf("usage.seconds = %v, want 2", usage["seconds"])
+	}
+}
+
+func TestHandleASRCleanResponse(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"text":"language Chinese<asr_text>测试清洗","usage":{"type":"duration","seconds":1}}`))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"qwen3-asr-1.7b": {
+				ModelName:  "qwen3-asr-1.7b",
+				EngineType: "vllm-nightly-audio",
+				Address:    strings.TrimPrefix(backend.URL, "http://"),
+				Ready:      true,
+			},
+		}},
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "qwen3-asr-1.7b")
+	part, _ := writer.CreateFormFile("file", "test.wav")
+	part.Write([]byte("RIFF"))
+	writer.Close()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if resp["text"] != "测试清洗" {
+		t.Fatalf("text = %q, want %q", resp["text"], "测试清洗")
+	}
+}
+
 func TestConsumeMooerPayloadPackedTokens(t *testing.T) {
 	packed := []byte{}
 	packed = protowire.AppendVarint(packed, 101)

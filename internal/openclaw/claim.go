@@ -238,16 +238,20 @@ func detectLegacyState(cfg map[string]any, proxyAddr string) *ManagedState {
 			state.TTSModel = asString(tts["model"])
 		}
 	}
-	if state.ImageGenerationProvider == "" &&
-		providerManagedByAIMA(lookupMap(cfg, "models", "providers", openAIImageProviderID), proxyAddr) &&
-		(len(state.AudioModels) > 0 || len(state.VisionModels) > 0) {
-		state.MediaProvider = openAIImageProviderID
-	}
-	if providerManagedByAIMA(lookupMap(cfg, "models", "providers", openAIImageProviderID), proxyAddr) {
-		models := configuredAgentDefaultModelsForProviders(cfg, "imageGenerationModel", []string{openAIImageProviderID}, proxyAddr)
-		if len(models) > 0 {
-			state.ImageGenerationProvider = openAIImageProviderID
-			state.ImageGenerationModels = models
+	// Check both current and legacy provider IDs for image gen ownership.
+	for _, pid := range []string{aimaImageGenProviderID, legacyImageGenProviderID} {
+		if state.ImageGenerationProvider == "" &&
+			providerManagedByAIMA(lookupMap(cfg, "models", "providers", pid), proxyAddr) &&
+			(len(state.AudioModels) > 0 || len(state.VisionModels) > 0) {
+			state.MediaProvider = pid
+		}
+		if providerManagedByAIMA(lookupMap(cfg, "models", "providers", pid), proxyAddr) {
+			models := configuredAgentDefaultModelsForProviders(cfg, "imageGenerationModel", []string{pid}, proxyAddr)
+			if len(models) > 0 {
+				state.ImageGenerationProvider = pid
+				state.ImageGenerationModels = models
+				break
+			}
 		}
 	}
 	normalizeManagedState(state)

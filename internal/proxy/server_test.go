@@ -769,3 +769,40 @@ func TestBackendWithBasePath(t *testing.T) {
 		t.Errorf("backend received path %q, want '/v1/chat/completions'", receivedPath)
 	}
 }
+
+func TestInjectDisableThinking(t *testing.T) {
+	t.Run("injects when absent", func(t *testing.T) {
+		body := []byte(`{"model":"qwen3.5-9b","messages":[]}`)
+		out := injectDisableThinking(body)
+		var req map[string]any
+		if err := json.Unmarshal(out, &req); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		kwargs, ok := req["chat_template_kwargs"].(map[string]any)
+		if !ok {
+			t.Fatal("chat_template_kwargs not injected")
+		}
+		if kwargs["enable_thinking"] != false {
+			t.Fatalf("enable_thinking = %v, want false", kwargs["enable_thinking"])
+		}
+	})
+
+	t.Run("preserves existing", func(t *testing.T) {
+		body := []byte(`{"model":"m","chat_template_kwargs":{"enable_thinking":true}}`)
+		out := injectDisableThinking(body)
+		var req map[string]any
+		json.Unmarshal(out, &req)
+		kwargs := req["chat_template_kwargs"].(map[string]any)
+		if kwargs["enable_thinking"] != true {
+			t.Fatalf("should preserve existing chat_template_kwargs")
+		}
+	})
+
+	t.Run("invalid json returns original", func(t *testing.T) {
+		body := []byte(`not json`)
+		out := injectDisableThinking(body)
+		if string(out) != "not json" {
+			t.Fatalf("should return original body for invalid JSON")
+		}
+	})
+}

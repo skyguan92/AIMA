@@ -209,7 +209,7 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 
 	if len(req.InitCommands) > 0 {
 		initChain := strings.Join(req.InitCommands, " && ")
-		mainCmd := strings.Join(command, " ")
+		mainCmd := shellJoin(command)
 		shellCmd := initChain + " && exec " + mainCmd
 
 		args = append(args, "--entrypoint", "bash", image, "-c", shellCmd)
@@ -221,6 +221,25 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 	}
 
 	return args
+}
+
+// shellJoin joins args into a shell-safe command string.
+// Args containing shell metacharacters are single-quoted.
+func shellJoin(args []string) string {
+	var b strings.Builder
+	for i, arg := range args {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		if arg == "" || strings.ContainsAny(arg, " \t\n\"'\\|&;(){}$`!#~<>?*[]") {
+			b.WriteByte('\'')
+			b.WriteString(strings.ReplaceAll(arg, "'", "'\\''"))
+			b.WriteByte('\'')
+		} else {
+			b.WriteString(arg)
+		}
+	}
+	return b.String()
 }
 
 func expandRuntimeTemplate(value, modelPath, modelName string) string {
