@@ -136,6 +136,7 @@
 
 /* ===== Reset ===== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+[x-cloak] { display: none !important; }
 html, body { height: 100%; overflow: hidden; }
 body {
   font-family: var(--font-sans);
@@ -845,6 +846,83 @@ body {
   flex-shrink: 0;
   user-select: none;
 }
+.chat-hint {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.chat-hint-btn {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-tertiary);
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  line-height: 1;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    border-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth),
+    background var(--duration-fast) var(--ease-smooth);
+}
+.chat-hint-btn:hover,
+.chat-hint-btn[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+.chat-hint-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.chat-hint-popup {
+  display: block;
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-medium);
+  border-radius: 10px;
+  padding: 12px 16px;
+  width: 280px;
+  max-width: calc(100vw - 48px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  z-index: 100;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: normal;
+}
+.chat-hint-popup::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 9px;
+  border: 6px solid transparent;
+  border-top-color: var(--border-medium);
+}
+.chat-hint-popup code {
+  background: var(--msg-tool-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
 .chat-input {
   flex: 1;
   background: var(--input-bg);
@@ -1297,6 +1375,11 @@ body {
   }
   .chat-prompt {
     font-size: 13px;
+  }
+  .chat-hint-btn {
+    width: 16px;
+    height: 16px;
+    font-size: 11px;
   }
   .chat-input {
     font-size: 13px;
@@ -2111,6 +2194,28 @@ body {
 
         <div class="chat-input-wrap">
           <span class="chat-prompt">&gt;</span>
+          <div class="chat-hint"
+            @mouseenter="chatHintOpen = true"
+            @mouseleave="chatHintOpen = false"
+            @focusin="chatHintOpen = true"
+            @focusout="chatHintOpen = false"
+            @click.outside="chatHintOpen = false">
+            <button type="button"
+              class="chat-hint-btn"
+              :aria-expanded="chatHintOpen ? 'true' : 'false'"
+              :aria-describedby="chatHintOpen ? 'chat-cli-hint' : null"
+              :aria-label="t('cli_hint_label')"
+              :title="t('cli_hint_label')"
+              @click.stop="chatHintOpen = !chatHintOpen"
+              @keydown.escape.stop.prevent="chatHintOpen = false">i</button>
+            <span class="chat-hint-popup"
+              id="chat-cli-hint"
+              role="tooltip"
+              x-cloak
+              x-show="chatHintOpen"
+              x-transition.opacity.duration.150ms
+              x-html="t('cli_hint')"></span>
+          </div>
           <input class="chat-input"
             x-ref="chatInput"
             x-model="input"
@@ -2700,6 +2805,8 @@ var I18N = {
     no_fleet: 'No devices discovered',
     no_deployments: 'No active deployments',
     chat_placeholder: 'Ask AIMA or run a command...',
+    cli_hint: 'Use <code>/cli</code> to run AIMA CLI and MCP commands.<br>Example: <code>/cli help</code> to see more.',
+    cli_hint_label: 'Show /cli usage help',
     send: 'Send',
     agent: 'Agent',
     dashboard: 'Dashboard',
@@ -2809,6 +2916,8 @@ var I18N = {
     no_fleet: '\u672A\u53D1\u73B0\u8BBE\u5907',
     no_deployments: '\u65E0\u6D3B\u52A8\u90E8\u7F72',
     chat_placeholder: '\u8F93\u5165\u95EE\u9898\u6216\u547D\u4EE4...',
+    cli_hint: '\u4F7F\u7528 <code>/cli</code> \u6267\u884C AIMA CLI \u548C MCP \u547D\u4EE4\u3002<br>\u793A\u4F8B\uFF1A<code>/cli help</code> \u67E5\u770B\u66F4\u591A\u3002',
+    cli_hint_label: '\u663E\u793A /cli \u7528\u6CD5\u63D0\u793A',
     send: '\u53D1\u9001',
     agent: 'Agent',
     dashboard: '\u4EEA\u8868\u76D8',
@@ -2920,6 +3029,8 @@ var I18N = {
     no_fleet: '\u30C7\u30D0\u30A4\u30B9\u672A\u691C\u51FA',
     no_deployments: '\u30A2\u30AF\u30C6\u30A3\u30D6\u306A\u30C7\u30D7\u30ED\u30A4\u306A\u3057',
     chat_placeholder: '\u8CEA\u554F\u3084\u30B3\u30DE\u30F3\u30C9\u3092\u5165\u529B...',
+    cli_hint: '<code>/cli</code> \u3067 AIMA CLI \u3068 MCP \u30B3\u30DE\u30F3\u30C9\u3092\u5B9F\u884C\u3002<br>\u4F8B: <code>/cli help</code> \u3067\u8A73\u7D30\u3092\u8868\u793A\u3002',
+    cli_hint_label: '/cli \u306E\u4F7F\u3044\u65B9\u3092\u8868\u793A',
     send: '\u9001\u4FE1',
     agent: 'Agent',
     dashboard: '\u30C0\u30C3\u30B7\u30E5\u30DC\u30FC\u30C9',
@@ -3003,6 +3114,8 @@ var I18N = {
     no_fleet: '\uB514\uBC14\uC774\uC2A4 \uBBF8\uBC1C\uACAC',
     no_deployments: '\uD65C\uC131 \uBC30\uD3EC \uC5C6\uC74C',
     chat_placeholder: '\uC9C8\uBB38\uC774\uB098 \uBA85\uB839\uC5B4\uB97C \uC785\uB825...',
+    cli_hint: '<code>/cli</code>\uB85C AIMA CLI \uBC0F MCP \uBA85\uB839\uC744 \uC2E4\uD589\uD558\uC138\uC694.<br>\uC608\uC2DC: <code>/cli help</code>\uB85C \uB354 \uBCF4\uAE30.',
+    cli_hint_label: '/cli \uC0AC\uC6A9\uBC95 \uBCF4\uAE30',
     send: '\uC804\uC1A1',
     agent: 'Agent',
     dashboard: '\uB300\uC2DC\uBCF4\uB4DC',
@@ -3086,6 +3199,8 @@ var I18N = {
     no_fleet: 'No se descubrieron dispositivos',
     no_deployments: 'Sin despliegues activos',
     chat_placeholder: 'Pregunte a AIMA o ejecute un comando...',
+    cli_hint: 'Use <code>/cli</code> para ejecutar comandos CLI y MCP de AIMA.<br>Ejemplo: <code>/cli help</code> para ver m\u00E1s.',
+    cli_hint_label: 'Mostrar ayuda de /cli',
     send: 'Enviar',
     agent: 'Agent',
     dashboard: 'Panel',
@@ -3166,6 +3281,8 @@ var I18N = {
     no_fleet: 'Aucun appareil d\u00E9couvert',
     no_deployments: 'Aucun d\u00E9ploiement actif',
     chat_placeholder: 'Posez une question ou ex\u00E9cutez une commande...',
+    cli_hint: 'Utilisez <code>/cli</code> pour ex\u00E9cuter les commandes CLI et MCP d\u2019AIMA.<br>Exemple : <code>/cli help</code> pour en savoir plus.',
+    cli_hint_label: 'Afficher l\u2019aide /cli',
     send: 'Envoyer',
     agent: 'Agent',
     dashboard: 'Tableau de bord',
@@ -3249,6 +3366,8 @@ var I18N = {
     no_fleet: 'Keine Ger\u00E4te entdeckt',
     no_deployments: 'Keine aktiven Deployments',
     chat_placeholder: 'Frage stellen oder Befehl ausf\u00FChren...',
+    cli_hint: 'Verwenden Sie <code>/cli</code> f\u00FCr AIMA-CLI- und MCP-Befehle.<br>Beispiel: <code>/cli help</code> f\u00FCr mehr.',
+    cli_hint_label: '/cli-Hilfe anzeigen',
     send: 'Senden',
     agent: 'Agent',
     dashboard: 'Dashboard',
@@ -3326,6 +3445,7 @@ function aimaApp() {
     showSettings: false,
     apiKey: localStorage.getItem('aima_api_key') || '',
     input: '',
+    chatHintOpen: false,
     thinking: false,
     messages: [],
     sessionId: '',
@@ -4405,6 +4525,7 @@ function aimaApp() {
       const text = this.input.trim();
       if (!text || this.thinking) return;
       this.input = '';
+      this.chatHintOpen = false;
 
       this.messages.push({ role: 'user', text });
       this.thinking = true;
