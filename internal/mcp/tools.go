@@ -33,6 +33,9 @@ type ToolDeps struct {
 	RemoveEngine  func(ctx context.Context, name string, deleteFiles bool) error
 	EnginePlan    func(ctx context.Context) (json.RawMessage, error)
 
+	// Download progress
+	ListDownloads func(ctx context.Context) (json.RawMessage, error)
+
 	// Deployment (runtime package)
 	DeployApply  func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error)
 	DeployDryRun func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error)
@@ -743,6 +746,23 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			data, err := deps.EnginePlan(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("engine plan: %w", err)
+			}
+			return TextResult(string(data)), nil
+		},
+	})
+
+	// download.list
+	s.RegisterTool(&Tool{
+		Name:        "download.list",
+		Description: "List active and recently completed download tasks (engine and model pulls). Returns an array of download progress objects with phase, downloaded bytes, total bytes, speed, and status.",
+		InputSchema: schema(``),
+		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
+			if deps.ListDownloads == nil {
+				return TextResult("[]"), nil
+			}
+			data, err := deps.ListDownloads(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("list downloads: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},

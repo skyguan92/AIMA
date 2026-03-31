@@ -2051,6 +2051,99 @@ func toEngineBinarySource(src *knowledge.EngineSource) *engine.BinarySource {
 	}
 }
 
+// DownloadProgress represents the current state of an engine or model download.
+type DownloadProgress struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`                 // "engine" | "model"
+	Name       string `json:"name"`
+	Phase      string `json:"phase"`                // "starting" | "downloading" | "pulling" | "extracting" | "complete" | "failed"
+	Downloaded int64  `json:"downloaded"`            // bytes
+	Total      int64  `json:"total"`                 // bytes, -1 = unknown
+	Speed      int64  `json:"speed"`                 // bytes/sec
+	Message    string `json:"message"`
+	Error      string `json:"error,omitempty"`
+	StartedAt  int64  `json:"started_at"`            // unix ms
+}
+
+// DownloadTracker tracks active download progress in memory.
+type DownloadTracker struct {
+	mu      sync.Mutex
+	entries map[string]*DownloadProgress
+}
+
+func NewDownloadTracker() *DownloadTracker {
+	return &DownloadTracker{entries: make(map[string]*DownloadProgress)}
+}
+
+func (t *DownloadTracker) Start(id, typ, name string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.entries[id] = &DownloadProgress{
+		ID:        id,
+		Type:      typ,
+		Name:      name,
+		Phase:     "starting",
+		Total:     -1,
+		StartedAt: time.Now().UnixMilli(),
+	}
+}
+
+func (t *DownloadTracker) Update(id, phase, message string, downloaded, total, speed int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.entries[id]
+	if !ok {
+		return
+	}
+	if phase != "" {
+		e.Phase = phase
+	}
+	if message != "" {
+		e.Message = message
+	}
+	if downloaded >= 0 {
+		e.Downloaded = downloaded
+	}
+	if total >= 0 {
+		e.Total = total
+	}
+	if speed >= 0 {
+		e.Speed = speed
+	}
+}
+
+func (t *DownloadTracker) Finish(id string, err error) {
+	t.mu.Lock()
+	e, ok := t.entries[id]
+	if ok {
+		if err != nil {
+			e.Phase = "failed"
+			e.Error = err.Error()
+		} else {
+			e.Phase = "complete"
+			e.Downloaded = e.Total
+		}
+	}
+	t.mu.Unlock()
+	// Auto-cleanup after 30s
+	time.AfterFunc(30*time.Second, func() {
+		t.mu.Lock()
+		delete(t.entries, id)
+		t.mu.Unlock()
+	})
+}
+
+func (t *DownloadTracker) List() []*DownloadProgress {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make([]*DownloadProgress, 0, len(t.entries))
+	for _, e := range t.entries {
+		cp := *e
+		result = append(result, &cp)
+	}
+	return result
+}
+
 // execRunner implements engine.CommandRunner using real exec.
 type execRunner struct{}
 
@@ -3525,6 +3618,8 @@ func resolveDeployment(ctx context.Context, cat *knowledge.Catalog, db *state.DB
 // buildToolDeps wires all ToolDeps fields to real implementations.
 // All runtime variants are provided so DeployApply can select per-deployment.
 func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store, rt runtime.Runtime, nativeRt runtime.Runtime, dockerRt runtime.Runtime, k3sRt runtime.Runtime, proxyServer *proxy.Server, k3sClient *k3s.Client, dataDir string, factoryDigests map[string]string, supportView *support.Service) *mcp.ToolDeps {
+	dlTracker := NewDownloadTracker()
+
 	scanEnginesCore := func(ctx context.Context, runtimeFilter string, autoImport bool) (json.RawMessage, error) {
 		assetPatterns := make(map[string][]string)
 		binaryAssets := make(map[string]string)
@@ -4101,100 +4196,101 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 					name = cat.DefaultEngine()
 				}
 			}
-
-			ea := cat.FindEngineByName(name, hwInfo)
-			if ea == nil {
-				return fmt.Errorf("engine %q not found in catalog for gpu_arch %q", name, hwInfo.GPUArch)
-			}
-
-			// Local-only engines cannot be pulled from a registry
-			if ea.Image.Distribution == "local" {
-				return fmt.Errorf("engine %q is a locally-built image (distribution: local); build it on the target device or import with: aima engine import <tarball>", name)
-			}
-
-			// Native binary path: prefer if platform is supported
-			platform := goruntime.GOOS + "/" + goruntime.GOARCH
-			preferredRuntime := preferredEngineRuntimeType(ea, platform)
-			if preferredRuntime == "native" && ea.Source != nil && ea.Source.Supports(platform) {
-				distPlatform := goruntime.GOOS + "-" + goruntime.GOARCH
-				distDir := filepath.Join(dataDir, "dist", distPlatform)
-				mgr := engine.NewBinaryManager(distDir)
-				_, downloaded, err := mgr.Ensure(ctx, toEngineBinarySource(ea.Source), onProgress)
-				if err != nil {
-					return err
+			err := func() error {
+				hwInfo := buildHardwareInfo(ctx, cat, rt.Name())
+				ea := cat.FindEngineByName(name, hwInfo)
+				if ea == nil {
+					return fmt.Errorf("engine %q not found in catalog for gpu_arch %q", name, hwInfo.GPUArch)
 				}
-				// Auto-scan to register in DB
-				_, _ = scanEnginesCore(ctx, "native", false)
-				if !downloaded && onProgress != nil {
-					onProgress(engine.ProgressEvent{Phase: "already_available", Message: "engine binary already available locally"})
+
+				// Local-only engines cannot be pulled from a registry
+				if ea.Image.Distribution == "local" {
+					return fmt.Errorf("engine %q is a locally-built image (distribution: local); build it on the target device or import with: aima engine import <tarball>", name)
 				}
-				return nil
-			}
-			// Container image path
-			if ea.Image.Name != "" && imageSupportsPlatform(ea, platform) {
-				fullRef := ea.Image.Name + ":" + ea.Image.Tag
-				runner := &execRunner{}
-				inContainerd := engine.ImageExistsInContainerd(ctx, fullRef, runner)
-				inDocker := engine.ImageExistsInDocker(ctx, fullRef, runner)
-				if inContainerd || inDocker {
-					slog.Info("engine image already available locally", "image", fullRef, "containerd", inContainerd, "docker", inDocker)
-					if rt.Name() == "k3s" && !inContainerd && inDocker {
-						if os.Getuid() != 0 {
-							_, _ = scanEnginesCore(ctx, "container", false)
-							if dockerRt != nil {
-								if onProgress != nil {
-									onProgress(engine.ProgressEvent{Phase: "already_available", Message: "engine image already available in Docker; Docker runtime can use it without K3S import"})
-								}
-								return nil
-							}
-							return fmt.Errorf("%s", k3sDockerImportHint(fullRef))
-						}
-						if err := engine.ImportDockerToContainerd(ctx, fullRef, runner); err != nil {
-							return fmt.Errorf("import existing engine image %s into containerd: %w", fullRef, err)
-						}
-						inContainerd = true
+
+				// Native binary path: prefer if platform is supported
+				platform := goruntime.GOOS + "/" + goruntime.GOARCH
+				preferredRuntime := preferredEngineRuntimeType(ea, platform)
+				if preferredRuntime == "native" && ea.Source != nil && ea.Source.Supports(platform) {
+					distPlatform := goruntime.GOOS + "-" + goruntime.GOARCH
+					distDir := filepath.Join(dataDir, "dist", distPlatform)
+					mgr := engine.NewBinaryManager(distDir)
+					_, downloaded, err := mgr.Ensure(ctx, toEngineBinarySource(ea.Source), onProgress)
+					if err != nil {
+						return err
 					}
-					_, _ = scanEnginesCore(ctx, "container", false)
-					if onProgress != nil {
-						msg := "engine image already available locally"
-						if rt.Name() == "k3s" && inContainerd && inDocker {
-							msg = "engine image already available locally (docker + containerd)"
-						} else if rt.Name() == "k3s" && inContainerd {
-							msg = "engine image already available in K3S containerd"
-						}
-						onProgress(engine.ProgressEvent{Phase: "already_available", Message: msg})
+					_, _ = scanEnginesCore(ctx, "native", false)
+					if !downloaded && onProgress != nil {
+						onProgress(engine.ProgressEvent{Phase: "already_available", Message: "engine binary already available locally"})
 					}
 					return nil
 				}
-				if err := engine.Pull(ctx, engine.PullOptions{
-					Image:      ea.Image.Name,
-					Tag:        ea.Image.Tag,
-					Registries: ea.Image.Registries,
-					SizeHintMB: ea.Image.SizeApproxMB,
-					OnProgress: onProgress,
-					Runner:     &execRunner{},
-				}); err != nil {
-					return err
+				// Container image path
+				if ea.Image.Name != "" && imageSupportsPlatform(ea, platform) {
+					fullRef := ea.Image.Name + ":" + ea.Image.Tag
+					runner := &execRunner{}
+					inContainerd := engine.ImageExistsInContainerd(ctx, fullRef, runner)
+					inDocker := engine.ImageExistsInDocker(ctx, fullRef, runner)
+					if inContainerd || inDocker {
+						slog.Info("engine image already available locally", "image", fullRef, "containerd", inContainerd, "docker", inDocker)
+						if rt.Name() == "k3s" && !inContainerd && inDocker {
+							if os.Getuid() != 0 {
+								_, _ = scanEnginesCore(ctx, "container", false)
+								if dockerRt != nil {
+									if onProgress != nil {
+										onProgress(engine.ProgressEvent{Phase: "already_available", Message: "engine image already available in Docker; Docker runtime can use it without K3S import"})
+									}
+									return nil
+								}
+								return fmt.Errorf("%s", k3sDockerImportHint(fullRef))
+							}
+							if err := engine.ImportDockerToContainerd(ctx, fullRef, runner); err != nil {
+								return fmt.Errorf("import existing engine image %s into containerd: %w", fullRef, err)
+							}
+							inContainerd = true
+						}
+						_, _ = scanEnginesCore(ctx, "container", false)
+						if onProgress != nil {
+							msg := "engine image already available locally"
+							if rt.Name() == "k3s" && inContainerd && inDocker {
+								msg = "engine image already available locally (docker + containerd)"
+							} else if rt.Name() == "k3s" && inContainerd {
+								msg = "engine image already available in K3S containerd"
+							}
+							onProgress(engine.ProgressEvent{Phase: "already_available", Message: msg})
+						}
+						return nil
+					}
+					if err := engine.Pull(ctx, engine.PullOptions{
+						Image:      ea.Image.Name,
+						Tag:        ea.Image.Tag,
+						Registries: ea.Image.Registries,
+						SizeHintMB: ea.Image.SizeApproxMB,
+						OnProgress: onProgress,
+						Runner:     &execRunner{},
+					}); err != nil {
+						return err
+					}
+					_, _ = scanEnginesCore(ctx, "container", false)
+					return nil
 				}
-				// Auto-scan to register in DB
-				_, _ = scanEnginesCore(ctx, "container", false)
-				return nil
-			}
-			if ea.Source != nil && ea.Source.Supports(platform) {
-				distPlatform := goruntime.GOOS + "-" + goruntime.GOARCH
-				distDir := filepath.Join(dataDir, "dist", distPlatform)
-				mgr := engine.NewBinaryManager(distDir)
-				_, downloaded, err := mgr.Ensure(ctx, toEngineBinarySource(ea.Source), onProgress)
-				if err != nil {
-					return err
+				if ea.Source != nil && ea.Source.Supports(platform) {
+					distPlatform := goruntime.GOOS + "-" + goruntime.GOARCH
+					distDir := filepath.Join(dataDir, "dist", distPlatform)
+					mgr := engine.NewBinaryManager(distDir)
+					_, downloaded, err := mgr.Ensure(ctx, toEngineBinarySource(ea.Source), onProgress)
+					if err != nil {
+						return err
+					}
+					_, _ = scanEnginesCore(ctx, "native", false)
+					if !downloaded && onProgress != nil {
+						onProgress(engine.ProgressEvent{Phase: "already_available", Message: "engine binary already available locally"})
+					}
+					return nil
 				}
-				_, _ = scanEnginesCore(ctx, "native", false)
-				if !downloaded && onProgress != nil {
-					onProgress(engine.ProgressEvent{Phase: "already_available", Message: "engine binary already available locally"})
-				}
-				return nil
-			}
-			return fmt.Errorf("engine %q has no download source for platform %s/%s", name, goruntime.GOOS, goruntime.GOARCH)
+				return fmt.Errorf("engine %q has no download source for platform %s/%s", name, goruntime.GOOS, goruntime.GOARCH)
+			}()
+			return err
 		},
 		ImportEngine: func(ctx context.Context, path string) error {
 			absPath, err := filepath.Abs(path)
@@ -4303,6 +4399,11 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				"compatible_engines": compatible,
 			}
 			return json.Marshal(result)
+		},
+
+		// Download progress
+		ListDownloads: func(ctx context.Context) (json.RawMessage, error) {
+			return json.Marshal(dlTracker.List())
 		},
 
 		// Deployment (runtime abstraction: K3S or native)

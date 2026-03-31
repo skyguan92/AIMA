@@ -2091,11 +2091,26 @@ body {
       <!-- Engines Panel -->
       <div class="panel">
         <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span></div>
-        <template x-if="engines.length === 0">
+        <template x-if="engines.length === 0 && !downloads.some(d => d.type === 'engine')">
           <div class="empty" x-text="t('no_engines')"></div>
         </template>
         <ul class="panel-list">
-          <template x-for="(e, ei) in engines" :key="ei">
+          <template x-for="dl in downloads.filter(d => d.type === 'engine' && d.phase !== 'complete')" :key="dl.id">
+            <li>
+              <span class="dot dot-orange"></span>
+              <div style="flex:1;overflow:hidden">
+                <div x-text="dl.name" style="text-overflow:ellipsis;overflow:hidden"></div>
+                <div class="deploy-progress" style="margin-top:4px">
+                  <div class="deploy-progress-fill starting" :style="'width:' + dlPercent(dl) + '%'"></div>
+                </div>
+                <div class="deploy-phase-text">
+                  <span><span class="deploy-phase-icon">&#x25D0;</span> <span x-text="dl.message || dl.phase"></span></span>
+                  <span class="deploy-eta" x-text="dlDetail(dl)"></span>
+                </div>
+              </div>
+            </li>
+          </template>
+          <template x-for="(e, ei) in engines" :key="e.id || ei">
             <li>
               <span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span>
               <span x-text="e.type"></span>
@@ -2108,11 +2123,26 @@ body {
       <!-- Models Panel -->
       <div class="panel">
         <div class="panel-title">&#x25C6; <span x-text="t('models')"></span></div>
-        <template x-if="models.length === 0">
+        <template x-if="models.length === 0 && !downloads.some(d => d.type === 'model')">
           <div class="empty" x-text="t('no_models')"></div>
         </template>
         <ul class="panel-list">
-          <template x-for="(m, mi) in models" :key="mi">
+          <template x-for="dl in downloads.filter(d => d.type === 'model' && d.phase !== 'complete')" :key="dl.id">
+            <li>
+              <span class="dot dot-orange"></span>
+              <div style="flex:1;overflow:hidden">
+                <div x-text="dl.name" style="text-overflow:ellipsis;overflow:hidden"></div>
+                <div class="deploy-progress" style="margin-top:4px">
+                  <div class="deploy-progress-fill starting" :style="'width:' + dlPercent(dl) + '%'"></div>
+                </div>
+                <div class="deploy-phase-text">
+                  <span><span class="deploy-phase-icon">&#x25D0;</span> <span x-text="dl.message || dl.phase"></span></span>
+                  <span class="deploy-eta" x-text="dlDetail(dl)"></span>
+                </div>
+              </div>
+            </li>
+          </template>
+          <template x-for="(m, mi) in models" :key="m.name || mi">
             <li>
               <span class="dot dot-green"></span>
               <span x-text="m.name" style="flex:1;overflow:hidden;text-overflow:ellipsis"></span>
@@ -2530,11 +2560,17 @@ body {
         </div>
         <div class="panel">
           <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span></div>
-          <ul class="panel-list"><template x-for="(e, ei) in engines" :key="ei"><li><span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span><span x-text="e.type"></span></li></template></ul>
+          <ul class="panel-list">
+            <template x-for="dl in downloads.filter(d => d.type === 'engine' && d.phase !== 'complete')" :key="dl.id"><li><span class="dot dot-orange"></span><div style="flex:1;min-width:0"><div x-text="dl.name"></div><div class="deploy-progress" style="margin-top:2px"><div class="deploy-progress-fill starting" :style="'width:' + dlPercent(dl) + '%'"></div></div></div></li></template>
+            <template x-for="(e, ei) in engines" :key="e.id || ei"><li><span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span><span x-text="e.type"></span></li></template>
+          </ul>
         </div>
         <div class="panel">
           <div class="panel-title">&#x25C6; <span x-text="t('models')"></span></div>
-          <ul class="panel-list"><template x-for="(m, mi) in models" :key="mi"><li><span class="dot dot-green"></span><span x-text="m.name"></span></li></template></ul>
+          <ul class="panel-list">
+            <template x-for="dl in downloads.filter(d => d.type === 'model' && d.phase !== 'complete')" :key="dl.id"><li><span class="dot dot-orange"></span><div style="flex:1;min-width:0"><div x-text="dl.name"></div><div class="deploy-progress" style="margin-top:2px"><div class="deploy-progress-fill starting" :style="'width:' + dlPercent(dl) + '%'"></div></div></div></li></template>
+            <template x-for="(m, mi) in models" :key="m.name || mi"><li><span class="dot dot-green"></span><span x-text="m.name"></span></li></template>
+          </ul>
         </div>
       </div>
     </template>
@@ -3484,6 +3520,8 @@ function aimaApp() {
     selfIp: '',
     engines: [],
     models: [],
+    downloads: [],
+    _downloadTimer: null,
     deployments: [],
     fleet: [],
     // View toggle (chat / support)
@@ -3558,6 +3596,7 @@ function aimaApp() {
       this.pollSystemStatus();
       this.pollEngines();
       this.pollModels();
+      this.pollDownloads();
       this.pollDeployments();
       this.pollFleet();
       this.pollAgentInfo();
@@ -4434,6 +4473,42 @@ function aimaApp() {
       }));
     },
 
+    async pollDownloads() {
+      const data = await this.callTool('download.list');
+      if (data._err) return;
+      const list = Array.isArray(data) ? data : [];
+      const hadActive = this.downloads.some(d => d.phase !== 'complete' && d.phase !== 'failed');
+      this.downloads = list;
+      const hasActive = list.some(d => d.phase !== 'complete' && d.phase !== 'failed');
+      // Adaptive polling: 2s when active, stop when idle
+      if (hasActive && !this._downloadTimer) {
+        this._downloadTimer = setInterval(() => this.pollDownloads(), 2000);
+      } else if (!hasActive && this._downloadTimer) {
+        clearInterval(this._downloadTimer);
+        this._downloadTimer = null;
+        // Refresh engines/models lists when downloads finish
+        if (hadActive) {
+          this.pollEngines();
+          this.pollModels();
+        }
+      }
+    },
+
+    dlPercent(dl) {
+      if (dl.total > 0) return Math.max(2, Math.min(95, Math.round(dl.downloaded * 100 / dl.total)));
+      if (dl.phase === 'complete') return 100;
+      return 50; // indeterminate
+    },
+
+    dlDetail(dl) {
+      if (dl.speed > 0 && dl.total > 0) {
+        const pct = Math.round(dl.downloaded * 100 / dl.total);
+        return pct + '%  ' + (dl.speed / 1048576).toFixed(1) + ' MB/s';
+      }
+      if (dl.speed > 0) return (dl.speed / 1048576).toFixed(1) + ' MB/s';
+      return dl.phase;
+    },
+
     async pollDeployments() {
       const data = await this.callTool('deploy.list');
       if (data._err) return;
@@ -5113,6 +5188,7 @@ function aimaApp() {
             this.pollSystemStatus();
             this.pollEngines();
             this.pollModels();
+            this.pollDownloads();
             this.pollDeployments();
           }
         }
