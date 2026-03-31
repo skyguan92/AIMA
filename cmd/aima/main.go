@@ -2634,6 +2634,324 @@ func deployAutoPullAllowed(ctx context.Context) bool {
 	return opts.allowAutoPull
 }
 
+type containerCompatibilityPlan struct {
+	RepairInitCommands []string
+	DockerImageChanged bool
+}
+
+type dockerOnlyRunner struct {
+	base engine.CommandRunner
+}
+
+func (r *dockerOnlyRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if name == "crictl" || (name == "k3s" && len(args) > 0 && args[0] == "crictl") {
+		return nil, fmt.Errorf("crictl disabled for docker-only operation")
+	}
+	return r.base.Run(ctx, name, args...)
+}
+
+func (r *dockerOnlyRunner) Pipe(ctx context.Context, from, to []string) error {
+	return r.base.Pipe(ctx, from, to)
+}
+
+func (r *dockerOnlyRunner) RunStream(ctx context.Context, onLine func(line string), name string, args ...string) error {
+	if name == "crictl" || (name == "k3s" && len(args) > 0 && args[0] == "crictl") {
+		return fmt.Errorf("crictl disabled for docker-only operation")
+	}
+	return r.base.RunStream(ctx, onLine, name, args...)
+}
+
+func shouldRunContainerCompatibilityProbe(resolved *knowledge.ResolvedConfig, runtimeName, modelPath string) bool {
+	if resolved == nil || resolved.EngineImage == "" || resolved.CompatibilityProbe == "" || modelPath == "" {
+		return false
+	}
+	if runtimeName != "docker" && runtimeName != "k3s" {
+		return false
+	}
+	if resolved.Source != nil {
+		return false
+	}
+	if resolved.ModelFormat != "" && !strings.EqualFold(resolved.ModelFormat, "safetensors") {
+		return false
+	}
+	if fi, err := os.Stat(modelPath); err == nil && !fi.IsDir() {
+		return false
+	}
+	return true
+}
+
+func prepareContainerCompatibility(
+	ctx context.Context,
+	runner engine.CommandRunner,
+	allowAutoPull bool,
+	runtimeName string,
+	modelPath string,
+	resolved *knowledge.ResolvedConfig,
+) (containerCompatibilityPlan, error) {
+	var plan containerCompatibilityPlan
+	if !shouldRunContainerCompatibilityProbe(resolved, runtimeName, modelPath) {
+		return plan, nil
+	}
+	if !dockerAvailableForCompatibilityProbe(ctx, runner) {
+		slog.Warn("container compatibility probe skipped: Docker unavailable",
+			"model", resolved.ModelName,
+			"engine_image", resolved.EngineImage)
+		return plan, nil
+	}
+
+	dockerReady, dockerChanged, err := ensureDockerImageForCompatibilityProbe(ctx, runner, allowAutoPull, resolved)
+	if err != nil {
+		slog.Warn("container compatibility probe setup failed",
+			"model", resolved.ModelName,
+			"engine_image", resolved.EngineImage,
+			"error", err)
+		return plan, nil
+	}
+	if !dockerReady {
+		slog.Warn("container compatibility probe skipped: image unavailable in Docker",
+			"model", resolved.ModelName,
+			"engine_image", resolved.EngineImage)
+		return plan, nil
+	}
+	plan.DockerImageChanged = dockerChanged
+
+	trustRemoteCode := configBoolValue(resolved.Config, "trust_remote_code")
+	probeOutput, probeErr := timedContainerCompatibilityProbe(ctx, runner, resolved.CompatibilityProbe, resolved.EngineImage, modelPath, trustRemoteCode, nil)
+	if probeErr == nil {
+		return plan, nil
+	}
+
+	probeSummary := summarizeCompatibilityProbeOutput(probeOutput, probeErr)
+	if allowAutoPull && len(resolved.EngineRegistries) > 0 && !strings.EqualFold(resolved.EngineDistribution, "local") {
+		if refreshErr := refreshDockerImageForCompatibilityProbe(ctx, runner, resolved); refreshErr == nil {
+			plan.DockerImageChanged = true
+			refreshedOutput, refreshedErr := timedContainerCompatibilityProbe(ctx, runner, resolved.CompatibilityProbe, resolved.EngineImage, modelPath, trustRemoteCode, nil)
+			if refreshedErr == nil {
+				slog.Info("container compatibility resolved after image refresh",
+					"model", resolved.ModelName,
+					"engine_image", resolved.EngineImage)
+				return plan, nil
+			}
+			if refreshedSummary := summarizeCompatibilityProbeOutput(refreshedOutput, refreshedErr); moreSpecificFailure(refreshedSummary, probeSummary) || probeSummary == "" {
+				probeSummary = refreshedSummary
+			}
+		} else {
+			slog.Warn("container compatibility image refresh failed",
+				"model", resolved.ModelName,
+				"engine_image", resolved.EngineImage,
+				"error", refreshErr)
+		}
+	}
+
+	if len(resolved.RepairInitCommands) == 0 {
+		return plan, fmt.Errorf("container compatibility check failed for %s with %s: %s", resolved.ModelName, resolved.EngineImage, probeSummary)
+	}
+
+	repairedOutput, repairedErr := timedContainerCompatibilityProbe(ctx, runner, resolved.CompatibilityProbe, resolved.EngineImage, modelPath, trustRemoteCode, resolved.RepairInitCommands)
+	if repairedErr != nil {
+		return plan, fmt.Errorf("container compatibility check failed for %s with %s: %s; auto-repair failed: %s",
+			resolved.ModelName,
+			resolved.EngineImage,
+			probeSummary,
+			summarizeCompatibilityProbeOutput(repairedOutput, repairedErr))
+	}
+
+	slog.Info("container compatibility auto-repair selected",
+		"model", resolved.ModelName,
+		"engine_image", resolved.EngineImage,
+		"commands", len(resolved.RepairInitCommands))
+	plan.RepairInitCommands = append([]string(nil), resolved.RepairInitCommands...)
+	return plan, nil
+}
+
+func dockerAvailableForCompatibilityProbe(ctx context.Context, runner engine.CommandRunner) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := runner.Run(probeCtx, "docker", "version", "--format", "{{.Server.Version}}")
+	return err == nil
+}
+
+func ensureDockerImageForCompatibilityProbe(ctx context.Context, runner engine.CommandRunner, allowAutoPull bool, resolved *knowledge.ResolvedConfig) (available bool, changed bool, err error) {
+	if resolved == nil || resolved.EngineImage == "" {
+		return false, false, nil
+	}
+	if engine.ImageExistsInDocker(ctx, resolved.EngineImage, runner) {
+		return true, false, nil
+	}
+	if !allowAutoPull || len(resolved.EngineRegistries) == 0 || strings.EqualFold(resolved.EngineDistribution, "local") {
+		return false, false, nil
+	}
+	if err := pullDockerImageForCompatibilityProbe(ctx, runner, resolved); err != nil {
+		return false, false, err
+	}
+	return true, true, nil
+}
+
+func refreshDockerImageForCompatibilityProbe(ctx context.Context, runner engine.CommandRunner, resolved *knowledge.ResolvedConfig) error {
+	if resolved == nil || resolved.EngineImage == "" {
+		return nil
+	}
+	return pullDockerImageForCompatibilityProbe(ctx, runner, resolved)
+}
+
+func pullDockerImageForCompatibilityProbe(ctx context.Context, runner engine.CommandRunner, resolved *knowledge.ResolvedConfig) error {
+	if resolved == nil {
+		return fmt.Errorf("resolved config is nil")
+	}
+	if len(resolved.EngineRegistries) == 0 {
+		return fmt.Errorf("no registries configured for %s", resolved.EngineImage)
+	}
+	imgName, imgTag := splitImageRef(resolved.EngineImage)
+	if err := engine.Pull(ctx, engine.PullOptions{
+		Image:          imgName,
+		Tag:            imgTag,
+		Registries:     resolved.EngineRegistries,
+		Runner:         &dockerOnlyRunner{base: runner},
+		ExpectedDigest: resolved.EngineDigest,
+	}); err != nil {
+		return err
+	}
+	return ensureDockerImageAlias(ctx, runner, resolved.EngineImage, resolved.EngineRegistries)
+}
+
+func ensureDockerImageAlias(ctx context.Context, runner engine.CommandRunner, image string, registries []string) error {
+	if image == "" || engine.ImageExistsInDocker(ctx, image, runner) {
+		return nil
+	}
+	name, tag := splitImageRef(image)
+	for _, registry := range registries {
+		pulledRef := buildRegistryImageRef(registry, name, tag)
+		if !engine.ImageExistsInDocker(ctx, pulledRef, runner) {
+			continue
+		}
+		if _, err := runner.Run(ctx, "docker", "tag", pulledRef, image); err != nil {
+			return fmt.Errorf("docker tag %s %s: %w", pulledRef, image, err)
+		}
+		if engine.ImageExistsInDocker(ctx, image, runner) {
+			return nil
+		}
+	}
+	if engine.ImageExistsInDocker(ctx, image, runner) {
+		return nil
+	}
+	return fmt.Errorf("image %s is not available under the expected local tag", image)
+}
+
+func buildRegistryImageRef(registry, image, tag string) string {
+	registry = strings.TrimSuffix(registry, "/")
+	image = strings.TrimSuffix(image, "/")
+	baseName := filepath.Base(image)
+	if registry == image || strings.HasSuffix(registry, "/"+baseName) {
+		return fmt.Sprintf("%s:%s", registry, tag)
+	}
+	if strings.Contains(registry, "/") {
+		return fmt.Sprintf("%s/%s:%s", registry, baseName, tag)
+	}
+	return fmt.Sprintf("%s/%s:%s", registry, image, tag)
+}
+
+func timedContainerCompatibilityProbe(
+	ctx context.Context,
+	runner engine.CommandRunner,
+	probeType string,
+	image string,
+	modelPath string,
+	trustRemoteCode bool,
+	repairInitCommands []string,
+) (string, error) {
+	timeout := 2 * time.Minute
+	if len(repairInitCommands) > 0 {
+		timeout = 10 * time.Minute
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return runContainerCompatibilityProbe(probeCtx, runner, probeType, image, modelPath, trustRemoteCode, repairInitCommands)
+}
+
+func runContainerCompatibilityProbe(
+	ctx context.Context,
+	runner engine.CommandRunner,
+	probeType string,
+	image string,
+	modelPath string,
+	trustRemoteCode bool,
+	repairInitCommands []string,
+) (string, error) {
+	pythonCode, ok := compatibilityProbePython(probeType)
+	if !ok {
+		return "", fmt.Errorf("unknown compatibility probe %q", probeType)
+	}
+
+	args := []string{
+		"run", "--rm",
+		"--env", "AIMA_MODEL_PATH=/models",
+		"--env", "AIMA_TRUST_REMOTE_CODE=" + strconv.FormatBool(trustRemoteCode),
+		"--volume", modelPath + ":/models:ro",
+	}
+	if len(repairInitCommands) == 0 {
+		args = append(args, "--entrypoint", "python3", image, "-c", pythonCode)
+	} else {
+		shellScript := strings.Join(append(append([]string(nil), repairInitCommands...), "python3 -c "+strconv.Quote(pythonCode)), " && ")
+		args = append(args, "--entrypoint", "sh", image, "-c", shellScript)
+	}
+
+	out, err := runner.Run(ctx, "docker", args...)
+	return string(out), err
+}
+
+func compatibilityProbePython(probeType string) (string, bool) {
+	switch strings.TrimSpace(probeType) {
+	case "transformers_autoconfig":
+		return `import os, transformers; from transformers import AutoConfig; model_path = os.environ.get("AIMA_MODEL_PATH", "/models"); trust_remote_code = os.environ.get("AIMA_TRUST_REMOTE_CODE", "false").lower() == "true"; cfg = AutoConfig.from_pretrained(model_path, local_files_only=True, trust_remote_code=trust_remote_code); print("AIMA_COMPAT_OK transformers=%s model_type=%s" % (transformers.__version__, getattr(cfg, "model_type", "unknown")))`, true
+	default:
+		return "", false
+	}
+}
+
+func configBoolValue(config map[string]any, key string) bool {
+	if config == nil {
+		return false
+	}
+	raw, ok := config[key]
+	if !ok {
+		return false
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
+		return err == nil && parsed
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case json.Number:
+		n, err := v.Int64()
+		return err == nil && n != 0
+	default:
+		return false
+	}
+}
+
+func summarizeCompatibilityProbeOutput(output string, err error) string {
+	if detail := summarizeErrorLines(output); detail != "" && detail != "unknown startup failure" {
+		return detail
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if trimmed := strings.TrimSpace(lines[i]); trimmed != "" {
+			return trimmed
+		}
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "compatibility probe failed"
+}
+
 func stringInSliceFold(values []string, want string) bool {
 	for _, v := range values {
 		if strings.EqualFold(v, want) {
@@ -4025,18 +4343,47 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 						slog.Info("auto-pulling engine image for Docker deploy", "image", req.Image)
 						imgName, imgTag := splitImageRef(req.Image)
 						if pullErr := engine.Pull(ctx, engine.PullOptions{
-							Image:      imgName,
-							Tag:        imgTag,
-							Registries: resolved.EngineRegistries,
-							Runner:     &execRunner{},
+							Image:          imgName,
+							Tag:            imgTag,
+							Registries:     resolved.EngineRegistries,
+							Runner:         &execRunner{},
+							ExpectedDigest: resolved.EngineDigest,
 						}); pullErr != nil {
 							return nil, fmt.Errorf("auto-pull engine image %s: %w", req.Image, pullErr)
+						}
+						if aliasErr := ensureDockerImageAlias(ctx, &execRunner{}, req.Image, resolved.EngineRegistries); aliasErr != nil {
+							return nil, fmt.Errorf("normalize pulled docker image %s: %w", req.Image, aliasErr)
 						}
 					} else {
 						slog.Warn("engine image not found locally and no registries configured",
 							"image", req.Image,
 							"hint", "run 'aima engine pull' first or ensure registries are configured in engine YAML")
 					}
+				}
+			}
+			compatPlan, compatErr := prepareContainerCompatibility(ctx, &execRunner{}, allowAutoPull, activeRt.Name(), modelPath, resolved)
+			if compatErr != nil {
+				return nil, compatErr
+			}
+			if len(compatPlan.RepairInitCommands) > 0 {
+				req.InitCommands = append(append([]string(nil), compatPlan.RepairInitCommands...), req.InitCommands...)
+			}
+			if compatPlan.DockerImageChanged && activeRt.Name() == "k3s" {
+				if os.Getuid() == 0 {
+					slog.Info("syncing compatibility-validated Docker image into K3S containerd", "image", req.Image)
+					if importErr := engine.ImportDockerToContainerd(ctx, req.Image, &execRunner{}); importErr != nil {
+						if shouldFallbackToDockerRuntime(activeRt.Name(), hasPartition, false, true, true, dockerRt != nil) {
+							slog.Warn("containerd image sync failed, falling back to Docker runtime", "image", req.Image, "error", importErr)
+							activeRt = dockerRt
+						} else {
+							return nil, fmt.Errorf("sync compatibility-validated image %s into K3S containerd: %w", req.Image, importErr)
+						}
+					}
+				} else if shouldFallbackToDockerRuntime(activeRt.Name(), hasPartition, false, true, false, dockerRt != nil) {
+					slog.Info("falling back to Docker runtime because compatibility-validated image change cannot be synced into K3S without root", "image", req.Image)
+					activeRt = dockerRt
+				} else {
+					return nil, fmt.Errorf("compatibility validation refreshed %s in Docker, but syncing that image into K3S containerd requires root", req.Image)
 				}
 			}
 			if err := allocateDeploymentPorts(ctx, deployName, activeRt.Name(), req, resolved.Provenance, listAllRuntimes(ctx, rt, nativeRt, dockerRt)); err != nil {

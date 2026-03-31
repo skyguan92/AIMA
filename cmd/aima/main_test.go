@@ -41,6 +41,44 @@ func (r *fakeRuntime) List(context.Context) ([]*aimaRuntime.DeploymentStatus, er
 func (r *fakeRuntime) Logs(context.Context, string, int) (string, error) { return "", nil }
 func (r *fakeRuntime) Name() string                                      { return r.name }
 
+type mockCommandRunner struct {
+	run       func(context.Context, string, ...string) ([]byte, error)
+	runStream func(context.Context, func(string), string, ...string) error
+	pipe      func(context.Context, []string, []string) error
+}
+
+func (m *mockCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if m.run != nil {
+		return m.run(ctx, name, args...)
+	}
+	return nil, fmt.Errorf("unexpected command: %s %s", name, strings.Join(args, " "))
+}
+
+func (m *mockCommandRunner) RunStream(ctx context.Context, onLine func(string), name string, args ...string) error {
+	if m.runStream != nil {
+		return m.runStream(ctx, onLine, name, args...)
+	}
+	out, err := m.Run(ctx, name, args...)
+	if err != nil {
+		return err
+	}
+	if onLine != nil && len(out) > 0 {
+		for _, line := range strings.Split(strings.TrimSuffix(string(out), "\n"), "\n") {
+			if strings.TrimSpace(line) != "" {
+				onLine(line)
+			}
+		}
+	}
+	return nil
+}
+
+func (m *mockCommandRunner) Pipe(ctx context.Context, from, to []string) error {
+	if m.pipe != nil {
+		return m.pipe(ctx, from, to)
+	}
+	return nil
+}
+
 func TestParseExtraParamsStrict(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -272,6 +310,111 @@ func TestDeployAutoPullAllowed(t *testing.T) {
 	}
 	if !deployAutoPullAllowed(withDeployAutoPull(context.Background(), true)) {
 		t.Fatal("deploy auto-pull override=true was not honored")
+	}
+}
+
+func TestPrepareContainerCompatibilityUsesRepairInitCommands(t *testing.T) {
+	modelPath := t.TempDir()
+	resolved := &knowledge.ResolvedConfig{
+		ModelName:           "qwen3.5-9b",
+		ModelFormat:         "safetensors",
+		EngineImage:         "vllm/vllm-openai:qwen3_5-cu130",
+		CompatibilityProbe:  "transformers_autoconfig",
+		RepairInitCommands:  []string{"python3 -m pip install --no-cache-dir --upgrade transformers"},
+		Config:              map[string]any{"trust_remote_code": true},
+		EngineDistribution:  "registry",
+		EngineRegistries:    []string{"docker.io/vllm/vllm-openai"},
+	}
+
+	repairProbeUsed := false
+	runner := &mockCommandRunner{
+		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			switch {
+			case name == "docker" && len(args) >= 2 && args[0] == "version":
+				return []byte("27.0.1"), nil
+			case name == "docker" && len(args) >= 3 && args[0] == "images" && args[1] == "-q":
+				return []byte("sha256:abc"), nil
+			case name == "docker" && len(args) > 0 && args[0] == "run":
+				script := args[len(args)-1]
+				if strings.Contains(script, "pip install --no-cache-dir --upgrade transformers") {
+					repairProbeUsed = true
+					return []byte("AIMA_COMPAT_OK transformers=5.5.0.dev0 model_type=qwen3_5"), nil
+				}
+				return []byte("ValueError: The checkpoint you are trying to load has model type 'qwen3_5' but Transformers does not recognize this architecture"), fmt.Errorf("exit status 1")
+			default:
+				t.Fatalf("unexpected command: %s %s", name, strings.Join(args, " "))
+				return nil, nil
+			}
+		},
+	}
+
+	plan, err := prepareContainerCompatibility(context.Background(), runner, false, "docker", modelPath, resolved)
+	if err != nil {
+		t.Fatalf("prepareContainerCompatibility() error = %v", err)
+	}
+	if !repairProbeUsed {
+		t.Fatal("expected repair probe to be attempted")
+	}
+	if len(plan.RepairInitCommands) != 1 || plan.RepairInitCommands[0] != resolved.RepairInitCommands[0] {
+		t.Fatalf("RepairInitCommands = %v", plan.RepairInitCommands)
+	}
+	if plan.DockerImageChanged {
+		t.Fatal("repair-only flow should not mark Docker image as changed")
+	}
+}
+
+func TestPrepareContainerCompatibilityRefreshesImageBeforeFailing(t *testing.T) {
+	modelPath := t.TempDir()
+	resolved := &knowledge.ResolvedConfig{
+		ModelName:          "qwen3.5-9b",
+		ModelFormat:        "safetensors",
+		EngineImage:        "vllm/vllm-openai:qwen3_5-cu130",
+		CompatibilityProbe: "transformers_autoconfig",
+		Config:             map[string]any{"trust_remote_code": true},
+		EngineDistribution: "registry",
+		EngineRegistries:   []string{"docker.io/vllm/vllm-openai"},
+	}
+
+	pulled := false
+	probeCalls := 0
+	runner := &mockCommandRunner{
+		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			switch {
+			case name == "docker" && len(args) >= 2 && args[0] == "version":
+				return []byte("27.0.1"), nil
+			case name == "docker" && len(args) >= 3 && args[0] == "images" && args[1] == "-q":
+				return []byte("sha256:abc"), nil
+			case name == "docker" && len(args) >= 2 && args[0] == "pull":
+				pulled = true
+				return []byte("pulled"), nil
+			case name == "docker" && len(args) > 0 && args[0] == "run":
+				probeCalls++
+				if pulled {
+					return []byte("AIMA_COMPAT_OK transformers=5.5.0.dev0 model_type=qwen3_5"), nil
+				}
+				return []byte("ValueError: The checkpoint you are trying to load has model type 'qwen3_5' but Transformers does not recognize this architecture"), fmt.Errorf("exit status 1")
+			default:
+				t.Fatalf("unexpected command: %s %s", name, strings.Join(args, " "))
+				return nil, nil
+			}
+		},
+	}
+
+	plan, err := prepareContainerCompatibility(context.Background(), runner, true, "docker", modelPath, resolved)
+	if err != nil {
+		t.Fatalf("prepareContainerCompatibility() error = %v", err)
+	}
+	if !pulled {
+		t.Fatal("expected image refresh pull to run after initial probe failure")
+	}
+	if probeCalls != 2 {
+		t.Fatalf("probeCalls = %d, want 2", probeCalls)
+	}
+	if !plan.DockerImageChanged {
+		t.Fatal("refresh flow should mark Docker image as changed")
+	}
+	if len(plan.RepairInitCommands) != 0 {
+		t.Fatalf("RepairInitCommands = %v, want none", plan.RepairInitCommands)
 	}
 }
 

@@ -50,6 +50,7 @@ hardware:
   vram_min_mib: 2048
 startup:
   command: ["serve", "--model", "{{.ModelPath}}"]
+  compatibility_probe: transformers_autoconfig
   default_args:
     port: 8000
     max_batch_size: 32
@@ -136,6 +137,9 @@ variants:
       vram_min_mib: 4096
     engine: testengine
     format: safetensors
+    compatibility:
+      repair_init_commands:
+        - python3 -m pip install --no-cache-dir transformers>=5
     default_config:
       max_batch_size: 16
       dtype: float16
@@ -372,6 +376,34 @@ func TestScenarioNewFields(t *testing.T) {
 	}
 	if len(openclaw.AlternativeConfigs) != 0 {
 		t.Error("openclaw-multi should not have alternative_configs")
+	}
+
+	// openclaw-multi-aibook should expose memory/startup and keep alternatives empty
+	var openclawAIBook *DeploymentScenario
+	for i := range cat.DeploymentScenarios {
+		if cat.DeploymentScenarios[i].Metadata.Name == "openclaw-multi-aibook" {
+			openclawAIBook = &cat.DeploymentScenarios[i]
+			break
+		}
+	}
+	if openclawAIBook == nil {
+		t.Fatal("openclaw-multi-aibook scenario not found")
+	}
+	if openclawAIBook.MemoryBudget == nil {
+		t.Error("openclaw-multi-aibook should have memory_budget")
+	}
+	if len(openclawAIBook.StartupOrder) != 2 {
+		t.Errorf("expected openclaw-multi-aibook to have 2 startup_order steps, got %d", len(openclawAIBook.StartupOrder))
+	} else {
+		if openclawAIBook.StartupOrder[0].Model != "mooer-asr-1.5b" {
+			t.Errorf("expected first openclaw-multi-aibook step model to be mooer-asr-1.5b, got %s", openclawAIBook.StartupOrder[0].Model)
+		}
+		if openclawAIBook.StartupOrder[1].Model != "litetts-mnn" {
+			t.Errorf("expected second openclaw-multi-aibook step model to be litetts-mnn, got %s", openclawAIBook.StartupOrder[1].Model)
+		}
+	}
+	if len(openclawAIBook.AlternativeConfigs) != 0 {
+		t.Error("openclaw-multi-aibook should not have alternative_configs")
 	}
 }
 

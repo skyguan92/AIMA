@@ -5,6 +5,7 @@ metadata:
   supported_formats: [safetensors]
 startup:
   command: ["vllm", "serve", "{{.ModelPath}}"]
+  compatibility_probe: transformers_autoconfig
   default_args:
     port: 8000
     served_model_name: "{{.ModelName}}"

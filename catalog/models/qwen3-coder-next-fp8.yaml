@@ -31,6 +31,9 @@ variants:
       unified_memory: true
     engine: vllm-nightly
     format: safetensors
+    compatibility:
+      repair_init_commands:
+        - 'python3 -m pip install --no-cache-dir --upgrade https://github.com/huggingface/transformers/archive/refs/heads/main.tar.gz'
     default_config:
       gpu_memory_utilization: 0.85
       max_model_len: 262144

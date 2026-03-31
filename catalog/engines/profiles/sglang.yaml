@@ -5,6 +5,7 @@ metadata:
   supported_formats: [safetensors]
 startup:
   command: ["python3", "-m", "sglang.launch_server", "--model-path", "{{.ModelPath}}", "--host", "0.0.0.0"]
+  compatibility_probe: transformers_autoconfig
   default_args:
     port: 30000
   health_check:

@@ -77,6 +77,27 @@ func TestResolveWithUserOverrides(t *testing.T) {
 	}
 }
 
+func TestResolveIncludesCompatibilityMetadata(t *testing.T) {
+	cat := mustLoadCatalog(t)
+
+	hw := HardwareInfo{
+		GPUArch: "TestArch",
+		CPUArch: "x86_64",
+	}
+
+	resolved, err := cat.Resolve(hw, "test-model-8b", "testengine", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if resolved.CompatibilityProbe != "transformers_autoconfig" {
+		t.Fatalf("CompatibilityProbe = %q, want transformers_autoconfig", resolved.CompatibilityProbe)
+	}
+	if len(resolved.RepairInitCommands) != 1 || resolved.RepairInitCommands[0] != "python3 -m pip install --no-cache-dir transformers>=5" {
+		t.Fatalf("RepairInitCommands = %v", resolved.RepairInitCommands)
+	}
+}
+
 func TestResolveWildcardEngine(t *testing.T) {
 	cat := mustLoadCatalog(t)
 

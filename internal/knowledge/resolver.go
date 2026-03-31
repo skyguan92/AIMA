@@ -53,6 +53,8 @@ type ResolvedConfig struct {
 	Command               []string
 	PortSpecs             []StartupPort
 	InitCommands          []string          // pre-commands to run before main server (from engine YAML)
+	CompatibilityProbe    string            // container compatibility probe declared by engine YAML
+	RepairInitCommands    []string          // model-variant repair commands to prepend when compatibility probe needs self-heal
 	ExtraVolumes          []ContainerVolume // additional host volumes to mount (from engine YAML)
 	HealthCheck           *HealthCheck
 	Warmup                *WarmupConfig     // post-healthcheck warmup config (nil = no warmup)
@@ -211,6 +213,7 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 		Command:            engine.Startup.Command,
 		PortSpecs:          engine.Startup.Ports,
 		InitCommands:       engine.Startup.InitCommands,
+		CompatibilityProbe: engine.Startup.CompatibilityProbe,
 		ExtraVolumes:       engine.Startup.ExtraVolumes,
 		Env:                engine.Startup.Env,
 		WorkDir:            engine.Startup.WorkDir,
@@ -266,6 +269,7 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 	if variant != nil {
 		perf := variant.ParsedExpectedPerf()
 		resolved.StartupTimeS = perf.StartupTimeS
+		resolved.RepairInitCommands = append([]string(nil), variant.Compatibility.RepairInitCommands...)
 		if perf.VRAMMiB > 0 {
 			resolved.EstimatedVRAMMiB = perf.VRAMMiB
 		} else if variant.Hardware.VRAMMinMiB > 0 {

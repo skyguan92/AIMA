@@ -216,16 +216,17 @@ type EngineHardware struct {
 }
 
 type EngineStartup struct {
-	Command      []string            `yaml:"command"                    json:"command"`
-	InitCommands []string            `yaml:"init_commands,omitempty"    json:"init_commands,omitempty"`
-	Env          map[string]string   `yaml:"env,omitempty"              json:"env,omitempty"`
-	WorkDir      string              `yaml:"work_dir,omitempty"         json:"work_dir,omitempty"`
-	Ports        []StartupPort       `yaml:"ports,omitempty"            json:"ports,omitempty"`
-	DefaultArgs  map[string]any      `yaml:"default_args"               json:"default_args"`
-	HealthCheck  HealthCheck         `yaml:"health_check"               json:"health_check"`
-	Warmup       WarmupConfig        `yaml:"warmup"                     json:"warmup"`
-	ExtraVolumes []ContainerVolume   `yaml:"extra_volumes,omitempty"    json:"extra_volumes,omitempty"`
-	LogPatterns  *StartupLogPatterns `yaml:"log_patterns,omitempty"   json:"log_patterns,omitempty"`
+	Command            []string            `yaml:"command"                          json:"command"`
+	InitCommands       []string            `yaml:"init_commands,omitempty"          json:"init_commands,omitempty"`
+	CompatibilityProbe string              `yaml:"compatibility_probe,omitempty"    json:"compatibility_probe,omitempty"`
+	Env                map[string]string   `yaml:"env,omitempty"                    json:"env,omitempty"`
+	WorkDir            string              `yaml:"work_dir,omitempty"               json:"work_dir,omitempty"`
+	Ports              []StartupPort       `yaml:"ports,omitempty"                  json:"ports,omitempty"`
+	DefaultArgs        map[string]any      `yaml:"default_args"                     json:"default_args"`
+	HealthCheck        HealthCheck         `yaml:"health_check"                     json:"health_check"`
+	Warmup             WarmupConfig        `yaml:"warmup"                           json:"warmup"`
+	ExtraVolumes       []ContainerVolume   `yaml:"extra_volumes,omitempty"          json:"extra_volumes,omitempty"`
+	LogPatterns        *StartupLogPatterns `yaml:"log_patterns,omitempty"           json:"log_patterns,omitempty"`
 }
 
 // StartupPort describes a named listening port that should be supplied to the
@@ -336,7 +337,12 @@ type ModelVariant struct {
 	Format              string               `yaml:"format"`
 	Source              *ModelSource         `yaml:"source,omitempty"` // variant-specific download source; overrides global sources when present
 	DefaultConfig       map[string]any       `yaml:"default_config"`
+	Compatibility       ModelCompatibility   `yaml:"compatibility,omitempty"`
 	ExpectedPerformance map[string]any       `yaml:"expected_performance"`
+}
+
+type ModelCompatibility struct {
+	RepairInitCommands []string `yaml:"repair_init_commands,omitempty"`
 }
 
 // ExpectedPerf holds structured performance estimates extracted from a variant's
@@ -691,6 +697,9 @@ func mergeStartup(dst, src *EngineStartup) {
 	}
 	if len(dst.InitCommands) == 0 {
 		dst.InitCommands = src.InitCommands
+	}
+	if dst.CompatibilityProbe == "" {
+		dst.CompatibilityProbe = src.CompatibilityProbe
 	}
 	if len(dst.Ports) == 0 {
 		dst.Ports = src.Ports
