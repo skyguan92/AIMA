@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jguan/aima/internal/mcp"
+	"github.com/jguan/aima/internal/openclaw"
 	"github.com/jguan/aima/internal/proxy"
 )
 
@@ -89,6 +90,9 @@ func newServeCmd(app *App) *cobra.Command {
 					return deps, nil
 				}
 				go proxy.StartSyncLoop(ctx, app.Proxy, listFn, 5*time.Second)
+			}
+			if app.OpenClaw != nil {
+				go openclaw.StartSyncLoop(ctx, app.OpenClaw, 10*time.Second)
 			}
 
 			if app.Support != nil {

@@ -11,9 +11,9 @@ import (
 type Deps struct {
 	Backends   BackendLister
 	Catalog    CatalogReader
-	ConfigPath string // e.g. ~/.openclaw/openclaw.json
-	ProxyAddr  string // e.g. "http://127.0.0.1:6188/v1"
-	APIKey     string // AIMA proxy API key (may be empty)
+	ConfigPath string        // e.g. ~/.openclaw/openclaw.json
+	ProxyAddr  string        // e.g. "http://127.0.0.1:6188/v1"
+	APIKey     func() string // AIMA proxy API key getter (may return empty)
 }
 
 // BackendLister provides read-only access to the proxy's backend table.
@@ -44,4 +44,11 @@ func DefaultConfigPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".openclaw", "openclaw.json")
+}
+
+func (d *Deps) proxyAPIKey() string {
+	if d == nil || d.APIKey == nil {
+		return ""
+	}
+	return d.APIKey()
 }

@@ -26,6 +26,8 @@ func (m *mockCatalog) ModelType(name string) string {
 		return "asr"
 	case "qwen3-tts-0.6b":
 		return "tts"
+	case "z-image":
+		return "image_gen"
 	default:
 		return ""
 	}
@@ -48,6 +50,8 @@ func (m *mockCatalog) ModelFamily(name string) string {
 		return "qwen"
 	case "glm-4.1v-9b":
 		return "glm"
+	case "z-image":
+		return "tongyi"
 	default:
 		return ""
 	}
@@ -117,7 +121,7 @@ func TestSyncWritesConfig(t *testing.T) {
 		Catalog:    &mockCatalog{},
 		ConfigPath: configPath,
 		ProxyAddr:  "http://127.0.0.1:6188/v1",
-		APIKey:     "test-key",
+		APIKey:     func() string { return "test-key" },
 	}
 
 	result, err := Sync(context.Background(), deps, false)
@@ -141,16 +145,253 @@ func TestSyncWritesConfig(t *testing.T) {
 		t.Error("minimax provider was removed — merge should preserve non-AIMA providers")
 	}
 
-	// Verify vllm provider was added
-	vllm, ok := providers["vllm"].(map[string]any)
+	// Verify AIMA provider was added
+	aima, ok := providers["aima"].(map[string]any)
 	if !ok {
-		t.Fatal("vllm provider not found after sync")
+		t.Fatal("aima provider not found after sync")
 	}
-	if vllm["baseUrl"] != "http://127.0.0.1:6188/v1" {
-		t.Errorf("vllm baseUrl = %v, want http://127.0.0.1:6188/v1", vllm["baseUrl"])
+	if aima["baseUrl"] != "http://127.0.0.1:6188/v1" {
+		t.Errorf("aima baseUrl = %v, want http://127.0.0.1:6188/v1", aima["baseUrl"])
 	}
-	if vllm["apiKey"] != "test-key" {
-		t.Errorf("vllm apiKey = %v, want test-key", vllm["apiKey"])
+	if aima["apiKey"] != "test-key" {
+		t.Errorf("aima apiKey = %v, want test-key", aima["apiKey"])
+	}
+
+	managed, err := ReadManagedState(configPath)
+	if err != nil {
+		t.Fatalf("ReadManagedState failed: %v", err)
+	}
+	if managed.LLMProvider != "aima" {
+		t.Fatalf("managed llm provider = %q, want aima", managed.LLMProvider)
+	}
+}
+
+func TestMergeAIMAConfigImageGenUsesOpenAIProvider(t *testing.T) {
+	merged := MergeAIMAConfig(nil, &SyncResult{
+		ImageGenModels: []ImageGenEntry{{ID: "z-image"}},
+		ProxyAddr:      "http://127.0.0.1:6188/v1",
+	})
+
+	openai := lookupMap(merged, "models", "providers", "openai")
+	if openai == nil {
+		t.Fatal("openai provider not found after image generation merge")
+	}
+	if got := openai["baseUrl"]; got != "http://127.0.0.1:6188/v1" {
+		t.Fatalf("openai baseUrl = %v, want http://127.0.0.1:6188/v1", got)
+	}
+	if got := openai["apiKey"]; got != "local" {
+		t.Fatalf("openai apiKey = %v, want local", got)
+	}
+	defaults := lookupMap(merged, "agents", "defaults")
+	if defaults == nil {
+		t.Fatal("agents.defaults missing after image generation merge")
+	}
+	imageGen, ok := defaults["imageGenerationModel"].(map[string]any)
+	if !ok {
+		t.Fatalf("imageGenerationModel = %T, want map", defaults["imageGenerationModel"])
+	}
+	if got := imageGen["primary"]; got != "openai/z-image" {
+		t.Fatalf("imageGenerationModel.primary = %v, want openai/z-image", got)
+	}
+}
+
+func TestMergeAIMAConfigPreservesUnownedSharedSections(t *testing.T) {
+	proxyAddr := "http://127.0.0.1:6188/v1"
+	existing := map[string]any{
+		"models": map[string]any{
+			"providers": map[string]any{
+				"aima": map[string]any{
+					"baseUrl": proxyAddr,
+					"api":     "openai-completions",
+					"models":  []any{map[string]any{"id": "qwen3-8b"}},
+				},
+				"vllm": map[string]any{
+					"baseUrl": proxyAddr,
+					"api":     "openai-completions",
+					"models":  []any{map[string]any{"id": "qwen3-8b"}},
+				},
+				"openai": map[string]any{
+					"baseUrl": proxyAddr,
+					"api":     "openai-completions",
+					"models":  []any{map[string]any{"id": "z-image"}},
+				},
+				"minimax": map[string]any{
+					"baseUrl": "https://api.minimax.chat/v1",
+					"models":  []any{map[string]any{"id": "MiniMax-M2.1"}},
+				},
+			},
+		},
+		"tools": map[string]any{
+			"media": map[string]any{
+				"audio": map[string]any{
+					"enabled": true,
+					"models": []any{
+						map[string]any{"provider": "openai", "model": "qwen3-asr-1.7b", "baseUrl": proxyAddr},
+						map[string]any{"provider": "openai", "model": "whisper-1", "baseUrl": "https://api.openai.com/v1"},
+					},
+				},
+				"image": map[string]any{
+					"enabled": true,
+					"models": []any{
+						map[string]any{"provider": "openai", "model": "glm-4.1v-9b", "baseUrl": proxyAddr},
+					},
+				},
+			},
+		},
+		"messages": map[string]any{
+			"tts": map[string]any{
+				"provider": "openai",
+				"openai": map[string]any{
+					"baseUrl": proxyAddr,
+					"model":   "qwen3-tts-0.6b",
+					"voice":   "default",
+				},
+			},
+		},
+		"env": map[string]any{
+			"OPENAI_TTS_BASE_URL": proxyAddr,
+		},
+		"agents": map[string]any{
+			"defaults": map[string]any{
+				"imageGenerationModel": map[string]any{
+					"primary": "openai/z-image",
+				},
+			},
+		},
+	}
+
+	merged := MergeAIMAConfig(existing, &SyncResult{ProxyAddr: proxyAddr})
+	providers := lookupMap(merged, "models", "providers")
+	if providers == nil {
+		t.Fatal("models.providers missing after merge")
+	}
+	if _, ok := providers["minimax"]; !ok {
+		t.Fatal("minimax provider should be preserved")
+	}
+	if _, ok := providers["aima"]; ok {
+		t.Fatal("stale aima provider should be removed")
+	}
+	if _, ok := providers["vllm"]; ok {
+		t.Fatal("stale legacy vllm provider should be removed")
+	}
+	if _, ok := providers["openai"]; !ok {
+		t.Fatal("shared openai provider should be preserved without explicit ownership")
+	}
+
+	audio := lookupMap(merged, "tools", "media", "audio")
+	if audio == nil {
+		t.Fatal("tools.media.audio should preserve non-AIMA models")
+	}
+	audioModels := mediaModels(audio, "https://api.openai.com/v1")
+	if len(audioModels) != 1 || audioModels[0] != "whisper-1" {
+		t.Fatalf("preserved audio models = %v, want [whisper-1]", audioModels)
+	}
+	if image := lookupMap(merged, "tools", "media", "image"); image == nil {
+		t.Fatal("tools.media.image should be preserved without explicit ownership")
+	}
+	if messages := lookupMap(merged, "messages"); messages == nil {
+		t.Fatal("messages.tts should be preserved without explicit ownership")
+	}
+	if env := lookupMap(merged, "env"); env == nil {
+		t.Fatal("env should be preserved without explicit ownership")
+	}
+	if defaults := lookupMap(merged, "agents", "defaults"); defaults != nil {
+		if _, ok := defaults["imageGenerationModel"]; !ok {
+			t.Fatal("imageGenerationModel should be preserved without explicit ownership")
+		}
+	}
+}
+
+func TestMergeAIMAConfigWithManagedStateRemovesOwnedSharedSections(t *testing.T) {
+	proxyAddr := "http://127.0.0.1:6188/v1"
+	existing := map[string]any{
+		"models": map[string]any{
+			"providers": map[string]any{
+				"openai": map[string]any{
+					"baseUrl": proxyAddr,
+					"api":     "openai-completions",
+					"models":  []any{map[string]any{"id": "z-image"}},
+				},
+			},
+		},
+		"tools": map[string]any{
+			"media": map[string]any{
+				"audio": map[string]any{
+					"enabled": true,
+					"models": []any{
+						map[string]any{"provider": "openai", "model": "qwen3-asr-1.7b", "baseUrl": "https://example.invalid/v1"},
+						map[string]any{"provider": "openai", "model": "whisper-1", "baseUrl": "https://api.openai.com/v1"},
+					},
+				},
+				"image": map[string]any{
+					"enabled": true,
+					"models": []any{
+						map[string]any{"provider": "openai", "model": "glm-4.1v-9b", "baseUrl": "https://example.invalid/v1"},
+					},
+				},
+			},
+		},
+		"messages": map[string]any{
+			"tts": map[string]any{
+				"provider": "openai",
+				"openai": map[string]any{
+					"baseUrl": "https://example.invalid/v1",
+					"model":   "qwen3-tts-0.6b",
+					"voice":   "default",
+				},
+			},
+		},
+		"env": map[string]any{
+			"OPENAI_TTS_BASE_URL": "https://example.invalid/v1",
+		},
+		"agents": map[string]any{
+			"defaults": map[string]any{
+				"imageGenerationModel": map[string]any{
+					"primary": "openai/z-image",
+				},
+			},
+		},
+	}
+
+	managed := &ManagedState{
+		Version:                 managedStateVersion,
+		AudioModels:             []string{"qwen3-asr-1.7b"},
+		VisionModels:            []string{"glm-4.1v-9b"},
+		TTSModel:                "qwen3-tts-0.6b",
+		ImageGenerationProvider: "openai",
+		ImageGenerationModels:   []string{"z-image"},
+	}
+
+	merged, next := MergeAIMAConfigWithState(existing, managed, &SyncResult{ProxyAddr: proxyAddr})
+	if next.Empty() == false {
+		t.Fatalf("next managed state should be empty after removing all managed sections: %+v", next)
+	}
+	if providers := lookupMap(merged, "models", "providers"); providers != nil {
+		if _, ok := providers["openai"]; ok {
+			t.Fatal("managed openai provider should be removed")
+		}
+	}
+	audio := lookupMap(merged, "tools", "media", "audio")
+	if audio == nil {
+		t.Fatal("audio section should preserve unmanaged models")
+	}
+	audioModels := mediaModels(audio, "https://api.openai.com/v1")
+	if len(audioModels) != 1 || audioModels[0] != "whisper-1" {
+		t.Fatalf("preserved audio models = %v, want [whisper-1]", audioModels)
+	}
+	if image := lookupMap(merged, "tools", "media", "image"); image != nil {
+		t.Fatalf("managed image media should be removed: %v", image)
+	}
+	if messages := lookupMap(merged, "messages"); messages != nil {
+		t.Fatalf("managed messages.tts should be removed: %v", messages)
+	}
+	if env := lookupMap(merged, "env"); env != nil {
+		t.Fatalf("managed env should be removed: %v", env)
+	}
+	if defaults := lookupMap(merged, "agents", "defaults"); defaults != nil {
+		if _, ok := defaults["imageGenerationModel"]; ok {
+			t.Fatal("managed imageGenerationModel should be removed")
+		}
 	}
 }
 

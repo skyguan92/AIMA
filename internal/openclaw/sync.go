@@ -2,11 +2,13 @@ package openclaw
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jguan/aima/internal/openclaw/skills"
@@ -24,7 +26,7 @@ type SyncResult struct {
 	Written        bool            `json:"written"`
 }
 
-// ModelEntry represents an LLM/VLM model for OpenClaw's models.providers.vllm.
+// ModelEntry represents an LLM/VLM model for OpenClaw's provider config.
 type ModelEntry struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
@@ -43,7 +45,8 @@ type TTSEntry struct {
 	ID string `json:"id"`
 }
 
-// ImageGenEntry represents an image generation model for OpenClaw's tools.media.image.
+// ImageGenEntry represents an image generation model exposed through
+// OpenClaw's image-generation provider wiring.
 type ImageGenEntry struct {
 	ID string `json:"id"`
 }
@@ -54,9 +57,10 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 
 	result := &SyncResult{
 		ProxyAddr:  deps.ProxyAddr,
-		APIKey:     deps.APIKey,
+		APIKey:     deps.proxyAPIKey(),
 		ConfigPath: deps.ConfigPath,
 	}
+	var ttsIDs []string
 
 	for _, b := range backends {
 		if !b.Ready || b.Remote {
@@ -83,8 +87,7 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 			result.ASRModels = append(result.ASRModels, AudioEntry{ID: b.ModelName})
 
 		case "tts":
-			// Only one TTS model supported — last wins
-			result.TTSModel = &TTSEntry{ID: b.ModelName}
+			ttsIDs = append(ttsIDs, b.ModelName)
 
 		case "image_gen":
 			result.ImageGenModels = append(result.ImageGenModels, ImageGenEntry{ID: b.ModelName})
@@ -94,6 +97,13 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 				"model", b.ModelName, "type", modelType)
 		}
 	}
+	sort.Slice(result.LLMModels, func(i, j int) bool { return result.LLMModels[i].ID < result.LLMModels[j].ID })
+	sort.Slice(result.ASRModels, func(i, j int) bool { return result.ASRModels[i].ID < result.ASRModels[j].ID })
+	sort.Slice(result.ImageGenModels, func(i, j int) bool { return result.ImageGenModels[i].ID < result.ImageGenModels[j].ID })
+	sort.Strings(ttsIDs)
+	if len(ttsIDs) > 0 {
+		result.TTSModel = &TTSEntry{ID: ttsIDs[0]}
+	}
 
 	if dryRun {
 		return result, nil
@@ -102,14 +112,22 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 	// Read existing config (may not exist yet)
 	existing, err := ReadConfig(deps.ConfigPath)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, os.ErrNotExist) {
 			return result, fmt.Errorf("openclaw sync: %w", err)
 		}
 		existing = make(map[string]any)
 	}
 
-	merged := MergeAIMAConfig(existing, result)
+	managed, err := ReadManagedState(deps.ConfigPath)
+	if err != nil {
+		return result, fmt.Errorf("openclaw sync: %w", err)
+	}
+
+	merged, nextManaged := MergeAIMAConfigWithState(existing, managed, result)
 	if err := WriteConfig(deps.ConfigPath, merged); err != nil {
+		return result, err
+	}
+	if err := WriteManagedState(deps.ConfigPath, nextManaged); err != nil {
 		return result, err
 	}
 	result.Written = true

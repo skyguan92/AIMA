@@ -75,9 +75,9 @@ type ToolDeps struct {
 	DiscoverLAN func(ctx context.Context, timeoutS int) (json.RawMessage, error)
 
 	// Catalog overlay
-	CatalogOverride  func(ctx context.Context, kind, name, content string) (json.RawMessage, error)
-	CatalogStatus    func(ctx context.Context) (json.RawMessage, error)
-	CatalogValidate  func(ctx context.Context) (json.RawMessage, error)
+	CatalogOverride func(ctx context.Context, kind, name, content string) (json.RawMessage, error)
+	CatalogStatus   func(ctx context.Context) (json.RawMessage, error)
+	CatalogValidate func(ctx context.Context) (json.RawMessage, error)
 
 	// Deploy approval
 	DeployApprove func(ctx context.Context, id int64) (json.RawMessage, error)
@@ -154,7 +154,9 @@ type ToolDeps struct {
 	PowerMode func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
 
 	// OpenClaw integration
-	OpenClawSync func(ctx context.Context, dryRun bool) (json.RawMessage, error)
+	OpenClawSync   func(ctx context.Context, dryRun bool) (json.RawMessage, error)
+	OpenClawStatus func(ctx context.Context) (json.RawMessage, error)
+	OpenClawClaim  func(ctx context.Context, sections []string, dryRun bool) (json.RawMessage, error)
 
 	// Scenario
 	ScenarioList  func(ctx context.Context) (json.RawMessage, error)
@@ -2511,6 +2513,47 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			data, err := deps.OpenClawSync(ctx, p.DryRun)
 			if err != nil {
 				return nil, fmt.Errorf("openclaw sync: %w", err)
+			}
+			return TextResult(string(data)), nil
+		},
+	})
+
+	// openclaw.status
+	s.RegisterTool(&Tool{
+		Name:        "openclaw.status",
+		Description: "Inspect the current OpenClaw integration state, including local gateway reachability, config presence, and AIMA sync drift.",
+		InputSchema: schema(""),
+		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
+			if deps.OpenClawStatus == nil {
+				return ErrorResult("openclaw.status not available"), nil
+			}
+			data, err := deps.OpenClawStatus(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("openclaw status: %w", err)
+			}
+			return TextResult(string(data)), nil
+		},
+	})
+
+	// openclaw.claim
+	s.RegisterTool(&Tool{
+		Name:        "openclaw.claim",
+		Description: "Explicitly claim legacy OpenClaw config that already points at the local AIMA proxy, migrating it into AIMA-managed ownership state.",
+		InputSchema: schema(`"dry_run":{"type":"boolean","description":"If true, preview the claim result without writing managed state (default false)"},"sections":{"type":"array","items":{"type":"string"},"description":"Optional claim sections: llm, asr, vision, tts, image_gen. Default claims all detectable sections."}`),
+		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
+			if deps.OpenClawClaim == nil {
+				return ErrorResult("openclaw.claim not available"), nil
+			}
+			var p struct {
+				DryRun   bool     `json:"dry_run"`
+				Sections []string `json:"sections"`
+			}
+			if len(params) > 0 {
+				json.Unmarshal(params, &p)
+			}
+			data, err := deps.OpenClawClaim(ctx, p.Sections, p.DryRun)
+			if err != nil {
+				return nil, fmt.Errorf("openclaw claim: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},

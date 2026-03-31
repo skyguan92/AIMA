@@ -7,6 +7,7 @@ import (
 	"github.com/jguan/aima/internal/fleet"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
+	"github.com/jguan/aima/internal/openclaw"
 	"github.com/jguan/aima/internal/proxy"
 	"github.com/jguan/aima/internal/support"
 )
@@ -18,6 +19,7 @@ type App struct {
 	Proxy         *proxy.Server
 	MCP           *mcp.Server
 	ToolDeps      *mcp.ToolDeps
+	OpenClaw      *openclaw.Deps
 	FleetRegistry *fleet.Registry
 	FleetClient   *fleet.Client
 	Support       *support.Service

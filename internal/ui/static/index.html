@@ -200,6 +200,7 @@ body {
   50% { opacity: 0.5; }
 }
 .status-dot.online { background: var(--success); box-shadow: 0 0 6px rgba(48, 209, 88, 0.5); }
+.status-dot.warn { background: var(--warning); box-shadow: 0 0 6px rgba(255, 159, 10, 0.45); }
 .status-dot.offline { background: var(--error); box-shadow: 0 0 6px rgba(255, 69, 58, 0.5); }
 .status-text { font-size: 12px; color: var(--text-tertiary); }
 .btn-icon {
@@ -2242,6 +2243,17 @@ body {
           <span class="agent-info-value" x-text="agentInfo.llmEndpoint ? truncateUrl(agentInfo.llmEndpoint) : t('not_configured')" :title="agentInfo.llmEndpoint || ''"></span>
         </div>
         <div class="agent-info-row">
+          <span class="agent-info-label">OpenClaw</span>
+          <span class="agent-info-value" :title="openClawStatusTitle()">
+            <span class="status-dot" :class="openClawDotClass()" style="width:6px;height:6px;vertical-align:middle"></span>
+            <span x-text="openClawStatusText()"></span>
+          </span>
+        </div>
+        <div class="support-summary-actions" x-show="openclaw.claimNeeded" style="justify-content:flex-end;margin-top:10px">
+          <button type="button" class="support-summary-btn" @click="claimOpenClaw()" :disabled="openclawClaiming" x-text="openclawClaiming ? t('openclaw_claiming') : t('openclaw_claim_action')"></button>
+        </div>
+        <div class="support-feedback" x-show="openclawClaimError" x-text="openclawClaimError" style="margin-top:10px"></div>
+        <div class="agent-info-row">
           <span class="agent-info-label" x-text="t('session')"></span>
           <span class="agent-info-value" x-text="sessionId ? sessionId.substring(0, 8) + '...' : t('none')"></span>
         </div>
@@ -2382,6 +2394,17 @@ body {
             <span class="agent-info-label" x-text="t('llm_model')"></span>
             <span class="agent-info-value" x-text="agentInfo.llmModel || t('not_configured')"></span>
           </div>
+          <div class="agent-info-row">
+            <span class="agent-info-label">OpenClaw</span>
+            <span class="agent-info-value" :title="openClawStatusTitle()">
+              <span class="status-dot" :class="openClawDotClass()" style="width:6px;height:6px;vertical-align:middle"></span>
+              <span x-text="openClawStatusText()"></span>
+            </span>
+          </div>
+          <div class="support-summary-actions" x-show="openclaw.claimNeeded" style="justify-content:flex-end;margin-top:8px">
+            <button type="button" class="support-summary-btn" @click="claimOpenClaw()" :disabled="openclawClaiming" x-text="openclawClaiming ? t('openclaw_claiming') : t('openclaw_claim_action')"></button>
+          </div>
+          <div class="support-feedback" x-show="openclawClaimError" x-text="openclawClaimError" style="margin-top:8px"></div>
           <div style="margin-top:6px;text-align:right">
             <span class="agent-info-value clickable" @click="openSettings()" x-text="t('configure')"></span>
           </div>
@@ -2654,6 +2677,13 @@ var I18N = {
     mode: 'Mode',
     llm_model: 'LLM Model',
     llm_endpoint: 'LLM Endpoint',
+    openclaw_connected: 'Connected',
+    openclaw_unconfigured: 'Not linked',
+    openclaw_offline: 'Gateway offline',
+    openclaw_claim_needed: 'Claim needed',
+    openclaw_claim_action: 'Claim',
+    openclaw_claiming: 'Claiming...',
+    openclaw_sync_needed: 'Sync needed',
     session: 'Session',
     none: 'None',
     not_configured: 'Not configured',
@@ -2756,6 +2786,13 @@ var I18N = {
     mode: '\u6A21\u5F0F',
     llm_model: 'LLM \u6A21\u578B',
     llm_endpoint: 'LLM \u7AEF\u70B9',
+    openclaw_connected: '\u5DF2\u8054\u901A',
+    openclaw_unconfigured: '\u672A\u63A5\u5165',
+    openclaw_offline: '\u7F51\u5173\u79BB\u7EBF',
+    openclaw_claim_needed: '\u5F85\u8BA4\u9886',
+    openclaw_claim_action: '\u8BA4\u9886',
+    openclaw_claiming: '\u8BA4\u9886\u4E2D...',
+    openclaw_sync_needed: '\u5F85\u540C\u6B65',
     session: '\u4F1A\u8BDD',
     none: '\u65E0',
     not_configured: '\u672A\u914D\u7F6E',
@@ -2860,6 +2897,13 @@ var I18N = {
     mode: '\u30E2\u30FC\u30C9',
     llm_model: 'LLM \u30E2\u30C7\u30EB',
     llm_endpoint: 'LLM \u30A8\u30F3\u30C9\u30DD\u30A4\u30F3\u30C8',
+    openclaw_connected: '\u63A5\u7D9A\u6E08\u307F',
+    openclaw_unconfigured: '\u672A\u9023\u643A',
+    openclaw_offline: '\u30B2\u30FC\u30C8\u30A6\u30A7\u30A4\u505C\u6B62',
+    openclaw_claim_needed: '\u8A8D\u9818\u5FC5\u8981',
+    openclaw_claim_action: '\u8A8D\u9818',
+    openclaw_claiming: '\u8A8D\u9818\u4E2D...',
+    openclaw_sync_needed: '\u540C\u671F\u5FC5\u8981',
     session: '\u30BB\u30C3\u30B7\u30E7\u30F3',
     none: '\u306A\u3057',
     not_configured: '\u672A\u8A2D\u5B9A',
@@ -2936,6 +2980,13 @@ var I18N = {
     mode: '\uBAA8\uB4DC',
     llm_model: 'LLM \uBAA8\uB378',
     llm_endpoint: 'LLM \uC5D4\uB4DC\uD3EC\uC778\uD2B8',
+    openclaw_connected: '\uC5F0\uACB0\uB428',
+    openclaw_unconfigured: '\uBBF8\uC5F0\uACB0',
+    openclaw_offline: '\uAC8C\uC774\uD2B8\uC6E8\uC774 \uC624\uD504\uB77C\uC778',
+    openclaw_claim_needed: '\uC778\uC218 \uD544\uC694',
+    openclaw_claim_action: '\uC778\uC218',
+    openclaw_claiming: '\uC778\uC218 \uC911...',
+    openclaw_sync_needed: '\uB3D9\uAE30\uD654 \uD544\uC694',
     session: '\uC138\uC158',
     none: '\uC5C6\uC74C',
     not_configured: '\uBBF8\uC124\uC815',
@@ -3012,6 +3063,13 @@ var I18N = {
     mode: 'Modo',
     llm_model: 'Modelo LLM',
     llm_endpoint: 'Endpoint LLM',
+    openclaw_connected: 'Conectado',
+    openclaw_unconfigured: 'Sin vincular',
+    openclaw_offline: 'Gateway ca\u00EDdo',
+    openclaw_claim_needed: 'Reclamar',
+    openclaw_claim_action: 'Reclamar',
+    openclaw_claiming: 'Reclamando...',
+    openclaw_sync_needed: 'Sincronizar',
     session: 'Sesi\u00F3n',
     none: 'Ninguna',
     not_configured: 'No configurado',
@@ -3085,6 +3143,13 @@ var I18N = {
     mode: 'Mode',
     llm_model: 'Mod\u00E8le LLM',
     llm_endpoint: 'Point d\'acc\u00E8s LLM',
+    openclaw_connected: 'Connect\u00E9',
+    openclaw_unconfigured: 'Non li\u00E9',
+    openclaw_offline: 'Gateway hors ligne',
+    openclaw_claim_needed: 'Claim requise',
+    openclaw_claim_action: 'Claim',
+    openclaw_claiming: 'Claim en cours...',
+    openclaw_sync_needed: 'Sync requise',
     session: 'Session',
     none: 'Aucune',
     not_configured: 'Non configur\u00E9',
@@ -3161,6 +3226,13 @@ var I18N = {
     mode: 'Modus',
     llm_model: 'LLM-Modell',
     llm_endpoint: 'LLM-Endpunkt',
+    openclaw_connected: 'Verbunden',
+    openclaw_unconfigured: 'Nicht verbunden',
+    openclaw_offline: 'Gateway offline',
+    openclaw_claim_needed: 'Claim n\u00F6tig',
+    openclaw_claim_action: 'Claim',
+    openclaw_claiming: 'Claim l\u00E4uft...',
+    openclaw_sync_needed: 'Sync n\u00F6tig',
     session: 'Sitzung',
     none: 'Keine',
     not_configured: 'Nicht konfiguriert',
@@ -3306,6 +3378,18 @@ function aimaApp() {
     supportManifest: null,
     supportManifestLoading: false,
     supportManifestError: '',
+    openclaw: {
+      connected: false,
+      gatewayLive: false,
+      gatewayURL: '',
+      configPath: '',
+      aimaConfigured: false,
+      claimNeeded: false,
+      syncReady: false,
+      issues: []
+    },
+    openclawClaiming: false,
+    openclawClaimError: '',
     _supportPageLocalSeq: 0,
     _supportPageSeen: {
       initialized: false,
@@ -3539,6 +3623,7 @@ function aimaApp() {
         };
       }
       this.handleSupportStatus(data.support);
+      this.handleOpenClawStatus(data.openclaw);
     },
 
     handleSupportStatus(data) {
@@ -3557,6 +3642,84 @@ function aimaApp() {
         return;
       }
       this.syncSupportPageUpdates();
+    },
+
+    handleOpenClawStatus(data) {
+      if (!data || typeof data !== 'object') return;
+      this.openclaw = {
+        connected: data.connected === true,
+        gatewayLive: data.gateway_live === true,
+        gatewayURL: data.gateway_url || '',
+        configPath: data.config_path || '',
+        aimaConfigured: data.aima_configured === true,
+        claimNeeded: data.claim_needed === true,
+        syncReady: data.sync_ready === true,
+        issues: Array.isArray(data.issues) ? data.issues : []
+      };
+      if (!this.openclaw.claimNeeded) {
+        this.openclawClaimError = '';
+      }
+    },
+
+    openClawDotClass() {
+      if (this.openclaw.connected) return 'online';
+      if (this.openclaw.gatewayLive || this.openclaw.aimaConfigured || this.openclaw.claimNeeded) return 'warn';
+      return 'offline';
+    },
+
+    openClawStatusText() {
+      if (this.openclaw.connected) return this.t('openclaw_connected');
+      if (!this.openclaw.gatewayLive && (this.openclaw.gatewayURL || this.openclaw.configPath)) return this.t('openclaw_offline');
+      if (this.openclaw.claimNeeded) return this.t('openclaw_claim_needed');
+      if (this.openclaw.gatewayLive && this.openclaw.aimaConfigured) return this.t('openclaw_sync_needed');
+      return this.t('openclaw_unconfigured');
+    },
+
+    openClawStatusTitle() {
+      const parts = [];
+      if (Array.isArray(this.openclaw.issues) && this.openclaw.issues.length > 0) {
+        parts.push(this.openclaw.issues.join(' | '));
+      }
+      if (this.openclaw.gatewayURL) parts.push(this.openclaw.gatewayURL);
+      if (this.openclaw.configPath) parts.push(this.openclaw.configPath);
+      return parts.join(' | ');
+    },
+
+    openClawSummaryCount(summary) {
+      if (!summary || typeof summary !== 'object') return 0;
+      const chat = Array.isArray(summary.chat_models) ? summary.chat_models.length : 0;
+      const vision = Array.isArray(summary.vision_models) ? summary.vision_models.length : 0;
+      const asr = Array.isArray(summary.asr_models) ? summary.asr_models.length : 0;
+      const imageGen = Array.isArray(summary.image_gen_models) ? summary.image_gen_models.length : 0;
+      const tts = summary.tts_model ? 1 : 0;
+      return chat + vision + asr + imageGen + tts;
+    },
+
+    async claimOpenClaw() {
+      if (this.openclawClaiming) return;
+      this.openclawClaiming = true;
+      this.openclawClaimError = '';
+      try {
+        const claim = await this.callTool('openclaw.claim', {});
+        if (claim._err) {
+          this.openclawClaimError = claim._err;
+          return;
+        }
+        const claimedCount = this.openClawSummaryCount(claim.claimed);
+        if (claimedCount === 0) {
+          const issues = Array.isArray(claim.issues) ? claim.issues : [];
+          this.openclawClaimError = issues.join(' | ') || 'openclaw claim failed';
+          return;
+        }
+        const sync = await this.callTool('openclaw.sync', {});
+        if (sync._err) {
+          this.openclawClaimError = sync._err;
+          return;
+        }
+        await this.pollSystemStatus();
+      } finally {
+        this.openclawClaiming = false;
+      }
     },
 
     mergeSupportState(data) {

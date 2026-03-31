@@ -573,10 +573,10 @@ func run() error {
 		Catalog:    catalogAdapter{cat},
 		ConfigPath: openclaw.DefaultConfigPath(),
 		ProxyAddr:  fmt.Sprintf("http://127.0.0.1:%d/v1", proxy.DefaultPort),
-		APIKey:     proxyServer.APIKey(),
+		APIKey:     proxyServer.APIKey,
 	}
 	openclawRoutes := openclaw.RegisterRoutes(openclawDeps)
-	deps.OpenClawSync = func(ctx context.Context, dryRun bool) (json.RawMessage, error) {
+	refreshOpenClawBackends := func(ctx context.Context) {
 		// Ensure proxy has up-to-date backends (CLI mode has no sync loop).
 		if deps.DeployList != nil {
 			if raw, err := deps.DeployList(ctx); err == nil {
@@ -586,7 +586,29 @@ func run() error {
 				}
 			}
 		}
+	}
+	deps.OpenClawStatus = func(ctx context.Context) (json.RawMessage, error) {
+		refreshOpenClawBackends(ctx)
+		result, err := openclaw.Inspect(ctx, openclawDeps)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+	deps.OpenClawSync = func(ctx context.Context, dryRun bool) (json.RawMessage, error) {
+		refreshOpenClawBackends(ctx)
 		result, err := openclaw.Sync(ctx, openclawDeps, dryRun)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+	deps.OpenClawClaim = func(ctx context.Context, sections []string, dryRun bool) (json.RawMessage, error) {
+		refreshOpenClawBackends(ctx)
+		result, err := openclaw.Claim(ctx, openclawDeps, openclaw.ClaimOptions{
+			DryRun:   dryRun,
+			Sections: sections,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -1485,6 +1507,7 @@ func run() error {
 		Proxy:         proxyServer,
 		MCP:           mcpServer,
 		ToolDeps:      deps,
+		OpenClaw:      openclawDeps,
 		FleetRegistry: fleetRegistry,
 		FleetClient:   fleetClient,
 		Support:       supportSvc,
@@ -5217,6 +5240,11 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			}
 			if b, e := json.Marshal(supportView.Status(ctx)); e == nil {
 				status["support"] = b
+			}
+			if deps.OpenClawStatus != nil {
+				if b, e := deps.OpenClawStatus(ctx); e == nil {
+					status["openclaw"] = b
+				}
 			}
 			return json.Marshal(status)
 		},
