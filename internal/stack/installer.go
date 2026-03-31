@@ -614,26 +614,12 @@ func (inst *Installer) installBinary(ctx context.Context, comp knowledge.StackCo
 	// Build install command args from stack YAML
 	args := collectArgs(comp, hwProfile)
 
-	// Set environment variables for child process, then restore on return.
+	// Build environment for child process without mutating the current process env.
 	env := collectEnv(comp, hwProfile)
-	saved := make(map[string]*string, len(env))
+	cmdEnv := os.Environ()
 	for k, v := range env {
-		if old, ok := os.LookupEnv(k); ok {
-			saved[k] = &old
-		} else {
-			saved[k] = nil
-		}
-		os.Setenv(k, v)
+		cmdEnv = append(cmdEnv, k+"="+v)
 	}
-	defer func() {
-		for k := range env {
-			if old := saved[k]; old != nil {
-				os.Setenv(k, *old)
-			} else {
-				os.Unsetenv(k)
-			}
-		}
-	}()
 
 	// Resolve binary: local dist/ first, then PATH, then os.Executable() (self)
 	binary := comp.Source.Binary
@@ -667,7 +653,7 @@ func (inst *Installer) installBinary(ctx context.Context, comp knowledge.StackCo
 		}
 		// Non-Linux fallback: start in background, verify step will poll for readiness
 		cmd := exec.CommandContext(ctx, binary, cmdArgs...)
-		cmd.Env = os.Environ()
+		cmd.Env = cmdEnv
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("start %s: %w", comp.Source.Binary, err)
 		}
@@ -675,7 +661,9 @@ func (inst *Installer) installBinary(ctx context.Context, comp knowledge.StackCo
 		return nil
 	}
 
-	out, err := inst.runner.Run(ctx, binary, cmdArgs...)
+	cmd := exec.CommandContext(ctx, binary, cmdArgs...)
+	cmd.Env = cmdEnv
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("run %s: %s: %w", comp.Source.Binary, string(out), err)
 	}
@@ -711,7 +699,7 @@ func (inst *Installer) installDaemonSystemd(ctx context.Context, comp knowledge.
 	if name == "k3s" {
 		envDir = "/etc/rancher/k3s"
 	}
-	if err := os.MkdirAll(envDir, 0o755); err != nil {
+	if err := os.MkdirAll(envDir, 0o750); err != nil {
 		return fmt.Errorf("create env dir %s: %w", envDir, err)
 	}
 	var envLines []string
@@ -867,13 +855,16 @@ func extractBinaries(archivePath string, paths []string, destDir string) error {
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
-	extracted := 0
+	var extracted []string
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			for _, f := range extracted {
+				os.Remove(f)
+			}
 			return fmt.Errorf("read tar: %w", err)
 		}
 		if hdr.Typeflag != tar.TypeReg {
@@ -888,21 +879,27 @@ func extractBinaries(archivePath string, paths []string, destDir string) error {
 
 		out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 		if err != nil {
+			for _, f := range extracted {
+				os.Remove(f)
+			}
 			return fmt.Errorf("create %s: %w", destPath, err)
 		}
 		if _, err := io.Copy(out, tr); err != nil {
 			out.Close()
+			for _, f := range extracted {
+				os.Remove(f)
+			}
 			return fmt.Errorf("write %s: %w", destPath, err)
 		}
 		out.Close()
+		extracted = append(extracted, destPath)
 		slog.Info("extracted binary", "path", destPath)
-		extracted++
 	}
 
-	if extracted == 0 {
+	if len(extracted) == 0 {
 		return fmt.Errorf("no matching binaries found in archive (wanted %d)", len(paths))
 	}
-	slog.Info("extracted binaries from archive", "count", extracted, "archive", filepath.Base(archivePath))
+	slog.Info("extracted binaries from archive", "count", len(extracted), "archive", filepath.Base(archivePath))
 	return nil
 }
 

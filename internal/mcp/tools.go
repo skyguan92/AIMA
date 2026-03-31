@@ -189,7 +189,7 @@ var profileIncludes = map[Profile][]string{
 		// Full categories
 		"hardware.", "model.", "engine.", "deploy.",
 		"system.", "scenario.", "fleet.", "discover.",
-		"stack.", "catalog.", "openclaw.", "support.",
+		"stack.", "catalog.", "openclaw.", "support.", "device.",
 		// Selective knowledge tools (skip deep analytics, sync, internals)
 		"knowledge.resolve", "knowledge.search", "knowledge.list",
 		"knowledge.list_profiles", "knowledge.list_engines", "knowledge.list_models",
@@ -258,20 +258,13 @@ var supportedConfigKeys = []string{
 	"support.worker_code",
 }
 
-var validConfigKeys = map[string]bool{
-	"api_key":             true,
-	"llm.endpoint":        true,
-	"llm.model":           true,
-	"llm.api_key":         true,
-	"llm.user_agent":      true,
-	"llm.extra_params":    true,
-	"central.endpoint":    true,
-	"central.api_key":     true,
-	"support.enabled":     true,
-	"support.endpoint":    true,
-	"support.invite_code": true,
-	"support.worker_code": true,
-}
+var validConfigKeys = func() map[string]bool {
+	m := make(map[string]bool, len(supportedConfigKeys))
+	for _, k := range supportedConfigKeys {
+		m[k] = true
+	}
+	return m
+}()
 
 var sensitiveConfigKeys = map[string]bool{
 	"api_key":             true,
@@ -314,7 +307,6 @@ func isCommandAllowed(command string) bool {
 		"nvidia-smi": {
 			"-q", "--query", // query modes (--query-gpu, --query-compute-apps, etc.)
 			"-L", "--list", // list GPUs
-			"-i",       // select GPU by index (read-only)
 			"--format", // output format (csv, noheader, etc.)
 			"--id",     // select GPU by ID
 		},
@@ -325,6 +317,14 @@ func isCommandAllowed(command string) bool {
 		},
 		"uname": {
 			"-a", "-s", "-r", "-m", "-n", "-v", "-p", "-o", // all flags are read-only
+		},
+	}
+
+	// safeExactFlags maps commands to flags that must match exactly (not as prefix).
+	// Use for short flags like "-i" that would otherwise match "-invalid".
+	safeExactFlags := map[string]map[string]bool{
+		"nvidia-smi": {
+			"-i": true, // select GPU by index (read-only)
 		},
 	}
 
@@ -362,9 +362,13 @@ func isCommandAllowed(command string) bool {
 		}
 	}
 
-	// Commands with flag whitelisting: every flag must match a safe prefix.
+	// Commands with flag whitelisting: every flag must match a safe prefix or exact flag.
 	if safePrefixes, ok := allowedWithSafeFlags[parts[0]]; ok {
+		exactFlags := safeExactFlags[parts[0]] // may be nil
 		for _, arg := range parts[1:] {
+			if exactFlags[arg] {
+				continue
+			}
 			if !hasAnySafePrefix(arg, safePrefixes) {
 				return false
 			}
@@ -738,7 +742,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "engine.plan",
 		Description: "Show all engines compatible with the current hardware, their install status, and a recommendation. Use before engine.pull to help the user choose.",
-		InputSchema: schema(""),
+		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.EnginePlan == nil {
 				return ErrorResult("engine.plan not implemented"), nil
@@ -755,7 +759,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "download.list",
 		Description: "List active and recently completed download tasks (engine and model pulls). Returns an array of download progress objects with phase, downloaded bytes, total bytes, speed, and status.",
-		InputSchema: schema(``),
+		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ListDownloads == nil {
 				return TextResult("[]"), nil
@@ -901,6 +905,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
+			}
+			if p.ID <= 0 {
+				return ErrorResult("id is required (positive integer)"), nil
 			}
 			data, err := deps.DeployApprove(ctx, p.ID)
 			if err != nil {
@@ -1211,7 +1218,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 				Tier string `json:"tier"`
 			}
 			if len(params) > 0 {
-				_ = json.Unmarshal(params, &p)
+				if err := json.Unmarshal(params, &p); err != nil {
+					return ErrorResult("invalid params: " + err.Error()), nil
+				}
 			}
 			if p.Tier == "" {
 				p.Tier = "docker"
@@ -1625,7 +1634,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 				TimeoutS int `json:"timeout_s"`
 			}
 			if len(params) > 0 {
-				json.Unmarshal(params, &p)
+				if err := json.Unmarshal(params, &p); err != nil {
+					return ErrorResult("invalid params: " + err.Error()), nil
+				}
 			}
 			if p.TimeoutS <= 0 {
 				p.TimeoutS = 3
@@ -2055,7 +2066,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.PatrolStatus(ctx)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("agent.patrol_status: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2071,7 +2082,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.PatrolAlerts(ctx)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("agent.alerts: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2091,7 +2102,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.PatrolConfig(ctx, params)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("agent.patrol_config: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2101,8 +2112,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 		Name:        "agent.patrol_actions",
 		Description: "List automated actions taken by the patrol loop (self-healing, notifications).",
 		InputSchema: schema(
-			`"limit":{"type":"integer","description":"Maximum number of actions to return (default 50)"}`,
-			""),
+			`"limit":{"type":"integer","description":"Maximum number of actions to return (default 50)"}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.PatrolActions == nil {
 				return ErrorResult("patrol actions not available"), nil
@@ -2110,13 +2120,17 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			var p struct {
 				Limit int `json:"limit"`
 			}
-			_ = json.Unmarshal(params, &p)
+			if len(params) > 0 {
+				if err := json.Unmarshal(params, &p); err != nil {
+					return ErrorResult("invalid params: " + err.Error()), nil
+				}
+			}
 			if p.Limit <= 0 {
 				p.Limit = 50
 			}
 			data, err := deps.PatrolActions(ctx, p.Limit)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("agent.patrol_actions: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2145,7 +2159,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.ExploreStart(ctx, params)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("explore.start: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2170,7 +2184,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.ExploreStatus(ctx, p.ID)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("explore.status: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2195,7 +2209,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.ExploreStop(ctx, p.ID)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("explore.stop: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2220,7 +2234,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.ExploreResult(ctx, p.ID)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("explore.result: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2245,7 +2259,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.TuningStart(ctx, params)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("tuning.start: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2261,7 +2275,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.TuningStatus(ctx)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("tuning.status: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2277,7 +2291,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.TuningStop(ctx)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("tuning.stop: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2293,7 +2307,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.TuningResults(ctx)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("tuning.results: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2314,7 +2328,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.PowerHistory(ctx, params)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("device.power_history: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2336,7 +2350,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.ValidateKnowledge(ctx, params)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("knowledge.validate: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2359,7 +2373,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.EngineSwitchCost(ctx, params)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("knowledge.engine_switch_cost: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2388,7 +2402,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.OpenQuestions(ctx, params)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("knowledge.open_questions: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2410,7 +2424,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.AppRegister(ctx, params)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("app.register: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2427,7 +2441,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.AppProvision(ctx, params)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("app.provision: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2435,14 +2449,14 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "app.list",
 		Description: "List all registered apps with their dependency satisfaction status.",
-		InputSchema: schema(""),
+		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.AppList == nil {
 				return ErrorResult("app list not available"), nil
 			}
 			data, err := deps.AppList(ctx)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("app.list: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2452,14 +2466,14 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.sync_push",
 		Description: "Push local knowledge (configurations + benchmarks) to the central knowledge server.",
-		InputSchema: schema(""),
+		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SyncPush == nil {
 				return ErrorResult("sync not configured — set central.endpoint and central.api_key first"), nil
 			}
 			data, err := deps.SyncPush(ctx)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("knowledge.sync_push: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2467,14 +2481,14 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.sync_pull",
 		Description: "Pull new knowledge from the central server (configs/benchmarks newer than last pull).",
-		InputSchema: schema(""),
+		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SyncPull == nil {
 				return ErrorResult("sync not configured — set central.endpoint and central.api_key first"), nil
 			}
 			data, err := deps.SyncPull(ctx)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("knowledge.sync_pull: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2482,14 +2496,14 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.sync_status",
 		Description: "Show knowledge sync status: central server URL, connectivity, last push/pull timestamps.",
-		InputSchema: schema(""),
+		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SyncStatus == nil {
 				return ErrorResult("sync not configured — set central.endpoint and central.api_key first"), nil
 			}
 			data, err := deps.SyncStatus(ctx)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("knowledge.sync_status: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2509,7 +2523,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 			}
 			data, err := deps.PowerMode(ctx, params)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("device.power_mode: %w", err)
 			}
 			return TextResult(string(data)), nil
 		},
@@ -2528,7 +2542,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 				DryRun bool `json:"dry_run"`
 			}
 			if len(params) > 0 {
-				json.Unmarshal(params, &p)
+				if err := json.Unmarshal(params, &p); err != nil {
+					return ErrorResult("invalid params: " + err.Error()), nil
+				}
 			}
 			data, err := deps.OpenClawSync(ctx, p.DryRun)
 			if err != nil {
@@ -2542,7 +2558,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "openclaw.status",
 		Description: "Inspect the current OpenClaw integration state, including local gateway reachability, config presence, MCP server registration, and AIMA sync drift.",
-		InputSchema: schema(""),
+		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.OpenClawStatus == nil {
 				return ErrorResult("openclaw.status not available"), nil
@@ -2569,7 +2585,9 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 				Sections []string `json:"sections"`
 			}
 			if len(params) > 0 {
-				json.Unmarshal(params, &p)
+				if err := json.Unmarshal(params, &p); err != nil {
+					return ErrorResult("invalid params: " + err.Error()), nil
+				}
 			}
 			data, err := deps.OpenClawClaim(ctx, p.Sections, p.DryRun)
 			if err != nil {
@@ -2583,7 +2601,7 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	s.RegisterTool(&Tool{
 		Name:        "scenario.list",
 		Description: "List available deployment scenarios from the catalog. Each scenario is a pre-defined multi-model deployment recipe.",
-		InputSchema: schema(""),
+		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ScenarioList == nil {
 				return ErrorResult("scenario.list not available"), nil

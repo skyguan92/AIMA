@@ -390,6 +390,8 @@ func (r *NativeRuntime) Status(_ context.Context, name string) (*DeploymentStatu
 
 func (r *NativeRuntime) List(_ context.Context) ([]*DeploymentStatus, error) {
 	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	seen := make(map[string]bool)
 	statuses := make([]*DeploymentStatus, 0)
 	for name, proc := range r.processes {
@@ -399,7 +401,6 @@ func (r *NativeRuntime) List(_ context.Context) ([]*DeploymentStatus, error) {
 		seen[name] = true
 		statuses = append(statuses, r.procStatusWithPersistedOverride(name, proc))
 	}
-	r.mu.RUnlock()
 
 	// Add persisted deployments not in memory (from previous CLI sessions)
 	for _, meta := range r.loadAllMeta() {
@@ -545,7 +546,17 @@ func (r *NativeRuntime) healthCheckAndWarmup(proc *nativeProcess, hc *HealthChec
 	timeout := effectiveHealthTimeout(hc)
 	deadline := time.Now().Add(timeout)
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", proc.port, hc.Path)
-	client := &http.Client{Timeout: 3 * time.Second}
+	hcClient := &http.Client{Timeout: 3 * time.Second}
+
+	// Build a warmup client once with appropriate timeout, reused across retries.
+	var warmupClient *http.Client
+	if warmup != nil {
+		wt := time.Duration(warmup.TimeoutS) * time.Second
+		if wt == 0 {
+			wt = 30 * time.Second
+		}
+		warmupClient = &http.Client{Timeout: wt}
+	}
 
 	for time.Now().Before(deadline) {
 		proc.mu.Lock()
@@ -556,14 +567,14 @@ func (r *NativeRuntime) healthCheckAndWarmup(proc *nativeProcess, hc *HealthChec
 			return
 		}
 
-		resp, err := client.Get(url)
+		resp, err := hcClient.Get(url)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				slog.Info("health check passed", "name", proc.name)
 				// Run warmup before marking ready. A successful health endpoint alone
 				// is not enough because another process may already own the same port.
-				if warmup != nil && !r.warmup(proc, warmup) {
+				if warmup != nil && !r.warmup(proc, warmup, warmupClient) {
 					time.Sleep(2 * time.Second)
 					continue
 				}
@@ -582,7 +593,7 @@ func (r *NativeRuntime) healthCheckAndWarmup(proc *nativeProcess, hc *HealthChec
 
 // warmup sends a dummy inference request to force model weight loading and CUDA kernel compilation.
 // It returns true only when the engine accepts the request successfully.
-func (r *NativeRuntime) warmup(proc *nativeProcess, cfg *WarmupConfig) bool {
+func (r *NativeRuntime) warmup(proc *nativeProcess, cfg *WarmupConfig, client *http.Client) bool {
 	prompt := cfg.Prompt
 	if prompt == "" {
 		prompt = "Hello"
@@ -590,10 +601,6 @@ func (r *NativeRuntime) warmup(proc *nativeProcess, cfg *WarmupConfig) bool {
 	maxTokens := cfg.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 1
-	}
-	timeout := time.Duration(cfg.TimeoutS) * time.Second
-	if timeout == 0 {
-		timeout = 30 * time.Second
 	}
 	modelName := proc.name
 	if proc.labels != nil && proc.labels["aima.dev/model"] != "" {
@@ -604,7 +611,6 @@ func (r *NativeRuntime) warmup(proc *nativeProcess, cfg *WarmupConfig) bool {
 	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}],"max_tokens":%d}`, modelName, prompt, maxTokens)
 
 	slog.Info("warming up engine", "name", proc.name, "url", url)
-	client := &http.Client{Timeout: timeout}
 	resp, err := client.Post(url, "application/json", strings.NewReader(body))
 	if err != nil {
 		slog.Warn("warmup request failed", "name", proc.name, "error", err)
@@ -917,16 +923,16 @@ func (r *NativeRuntime) portConflict(port int, selfName string) string {
 	}
 
 	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	for name, proc := range r.processes {
 		if name == selfName || proc == nil {
 			continue
 		}
 		if proc.port == port {
-			r.mu.RUnlock()
 			return fmt.Sprintf("deployment %q", name)
 		}
 	}
-	r.mu.RUnlock()
 
 	for _, meta := range r.loadAllMeta() {
 		if meta == nil || meta.Name == selfName {

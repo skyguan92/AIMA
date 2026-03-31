@@ -732,7 +732,7 @@ func TestProfileMatches(t *testing.T) {
 		{ProfileOperator, "explore.start", false},
 		{ProfileOperator, "tuning.start", false},
 		{ProfileOperator, "benchmark.run", false},
-		{ProfileOperator, "device.power_history", false},
+		{ProfileOperator, "device.power_history", true},
 		{ProfileOperator, "app.register", false},
 		{ProfileOperator, "shell.exec", false},
 

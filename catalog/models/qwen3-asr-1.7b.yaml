@@ -20,6 +20,7 @@ variants:
   # --- CPU-only 容器 (任何硬件) ---
   # 1.7B 参数, CPU 推理, 使用 glm-asr-fastapi 引擎 (OpenAI 兼容 /v1/audio/transcriptions)
   - name: qwen3-asr-1.7b-cpu-fastapi
+    status: blocked
     hardware:
       gpu_arch: "*"
     engine: glm-asr-fastapi

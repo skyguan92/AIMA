@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -299,6 +300,10 @@ func (d *DB) migrate(ctx context.Context) error {
 	if err := d.migrateV10(ctx); err != nil {
 		return fmt.Errorf("migrate v10: %w", err)
 	}
+	// v11: performance indexes for knowledge_notes, patrol_alerts, open_questions
+	if err := d.migrateV11(ctx); err != nil {
+		return fmt.Errorf("migrate v11: %w", err)
+	}
 	if _, err := d.db.ExecContext(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}
@@ -558,6 +563,9 @@ CREATE TABLE perf_vectors (
 	_, err = d.db.ExecContext(ctx, ddl)
 	if err != nil {
 		return fmt.Errorf("migrate v2 schema: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, "PRAGMA user_version = 2"); err != nil {
+		return fmt.Errorf("set user_version=2: %w", err)
 	}
 	return nil
 }
@@ -892,6 +900,7 @@ func (d *DB) migrateV9(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("inspect model_variants: %w", err)
 	}
+	defer rows.Close()
 
 	hasGPUCountMin := false
 	for rows.Next() {
@@ -912,12 +921,11 @@ func (d *DB) migrateV9(ctx context.Context) error {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return fmt.Errorf("iterate model_variants columns: %w", err)
 	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close model_variants column rows: %w", err)
-	}
+	// Explicitly close before ALTER TABLE — MaxOpenConns(1) means the rows
+	// must release the connection before any other statement can execute.
+	rows.Close()
 
 	if !hasGPUCountMin {
 		if _, err := d.db.ExecContext(ctx, `ALTER TABLE model_variants ADD COLUMN gpu_count_min INTEGER`); err != nil {
@@ -955,6 +963,26 @@ CREATE INDEX IF NOT EXISTS idx_deleted_deployments_deleted_at
 	return nil
 }
 
+func (d *DB) migrateV11(ctx context.Context) error {
+	var version int
+	_ = d.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	if version >= 11 {
+		return nil
+	}
+
+	ddl := `
+CREATE INDEX IF NOT EXISTS idx_notes_hw_model_engine ON knowledge_notes(hardware_profile, model, engine);
+CREATE INDEX IF NOT EXISTS idx_patrol_resolved ON patrol_alerts(resolved, created_at);
+CREATE INDEX IF NOT EXISTS idx_questions_status ON open_questions(status);`
+	if _, err := d.db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create v11 indexes: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, "PRAGMA user_version = 11"); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
+}
+
 // InsertPatrolAlert persists a patrol alert.
 func (d *DB) InsertPatrolAlert(ctx context.Context, id, severity, typ, message string) error {
 	_, err := d.db.ExecContext(ctx,
@@ -981,7 +1009,7 @@ func (d *DB) ListPatrolAlerts(ctx context.Context, onlyActive bool) ([]map[strin
 		var resolvedAt sql.NullString
 		var resolved bool
 		if err := rows.Scan(&id, &severity, &typ, &message, &createdAt, &resolvedAt, &resolved); err != nil {
-			continue
+			return nil, fmt.Errorf("scan patrol alert: %w", err)
 		}
 		a := map[string]any{
 			"id": id, "severity": severity, "type": typ, "message": message,
@@ -1027,7 +1055,7 @@ func (d *DB) QueryPowerHistory(ctx context.Context, fromTime, toTime string, int
 		var bucket string
 		var avgPower, maxPower, avgTemp, avgUtil, avgVRAM float64
 		if err := rows.Scan(&bucket, &avgPower, &maxPower, &avgTemp, &avgUtil, &avgVRAM); err != nil {
-			continue
+			return nil, fmt.Errorf("scan power history: %w", err)
 		}
 		results = append(results, map[string]any{
 			"timestamp": bucket, "avg_power_watts": avgPower, "max_power_watts": maxPower,
@@ -1080,7 +1108,7 @@ func (d *DB) ListValidations(ctx context.Context, hardware, engine, model string
 		var id, configID, hw, eng, mdl, metric, validatedAt string
 		var predicted, actual, deviation float64
 		if err := rows.Scan(&id, &configID, &hw, &eng, &mdl, &metric, &predicted, &actual, &deviation, &validatedAt); err != nil {
-			continue
+			return nil, fmt.Errorf("scan validation: %w", err)
 		}
 		status := "accurate"
 		if deviation > 20 || deviation < -20 {
@@ -1114,8 +1142,10 @@ func (d *DB) SaveSnapshot(ctx context.Context, s *RollbackSnapshot) error {
 		return fmt.Errorf("save snapshot for %s: %w", s.ResourceName, err)
 	}
 	// Prune: keep only the 10 most recent
-	_, _ = d.db.ExecContext(ctx,
-		`DELETE FROM rollback_snapshots WHERE id NOT IN (SELECT id FROM rollback_snapshots ORDER BY id DESC LIMIT 10)`)
+	if _, err := d.db.ExecContext(ctx,
+		`DELETE FROM rollback_snapshots WHERE id NOT IN (SELECT id FROM rollback_snapshots ORDER BY id DESC LIMIT 10)`); err != nil {
+		slog.Warn("prune old snapshots", "error", err)
+	}
 	return nil
 }
 
@@ -1158,6 +1188,11 @@ func (d *DB) GetSnapshot(ctx context.Context, id int64) (*RollbackSnapshot, erro
 // ClearStaticKnowledge deletes all rows from static knowledge tables.
 // Called on startup before reloading from go:embed YAML.
 func (d *DB) ClearStaticKnowledge(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin clear static knowledge: %w", err)
+	}
+	defer tx.Rollback()
 	// Order matters: child tables first (foreign keys)
 	tables := []string{
 		"engine_hardware_compat",
@@ -1169,11 +1204,11 @@ func (d *DB) ClearStaticKnowledge(ctx context.Context) error {
 		"hardware_profiles",
 	}
 	for _, t := range tables {
-		if _, err := d.db.ExecContext(ctx, "DELETE FROM "+t); err != nil {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+t); err != nil {
 			return fmt.Errorf("clear %s: %w", t, err)
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // Analyze updates SQLite's index statistics for the query optimizer.
@@ -1982,7 +2017,7 @@ func (d *DB) ListOpenQuestions(ctx context.Context, status string) ([]map[string
 		var id, source, question, status string
 		var testCmd, expected, actualResult, testedAt, hardware sql.NullString
 		if err := rows.Scan(&id, &source, &question, &testCmd, &expected, &status, &actualResult, &testedAt, &hardware); err != nil {
-			continue
+			return nil, fmt.Errorf("scan open question: %w", err)
 		}
 		r := map[string]any{
 			"id": id, "source_asset": source, "question": question, "status": status,
@@ -2009,10 +2044,17 @@ func (d *DB) ListOpenQuestions(ctx context.Context, status string) ([]map[string
 
 // ResolveOpenQuestion marks a question as confirmed or rejected with the actual result.
 func (d *DB) ResolveOpenQuestion(ctx context.Context, id, status, actualResult, hardware string) error {
-	_, err := d.db.ExecContext(ctx,
+	res, err := d.db.ExecContext(ctx,
 		`UPDATE open_questions SET status = ?, actual_result = ?, tested_at = datetime('now'), hardware = ? WHERE id = ?`,
 		status, actualResult, hardware, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("resolve open question %s: %w", id, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("open question %s not found", id)
+	}
+	return nil
 }
 
 // --- Exploration Runs ---
@@ -2214,7 +2256,10 @@ func (d *DB) InsertApp(ctx context.Context, id, name, spec string) error {
 	_, err := d.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO apps (id, name, spec, status) VALUES (?, ?, ?, 'pending')`,
 		id, name, spec)
-	return err
+	if err != nil {
+		return fmt.Errorf("insert app %s: %w", name, err)
+	}
+	return nil
 }
 
 // ListApps returns all registered apps with their dependency satisfaction status.
@@ -2233,7 +2278,7 @@ func (d *DB) ListApps(ctx context.Context) ([]map[string]any, error) {
 		var id, name, spec, status, createdAt string
 		var totalDeps, satisfiedDeps int
 		if err := rows.Scan(&id, &name, &spec, &status, &createdAt, &totalDeps, &satisfiedDeps); err != nil {
-			continue
+			return nil, fmt.Errorf("scan app: %w", err)
 		}
 		results = append(results, map[string]any{
 			"id": id, "name": name, "spec": json.RawMessage(spec), "status": status,
@@ -2248,7 +2293,10 @@ func (d *DB) UpsertAppDependency(ctx context.Context, appID, needType, model, de
 	_, err := d.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO app_dependencies (app_id, need_type, model, deploy_name, satisfied) VALUES (?, ?, ?, ?, ?)`,
 		appID, needType, model, deployName, satisfied)
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert app dependency %s/%s: %w", appID, needType, err)
+	}
+	return nil
 }
 
 // UpdateAppStatus updates an app's provisioning status.
@@ -2265,7 +2313,7 @@ func (d *DB) GetSyncTimestamp(ctx context.Context, direction string) (string, er
 	var val string
 	err := d.db.QueryRowContext(ctx,
 		`SELECT value FROM config WHERE key = ?`, "sync_"+direction+"_at").Scan(&val)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return val, err
@@ -2276,5 +2324,8 @@ func (d *DB) SetSyncTimestamp(ctx context.Context, direction string) error {
 	_, err := d.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO config (key, value) VALUES (?, datetime('now'))`,
 		"sync_"+direction+"_at")
-	return err
+	if err != nil {
+		return fmt.Errorf("set sync timestamp %s: %w", direction, err)
+	}
+	return nil
 }

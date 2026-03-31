@@ -41,14 +41,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ### Infrastructure
 
-- 80 MCP tools (unchanged count, improved wiring)
+- 94 MCP tools (Knowledge 23, Agent 9, Deploy 8, Engine 7, Model 6, Tuning 4, Fleet 4, Explore 4, Benchmark 4, Stack 3, Scenario 3, OpenClaw 3, Catalog 3, App 3, System 2, Hardware 2, Device 2, Support 1, Shell 1, Download 1, Discover 1)
 - 3 runtimes: K3S, Docker, Native
-- 9 hardware profiles, 22+ engine YAMLs, 16+ model YAMLs, 1 deployment scenario
+- 9 hardware profiles, 25 engine YAMLs, 19 model YAMLs, 3 deployment scenarios
 - Supported platforms: darwin-arm64, linux-arm64, linux-amd64, windows-amd64
 
 ## [v0.0.1] - 2026-03-06
 
-Initial tagged release. Foundation layer with hardware detection (8 GPU vendors), multi-runtime deployment, knowledge-driven config resolution, 80 MCP tools, central knowledge server, TUI dashboard, benchmark runner, and exploration runner.
+Initial tagged release. Foundation layer with hardware detection (8 GPU vendors), multi-runtime deployment, knowledge-driven config resolution, 94 MCP tools, central knowledge server, TUI dashboard, benchmark runner, and exploration runner.
 
 [v0.2.0]: https://github.com/Approaching-AI/AIMA/compare/v0.0.1...v0.2.0
 [v0.0.1]: https://github.com/Approaching-AI/AIMA/releases/tag/v0.0.1

@@ -5,9 +5,31 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 )
+
+// bytesToMiB converts bytes to mebibytes.
+func bytesToMiB(b int64) int {
+	return int(b / (1024 * 1024))
+}
+
+// parseUsedTotal splits "used / total" strings and returns both values.
+func parseUsedTotal(s string) (used, total int) {
+	parts := strings.SplitN(s, "/", 2)
+	if len(parts) != 2 {
+		return 0, 0
+	}
+	used, _ = strconv.Atoi(strings.TrimSpace(parts[0]))
+	total, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+	return
+}
+
+// huaweiNPUJSON is the JSON structure returned by npu-smi with -j flag.
+type huaweiNPUJSON struct {
+	NPU []map[string]interface{} `json:"NPU"`
+}
 
 // isNA returns true if the string is a variant of N/A or Not Supported.
 func isNA(s string) bool {
@@ -275,10 +297,11 @@ func computeCapToArch(cc string) string {
 }
 
 var gpuEnrichers = map[string]func(context.Context, CommandRunner, *GPUInfo){
-	"nvidia": enrichNvidiaGPU,
-	"amd":    enrichAMDGPU,
-	"huawei": enrichHuaweiNPU,
-	"metax":  enrichMetaXGPU,
+	"nvidia":   enrichNvidiaGPU,
+	"amd":      enrichAMDGPU,
+	"huawei":   enrichHuaweiNPU,
+	"mthreads": enrichMThreadsGPU,
+	"metax":    enrichMetaXGPU,
 }
 
 // enrichGPU fills in fields that the primary probe couldn't provide.
@@ -412,7 +435,13 @@ func parseAMDGPU(output string) *GPUInfo {
 
 	var firstCard map[string]interface{}
 	count := 0
-	for key, val := range raw {
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		val := raw[key]
 		if !strings.HasPrefix(key, "card") {
 			continue
 		}
@@ -443,7 +472,7 @@ func parseAMDGPU(output string) *GPUInfo {
 
 	var vram int
 	if b := jsonInt(firstCard, "VRAM Total Memory (B)"); b > 0 {
-		vram = int(b / (1024 * 1024))
+		vram = bytesToMiB(b)
 	}
 
 	return &GPUInfo{
@@ -463,7 +492,13 @@ func parseAMDGPUMetrics(output string) *GPUMetrics {
 		return nil
 	}
 
-	for key, val := range raw {
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		val := raw[key]
 		if !strings.HasPrefix(key, "card") {
 			continue
 		}
@@ -473,8 +508,8 @@ func parseAMDGPUMetrics(output string) *GPUMetrics {
 		}
 
 		util := int(jsonFloat(data, "GPU use (%)", "GPU Use (%)"))
-		memUsed := int(jsonInt(data, "VRAM Total Used Memory (B)") / (1024 * 1024))
-		memTotal := int(jsonInt(data, "VRAM Total Memory (B)") / (1024 * 1024))
+		memUsed := bytesToMiB(jsonInt(data, "VRAM Total Used Memory (B)"))
+		memTotal := bytesToMiB(jsonInt(data, "VRAM Total Memory (B)"))
 		if memTotal == 0 && util == 0 {
 			return nil
 		}
@@ -559,7 +594,7 @@ func parseIntelGPU(output string) *GPUInfo {
 
 	var vram int
 	if b := jsonInt(devices[0], "memory_physical_size_byte"); b > 0 {
-		vram = int(b / (1024 * 1024))
+		vram = bytesToMiB(b)
 	}
 
 	return &GPUInfo{
@@ -581,8 +616,8 @@ func parseIntelGPUMetrics(output string) *GPUMetrics {
 
 	dev := devices[0]
 	util := int(jsonFloat(dev, "gpu_utilization"))
-	memUsed := int(jsonInt(dev, "memory_used_byte") / (1024 * 1024))
-	memTotal := int(jsonInt(dev, "memory_physical_size_byte") / (1024 * 1024))
+	memUsed := bytesToMiB(jsonInt(dev, "memory_used_byte"))
+	memTotal := bytesToMiB(jsonInt(dev, "memory_physical_size_byte"))
 	if memTotal == 0 && util == 0 {
 		return nil
 	}
@@ -612,9 +647,7 @@ func intelGPUToArch(name string) string {
 
 func parseHuaweiNPU(output string) *GPUInfo {
 	// Try JSON first (forward-compatible with npu-smi versions that support -j)
-	var raw struct {
-		NPU []map[string]interface{} `json:"NPU"`
-	}
+	var raw huaweiNPUJSON
 	if err := json.Unmarshal([]byte(output), &raw); err == nil && len(raw.NPU) > 0 {
 		npu := raw.NPU[0]
 		name := jsonStr(npu, "Name")
@@ -746,9 +779,7 @@ func parseNPUTempPower(cell string) (temp, power float64) {
 
 func parseHuaweiNPUMetrics(output string) *GPUMetrics {
 	// Try JSON first
-	var raw struct {
-		NPU []map[string]interface{} `json:"NPU"`
-	}
+	var raw huaweiNPUJSON
 	if err := json.Unmarshal([]byte(output), &raw); err == nil && len(raw.NPU) > 0 {
 		npu := raw.NPU[0]
 		util := int(jsonFloat(npu, "Aicore Usage(%)"))
@@ -906,11 +937,42 @@ func mthreadsGPUToArch(_ string) string {
 	return "MUSA"
 }
 
+// enrichMThreadsGPU fills in driver/SDK version gaps for Moore Threads GPUs.
+// parseMThreadsGPU already populates most fields from mthreads-gmi -q -j,
+// so this only acts when fields were left empty.
+func enrichMThreadsGPU(ctx context.Context, runner CommandRunner, gpu *GPUInfo) {
+	if gpu.DriverVersion != "" && gpu.SDKVersion != "" {
+		return
+	}
+	out, err := runner.Run(ctx, "mthreads-gmi", "-q", "-j")
+	if err != nil {
+		return
+	}
+	var raw struct {
+		GPUs []map[string]interface{} `json:"gpus"`
+	}
+	if json.Unmarshal(out, &raw) != nil || len(raw.GPUs) == 0 {
+		return
+	}
+	g := raw.GPUs[0]
+	if gpu.DriverVersion == "" {
+		if v := jsonStr(g, "driver_version"); v != "" {
+			gpu.DriverVersion = v
+		}
+	}
+	if gpu.SDKVersion == "" {
+		if v := jsonStr(g, "musa_version"); v != "" {
+			gpu.SDKVersion = "MUSA " + v
+		}
+	}
+}
+
 // detectMThreadsMUSA detects Moore Threads MUSA GPUs via Linux sysfs.
 // Sentinel: /dev/mtgpu.0 must exist. Then checks /sys/class/drm/card*/device/uevent
 // for DRIVER=mt-igpu entries. Reads GPU info from mthreads-smi text output.
 func detectMThreadsMUSA(ctx context.Context, runner CommandRunner) *GPUInfo {
 	if _, err := runner.Run(ctx, "stat", "/dev/mtgpu.0"); err != nil {
+		slog.Debug("mthreads MUSA sentinel not found", "path", "/dev/mtgpu.0")
 		return nil
 	}
 
@@ -1064,7 +1126,7 @@ func detectHygonDCU(ctx context.Context, runner CommandRunner) *GPUInfo {
 		if vramMiB == 0 {
 			if vramOut, err := runner.Run(ctx, "cat", "/sys/class/drm/"+entry+"/device/mem_info_vram_total"); err == nil {
 				if bytes, err := strconv.ParseInt(strings.TrimSpace(string(vramOut)), 10, 64); err == nil && bytes > 0 {
-					vramMiB = int(bytes / (1024 * 1024))
+					vramMiB = bytesToMiB(bytes)
 				}
 			}
 		}
@@ -1125,12 +1187,12 @@ func collectHygonDCUMetrics(ctx context.Context, runner CommandRunner) *GPUMetri
 
 		if totalOut, err := runner.Run(ctx, "cat", basePath+"mem_info_vram_total"); err == nil {
 			if bytes, err := strconv.ParseInt(strings.TrimSpace(string(totalOut)), 10, 64); err == nil {
-				memTotal = int(bytes / (1024 * 1024))
+				memTotal = bytesToMiB(bytes)
 			}
 		}
 		if usedOut, err := runner.Run(ctx, "cat", basePath+"mem_info_vram_used"); err == nil {
 			if bytes, err := strconv.ParseInt(strings.TrimSpace(string(usedOut)), 10, 64); err == nil {
-				memUsed = int(bytes / (1024 * 1024))
+				memUsed = bytesToMiB(bytes)
 			}
 		}
 
@@ -1266,10 +1328,7 @@ func parseMetaXGPU(output string) *GPUInfo {
 				// Parse memory from cell 1: "666/65536 MiB"
 				memStr := strings.TrimSuffix(cell1, "MiB")
 				memStr = strings.TrimSpace(memStr)
-				parts := strings.Split(memStr, "/")
-				if len(parts) == 2 {
-					vram, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
-				}
+				_, vram = parseUsedTotal(memStr)
 			}
 			expectRow2 = false
 		}
@@ -1368,11 +1427,7 @@ func parseMetaXGPUMetrics(output string) *GPUMetrics {
 				// Parse memory: "666/65536 MiB"
 				memStr := strings.TrimSuffix(cell1, "MiB")
 				memStr = strings.TrimSpace(memStr)
-				parts := strings.Split(memStr, "/")
-				if len(parts) == 2 {
-					memUsed, _ = strconv.Atoi(strings.TrimSpace(parts[0]))
-					memTotal, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
-				}
+				memUsed, memTotal = parseUsedTotal(memStr)
 				found = true
 			}
 			expectRow2 = false

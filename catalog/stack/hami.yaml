@@ -15,7 +15,7 @@ compatibility:
 conditions:
   skip_profiles:
     - nvidia-gb10-arm64   # GB10: NVIDIA UMA, NVML memory query incompatible
-    - amd-radeon-x86      # AMD Radeon 8060S: RDNA not in HAMi supported devices
+    - amd-radeon-8060s-x86  # AMD Radeon 8060S: RDNA not in HAMi supported devices
 
 source:
   chart: "hami-2.4.1.tgz"

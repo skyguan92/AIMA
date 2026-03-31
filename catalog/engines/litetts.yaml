@@ -78,6 +78,8 @@ api:
   base_path: /tts/api/v1
 time_constraints:
   cold_start_s: [15, 30]
+power_constraints:
+  typical_draw_watts: [5, 30]
 runtime:
   default: "native"
   platform_recommendations:

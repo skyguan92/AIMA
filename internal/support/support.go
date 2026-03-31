@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -1812,10 +1813,15 @@ func (b *safeBuffer) String() string {
 func (b *safeBuffer) Snapshot(limit int) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if limit <= 0 || b.buf.Len() <= limit {
-		return b.buf.String()
+	s := b.buf.String()
+	if limit <= 0 || len(s) <= limit {
+		return s
 	}
-	return b.buf.String()[:limit]
+	// Find last valid UTF-8 boundary before limit
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

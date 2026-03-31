@@ -560,6 +560,9 @@ func downloadModelScopeHTTP(ctx context.Context, repo, destPath string, plan Dow
 		}); err != nil {
 			return fmt.Errorf("download %s: %w", f.Path, err)
 		}
+		if fi, err := os.Stat(fileDest); err == nil && f.Size > 0 && fi.Size() != f.Size {
+			return fmt.Errorf("size mismatch for %s: got %d, expected %d", f.Path, fi.Size(), f.Size)
+		}
 		downloadedBase += f.Size
 		if plan.OnProgress != nil {
 			plan.OnProgress(downloadedBase, totalSize)

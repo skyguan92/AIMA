@@ -10,8 +10,8 @@ compatibility:
 # Skip on non-NVIDIA platforms
 conditions:
   skip_profiles:
-    - amd-radeon-x86        # AMD Radeon — no NVIDIA driver
-    - hygon-bw150-x86       # Hygon DCU — no NVIDIA driver
+    - amd-radeon-8060s-x86  # AMD Radeon — no NVIDIA driver
+    - hygon-bw150-dcu-x86   # Hygon DCU — no NVIDIA driver
 
 source:
   # GitHub releases only provide deb/rpm bundles, not standalone binaries.

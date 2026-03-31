@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,16 +65,6 @@ func isLightweightInvocation() bool {
 		}
 	}
 	// No subcommand at all → full init (auto-serve with browser open).
-	return false
-}
-
-func isServeInvocation() bool {
-	for _, a := range os.Args[1:] {
-		if strings.HasPrefix(a, "-") {
-			continue
-		}
-		return a == "serve"
-	}
 	return false
 }
 
@@ -2369,58 +2358,6 @@ func seedCatalogOpenQuestions(ctx context.Context, db *state.DB, cat *knowledge.
 		}
 	}
 	return nil
-}
-
-func isLocalLLMEndpoint(endpoint string) bool {
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		return false
-	}
-	host := u.Hostname()
-	if host == "" {
-		return false
-	}
-	return strings.EqualFold(host, "localhost") || proxy.IsLocalIP(host)
-}
-
-func discoverDefaultLLMModel(ctx context.Context, settings llmSettings) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, settings.Endpoint+"/models", nil)
-	if err != nil {
-		return "", fmt.Errorf("create models request: %w", err)
-	}
-	if settings.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+settings.APIKey)
-	}
-	if settings.UserAgent != "" {
-		req.Header.Set("User-Agent", settings.UserAgent)
-	}
-
-	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetch models: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-	if err != nil {
-		return "", fmt.Errorf("read models response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("models endpoint: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var models struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &models); err != nil {
-		return "", fmt.Errorf("decode models: %w", err)
-	}
-	if len(models.Data) == 0 || models.Data[0].ID == "" {
-		return "", fmt.Errorf("no models available at %s/models", settings.Endpoint)
-	}
-	return models.Data[0].ID, nil
 }
 
 // parseExtraParams parses a JSON string into a map for LLM extra parameters.
@@ -6346,12 +6283,6 @@ func deploymentMatchesQuery(d *runtime.DeploymentStatus, query string) bool {
 		return knowledge.SanitizePodName(modelName+"-"+engineName) == query
 	}
 	return false
-}
-
-// dirContainsModelFiles reports whether path already points at a usable model,
-// either as a model directory or a directly-addressable model file.
-func dirContainsModelFiles(dir string) bool {
-	return model.PathLooksUsable(dir, "")
 }
 
 func dirRequiresSingleFileModelPath(dir string) bool {

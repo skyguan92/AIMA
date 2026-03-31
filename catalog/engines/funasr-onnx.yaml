@@ -75,6 +75,8 @@ api:
   base_path: /
 time_constraints:
   cold_start_s: [8, 15]
+power_constraints:
+  typical_draw_watts: [5, 30]
 runtime:
   default: "native"
   platform_recommendations:

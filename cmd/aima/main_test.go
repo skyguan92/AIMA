@@ -1277,24 +1277,6 @@ func TestMCPToolAdapter_SystemConfigReadAllowedWriteBlocked(t *testing.T) {
 	}
 }
 
-func TestIsLocalLLMEndpoint(t *testing.T) {
-	tests := []struct {
-		endpoint string
-		want     bool
-	}{
-		{endpoint: "http://localhost:6188/v1", want: true},
-		{endpoint: "http://127.0.0.1:6188/v1", want: true},
-		{endpoint: "http://[::1]:6188/v1", want: true},
-		{endpoint: "https://api.openai.com/v1", want: false},
-		{endpoint: "not a url", want: false},
-	}
-	for _, tt := range tests {
-		if got := isLocalLLMEndpoint(tt.endpoint); got != tt.want {
-			t.Fatalf("isLocalLLMEndpoint(%q) = %v, want %v", tt.endpoint, got, tt.want)
-		}
-	}
-}
-
 func TestWriteBenchmarkValidationFallsBackToExpectedPerf(t *testing.T) {
 	ctx := context.Background()
 	db, err := state.Open(ctx, ":memory:")
