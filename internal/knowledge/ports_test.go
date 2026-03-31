@@ -42,6 +42,29 @@ func TestResolvePortBindingsCustom(t *testing.T) {
 	if !bindings[2].Primary {
 		t.Fatal("http binding should be primary")
 	}
+	if bindings[0].Primary || bindings[1].Primary {
+		t.Fatalf("only explicit primary binding should be primary, got %+v", bindings)
+	}
+}
+
+func TestResolvePortBindingsExplicitPrimaryWinsOverFirstBinding(t *testing.T) {
+	bindings := ResolvePortBindingsFromSpecs([]StartupPort{
+		{Name: "grpc", Flag: "--grpc_port", ConfigKey: "grpc_port"},
+		{Name: "http", Flag: "--http_port", ConfigKey: "port", Primary: true},
+	}, map[string]any{
+		"grpc_port": 32001,
+		"port":      32002,
+	})
+
+	if len(bindings) != 2 {
+		t.Fatalf("len(bindings) = %d, want 2", len(bindings))
+	}
+	if bindings[0].Primary {
+		t.Fatalf("first binding should not become primary when explicit primary exists: %+v", bindings)
+	}
+	if !bindings[1].Primary {
+		t.Fatalf("explicit primary binding should stay primary: %+v", bindings)
+	}
 }
 
 func TestAppendPortBindings(t *testing.T) {
