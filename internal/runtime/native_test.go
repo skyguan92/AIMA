@@ -2,6 +2,10 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -383,6 +387,84 @@ func TestMetaToStatusMarksMissingProcessFailed(t *testing.T) {
 	}
 }
 
+func TestMetaToStatusMarksStalePortReuseFailed(t *testing.T) {
+	rt := newTestRuntime(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	meta := &deploymentMeta{
+		Name:      "stale-port",
+		PID:       999999,
+		Port:      ln.Addr().(*net.TCPAddr).Port,
+		Command:   []string{"sleep", "30"},
+		StartTime: time.Now().Add(-2 * time.Minute),
+	}
+
+	status := rt.metaToStatus(meta)
+	if status.Phase != "failed" {
+		t.Fatalf("phase = %q, want failed", status.Phase)
+	}
+	if !strings.Contains(status.Message, "stale") {
+		t.Fatalf("message = %q, want stale-port hint", status.Message)
+	}
+}
+
+func TestNativeDeployIgnoresStaleMetadataUsingOccupiedPort(t *testing.T) {
+	rt := newTestRuntime(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	if err := rt.saveMeta(&deploymentMeta{
+		Name:      "stale",
+		PID:       999999,
+		Port:      ln.Addr().(*net.TCPAddr).Port,
+		Command:   []string{"sleep", "30"},
+		StartTime: time.Now().Add(-2 * time.Minute),
+	}); err != nil {
+		t.Fatalf("saveMeta: %v", err)
+	}
+
+	var cmd []string
+	if runtime.GOOS == "windows" {
+		script := newWindowsListenerScript(t, 18082, 5, false)
+		cmd = []string{"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script}
+	} else {
+		cmd = []string{"sleep", "5"}
+	}
+
+	if err := rt.Deploy(context.Background(), &DeployRequest{
+		Name:    "stale",
+		Engine:  "test",
+		Command: cmd,
+		Port:    18082,
+	}); err != nil {
+		t.Fatalf("Deploy should ignore stale metadata, got: %v", err)
+	}
+
+	if err := rt.Delete(context.Background(), "stale"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+}
+
+func TestProcessMatchesMetaRejectsCommandMismatch(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only /proc cmdline test")
+	}
+	meta := &deploymentMeta{
+		PID:     os.Getpid(),
+		Command: []string{"definitely-not-the-current-test-binary", "--serve"},
+	}
+	if processMatchesMeta(meta) {
+		t.Fatal("processMatchesMeta should reject mismatched command lines")
+	}
+}
+
 func TestProcToStatusUsesStartupErrorAsFailure(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "deploy.log")
 	if err := os.WriteFile(logPath, []byte("couldn't bind HTTP server socket: Address already in use\n"), 0o644); err != nil {
@@ -414,5 +496,99 @@ func TestProcToStatusUsesStartupErrorAsFailure(t *testing.T) {
 	}
 	if status.Message != "Port is already in use" {
 		t.Fatalf("message = %q, want %q", status.Message, "Port is already in use")
+	}
+}
+
+func TestHealthCheckAndWarmupRequiresSuccessfulWarmup(t *testing.T) {
+	rt := newTestRuntime(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/chat/completions":
+			http.Error(w, "wrong service", http.StatusNotFound)
+		default:
+			http.NotFound(w, r)
+		}
+	})}
+	defer srv.Shutdown(context.Background())
+	go srv.Serve(ln)
+
+	proc := &nativeProcess{
+		name:   "warmup-fail",
+		port:   ln.Addr().(*net.TCPAddr).Port,
+		labels: map[string]string{"aima.dev/model": "qwen3-8b"},
+	}
+
+	rt.healthCheckAndWarmup(proc, &HealthCheckConfig{Path: "/health", TimeoutS: 1}, &WarmupConfig{Prompt: "hello", TimeoutS: 1})
+
+	proc.mu.Lock()
+	defer proc.mu.Unlock()
+	if proc.ready {
+		t.Fatal("proc.ready should remain false when warmup request fails")
+	}
+}
+
+func TestHealthCheckAndWarmupUsesActualModelName(t *testing.T) {
+	rt := newTestRuntime(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	gotModel := make(chan string, 1)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/chat/completions":
+			defer r.Body.Close()
+			var payload struct {
+				Model string `json:"model"`
+			}
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Errorf("unmarshal warmup body: %v", err)
+				http.Error(w, "bad json", http.StatusBadRequest)
+				return
+			}
+			gotModel <- payload.Model
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"warmup"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})}
+	defer srv.Shutdown(context.Background())
+	go srv.Serve(ln)
+
+	proc := &nativeProcess{
+		name:   "qwen3-30b-a3b-vllm",
+		port:   ln.Addr().(*net.TCPAddr).Port,
+		labels: map[string]string{"aima.dev/model": "qwen3-30b-a3b"},
+	}
+
+	rt.healthCheckAndWarmup(proc, &HealthCheckConfig{Path: "/health", TimeoutS: 1}, &WarmupConfig{Prompt: "hello", TimeoutS: 1})
+
+	select {
+	case model := <-gotModel:
+		if model != "qwen3-30b-a3b" {
+			t.Fatalf("warmup model = %q, want %q", model, "qwen3-30b-a3b")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("warmup request was not observed")
+	}
+
+	proc.mu.Lock()
+	defer proc.mu.Unlock()
+	if !proc.ready {
+		t.Fatal("proc.ready should be true after successful warmup")
 	}
 }

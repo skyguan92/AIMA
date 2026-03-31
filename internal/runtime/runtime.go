@@ -24,25 +24,25 @@ type Runtime interface {
 
 // DeployRequest describes what to deploy, independent of how.
 type DeployRequest struct {
-	Name         string
-	Engine       string
-	Image        string            // container image (K3S, Docker)
-	Command      []string          // startup command with {{.ModelPath}} placeholder
-	InitCommands []string          // pre-commands to run before main server (K3S, Docker)
-	ModelPath    string            // host path to model files
-	Port         int
-	Config       map[string]any
+	Name             string
+	Engine           string
+	Image            string   // container image (K3S, Docker)
+	Command          []string // startup command with {{.ModelPath}} placeholder
+	InitCommands     []string // pre-commands to run before main server (K3S, Docker)
+	ModelPath        string   // host path to model files
+	Port             int
+	Config           map[string]any
 	Partition        *PartitionRequest // resource limits (K3S+HAMi); native ignores
 	RuntimeClassName string            // K8s runtimeClassName, e.g. "nvidia" (K3S only; from hardware profile)
 	HealthCheck      *HealthCheckConfig
-	Labels       map[string]string
-	BinarySource *engine.BinarySource // native: where to download the engine binary if missing
-	Warmup       *WarmupConfig  // post-healthcheck warmup (send dummy inference request)
-	CPUArch          string                     // "arm64", "amd64" -- for platform-specific paths in Pod spec
-	Env              map[string]string          // extra env vars (engine YAML + hardware YAML merged)
-	WorkDir          string                     // working directory for native process (from engine YAML)
-	Container        *knowledge.ContainerAccess // vendor-specific container access (K3S, Docker)
-	GPUResourceName  string                     // K8s GPU resource name, e.g. "nvidia.com/gpu", "amd.com/gpu"
+	Labels           map[string]string
+	BinarySource     *engine.BinarySource        // native: where to download the engine binary if missing
+	Warmup           *WarmupConfig               // post-healthcheck warmup (send dummy inference request)
+	CPUArch          string                      // "arm64", "amd64" -- for platform-specific paths in Pod spec
+	Env              map[string]string           // extra env vars (engine YAML + hardware YAML merged)
+	WorkDir          string                      // working directory for native process (from engine YAML)
+	Container        *knowledge.ContainerAccess  // vendor-specific container access (K3S, Docker)
+	GPUResourceName  string                      // K8s GPU resource name, e.g. "nvidia.com/gpu", "amd.com/gpu"
 	ExtraVolumes     []knowledge.ContainerVolume // additional host volumes to mount (K3S, Docker)
 }
 
@@ -63,7 +63,7 @@ type DeploymentStatus struct {
 	StartupProgress int    `json:"startup_progress,omitempty"` // 0-100
 	StartupMessage  string `json:"startup_message,omitempty"`  // human-readable
 	EstimatedTotalS int    `json:"estimated_total_s,omitempty"`
-	ErrorLines      string `json:"error_lines,omitempty"`      // last few log lines on failure
+	ErrorLines      string `json:"error_lines,omitempty"` // last few log lines on failure
 }
 
 // PartitionRequest holds GPU/CPU/RAM resource limits.
@@ -97,15 +97,19 @@ func isPortFlag(s string) bool {
 // Keys are underscore-separated (e.g. "mem_fraction_static") → "--mem-fraction-static".
 // "port" is excluded (handled separately by each runtime).
 // Bool true → flag only (no value); bool false → omitted.
-func configToFlags(config map[string]any) []string {
+func configToFlags(config map[string]any, command []string, modelPath string) []string {
 	if len(config) == 0 {
 		return nil
 	}
 	keys := make([]string, 0, len(config))
 	for k := range config {
-		if k != "port" {
-			keys = append(keys, k)
+		if k == "port" {
+			continue
 		}
+		if !knowledge.ShouldIncludeConfigFlag(command, modelPath, k, config[k]) {
+			continue
+		}
+		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	var flags []string

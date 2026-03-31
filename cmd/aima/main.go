@@ -2422,6 +2422,23 @@ func listAllRuntimes(ctx context.Context, rts ...runtime.Runtime) []*runtime.Dep
 	return all
 }
 
+func findExistingDeployment(ctx context.Context, query string, rts ...runtime.Runtime) *runtime.DeploymentStatus {
+	for _, r := range rts {
+		if r == nil {
+			continue
+		}
+		if status, err := r.Status(ctx, query); err == nil {
+			return status
+		}
+	}
+	for _, d := range listAllRuntimes(ctx, rts...) {
+		if deploymentMatchesQuery(d, query) {
+			return d
+		}
+	}
+	return nil
+}
+
 func catalogSize(cat *knowledge.Catalog) int {
 	return len(cat.EngineProfiles) + len(cat.HardwareProfiles) + len(cat.EngineAssets) + len(cat.ModelAssets) + len(cat.PartitionStrategies) + len(cat.StackComponents)
 }
@@ -2786,7 +2803,16 @@ func resolveWithFallback(ctx context.Context, cat *knowledge.Catalog, db *state.
 		// Look up DB for the actual registered path from scan/import.
 		if resolved.ModelPath == "" {
 			if dbModel, dbErr := db.FindModelByName(ctx, modelName); dbErr == nil && dbModel.Path != "" {
-				resolved.ModelPath = dbModel.Path
+				if model.PathLooksCompatible(dbModel.Path, dbModel.Format, resolvedQuantizationHint(resolved)) {
+					resolved.ModelPath = dbModel.Path
+				} else {
+					slog.Warn("ignoring incompatible scanned model path",
+						"model", modelName,
+						"path", dbModel.Path,
+						"format", dbModel.Format,
+						"detected_quantization", dbModel.Quantization,
+						"expected_quantization", resolvedQuantizationHint(resolved))
+				}
 			}
 		}
 		return resolved, resolved.ModelName, nil
@@ -3062,9 +3088,12 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 		if dbModel, err := db.FindModelByName(ctx, ma.Metadata.Name); err == nil && dbModel.Path != "" {
 			localCandidates = append(localCandidates, dbModel.Path)
 		}
+		if alt := findModelDir(ma.Metadata.Name, dataDir, requiredFormat, requiredQuantization); alt != "" {
+			localCandidates = append(localCandidates, alt)
+		}
 		localCandidates = append(localCandidates, destPath)
 		for _, candidate := range localCandidates {
-			if candidate == "" || !model.PathLooksUsable(candidate, requiredFormat) {
+			if candidate == "" || !model.PathLooksCompatible(candidate, requiredFormat, requiredQuantization) {
 				continue
 			}
 			slog.Info("model already available locally", "model", ma.Metadata.Name, "path", candidate, "format", requiredFormat)
@@ -3176,6 +3205,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 						StartupPhase    string `json:"startup_phase"`
 						StartupProgress int    `json:"startup_progress"`
 						StartupMessage  string `json:"startup_message"`
+						ErrorLines      string `json:"error_lines,omitempty"`
 						Message         string `json:"message,omitempty"`
 					}
 					if err := json.Unmarshal(statusData, &status); err != nil {
@@ -3192,10 +3222,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 						})
 					}
 					if status.Phase == "failed" {
-						msg := status.Message
-						if msg == "" {
-							msg = status.StartupMessage
-						}
+						msg := summarizeDeploymentFailure(status.Message, status.StartupMessage, status.ErrorLines)
 						return nil, fmt.Errorf("deployment failed: %s", msg)
 					}
 					phase := status.StartupPhase
@@ -3724,12 +3751,14 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			if modelPath == "" {
 				modelPath = filepath.Join(dataDir, "models", modelName)
 			}
+			requiredFormat := resolved.ModelFormat
+			requiredQuantization := resolvedQuantizationHint(resolved)
 			// Guard: if the resolved model path is empty or missing model files,
 			// search alternative locations. This handles the case where aima serve
 			// runs as root (HOME=/root) but deploy is invoked as a regular user,
 			// so $HOME/.aima/models differs from where the model was downloaded.
-			if !dirContainsModelFiles(modelPath) {
-				if alt := findModelDir(modelName, dataDir); alt != "" {
+			if !model.PathLooksCompatible(modelPath, requiredFormat, requiredQuantization) {
+				if alt := findModelDir(modelName, dataDir, requiredFormat, requiredQuantization); alt != "" {
 					slog.Info("model path fallback: using alternative location",
 						"original", modelPath, "resolved", alt)
 					modelPath = alt
@@ -3743,7 +3772,7 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 					}
 					// Re-resolve model path after download
 					modelPath = filepath.Join(dataDir, "models", modelName)
-					if alt := findModelDir(modelName, dataDir); alt != "" {
+					if alt := findModelDir(modelName, dataDir, requiredFormat, requiredQuantization); alt != "" {
 						modelPath = alt
 					}
 				}
@@ -3813,6 +3842,38 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 			activeRt, rtErr := pickRuntimeForDeployment(resolved.RuntimeRecommendation, k3sRt, dockerRt, nativeRt, rt, hasPartition)
 			if rtErr != nil {
 				return nil, rtErr
+			}
+			deployName := knowledge.SanitizePodName(modelName + "-" + resolved.Engine)
+			if existing := findExistingDeployment(ctx, deployName, activeRt, rt, nativeRt, dockerRt); existing != nil {
+				if existing.Ready || existing.Phase == "running" || existing.Phase == "starting" {
+					proxyServer.RegisterBackend(modelName, &proxy.Backend{
+						ModelName:  modelName,
+						EngineType: resolved.Engine,
+						Address:    existing.Address,
+						Ready:      existing.Ready,
+					})
+					runtimeName := activeRt.Name()
+					if existing.Runtime != "" {
+						runtimeName = existing.Runtime
+					}
+					status := "deploying"
+					if existing.Ready {
+						status = "ready"
+					}
+					result := map[string]any{
+						"name":    deployName,
+						"model":   modelName,
+						"engine":  resolved.Engine,
+						"slot":    resolved.Slot,
+						"status":  status,
+						"phase":   existing.Phase,
+						"runtime": runtimeName,
+					}
+					if existing.Address != "" {
+						result["address"] = existing.Address
+					}
+					return json.Marshal(result)
+				}
 			}
 			// Pre-flight: ensure image is available in containerd for K3S deployments.
 			// Auto-import from Docker or pre-pull from registries if needed.
@@ -3887,7 +3948,6 @@ func buildToolDeps(cat *knowledge.Catalog, db *state.DB, kStore *knowledge.Store
 				EngineType: resolved.Engine,
 				Ready:      false,
 			})
-			deployName := knowledge.SanitizePodName(modelName + "-" + resolved.Engine)
 			result := map[string]any{
 				"name":  deployName,
 				"model": modelName, "engine": resolved.Engine,
@@ -5630,40 +5690,171 @@ func dirRequiresSingleFileModelPath(dir string) bool {
 // For paths we can read, we verify model files exist. For paths we can't read
 // (e.g. /root/.aima when running as non-root), we accept them if the directory
 // exists — Docker/K3S run as root and can access them.
-func findModelDir(modelName, primaryDataDir string) string {
-	candidates := []string{
-		filepath.Join("/root/.aima/models", modelName),
-		filepath.Join("/data/models", modelName),
-		filepath.Join("/mnt/data/models", modelName),
+func findModelDir(modelName, primaryDataDir, format, quantization string) string {
+	parents := candidateModelParents(primaryDataDir)
+	unreadableExact := make([]string, 0, len(parents))
+	seen := make(map[string]bool)
+	consider := func(path string, exact bool) string {
+		if path == "" || seen[path] {
+			return ""
+		}
+		seen[path] = true
+		if model.PathLooksCompatible(path, format, quantization) {
+			return path
+		}
+		if exact {
+			if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+				unreadableExact = append(unreadableExact, path)
+			}
+		}
+		return ""
 	}
-	// Case-insensitive matches (Qwen3.5-9B vs qwen3.5-9b) in shared dirs.
-	for _, parent := range []string{"/data/models", "/mnt/data/models", filepath.Join(primaryDataDir, "models")} {
+
+	for _, parent := range parents {
+		if found := consider(filepath.Join(parent, modelName), true); found != "" {
+			return found
+		}
+	}
+
+	for _, parent := range parents {
 		entries, err := os.ReadDir(parent)
 		if err != nil {
 			continue
 		}
-		for _, e := range entries {
-			if e.IsDir() && strings.EqualFold(e.Name(), modelName) && e.Name() != modelName {
-				candidates = append(candidates, filepath.Join(parent, e.Name()))
+		for _, entry := range entries {
+			if !entry.IsDir() || !modelAliasMatches(entry.Name(), modelName) {
+				continue
+			}
+			if found := consider(filepath.Join(parent, entry.Name()), false); found != "" {
+				return found
 			}
 		}
 	}
-	for _, p := range candidates {
-		if p == filepath.Join(primaryDataDir, "models", modelName) {
-			continue // already checked by caller
-		}
-		if dirContainsModelFiles(p) {
-			return p
-		}
-		// If we can't read the directory (permission denied) but it exists,
-		// accept it — container runtimes (Docker/K3S) run as root and can mount it.
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			if !fi.Mode().IsRegular() {
-				return p
-			}
-		}
+
+	if len(unreadableExact) > 0 {
+		return unreadableExact[0]
 	}
 	return ""
+}
+
+func candidateModelParents(primaryDataDir string) []string {
+	parents := []string{
+		filepath.Join(primaryDataDir, "models"),
+		"/root/.aima/models",
+		"/data/models",
+		"/mnt/data/models",
+	}
+	if goruntime.GOOS == "linux" {
+		if entries, err := os.ReadDir("/opt"); err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				base := filepath.Join("/opt", entry.Name())
+				parents = append(parents, filepath.Join(base, "models"))
+				subEntries, err := os.ReadDir(base)
+				if err != nil {
+					continue
+				}
+				for _, sub := range subEntries {
+					if sub.IsDir() {
+						parents = append(parents, filepath.Join(base, sub.Name(), "models"))
+					}
+				}
+			}
+		}
+	}
+	uniq := make([]string, 0, len(parents))
+	seen := make(map[string]bool)
+	for _, parent := range parents {
+		if parent == "" || seen[parent] {
+			continue
+		}
+		seen[parent] = true
+		uniq = append(uniq, parent)
+	}
+	return uniq
+}
+
+func modelAliasMatches(candidate, modelName string) bool {
+	candidateNorm := normalizeModelAlias(candidate)
+	modelNorm := normalizeModelAlias(modelName)
+	if candidateNorm == "" || modelNorm == "" {
+		return false
+	}
+	return candidateNorm == modelNorm ||
+		strings.Contains(candidateNorm, modelNorm) ||
+		strings.Contains(modelNorm, candidateNorm)
+}
+
+func normalizeModelAlias(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func summarizeDeploymentFailure(message, startupMessage, errorLines string) string {
+	for _, candidate := range []string{message, startupMessage} {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" && !isGenericDeploymentFailure(trimmed) {
+			return trimmed
+		}
+	}
+	if detail := summarizeErrorLines(errorLines); detail != "" {
+		return detail
+	}
+	for _, candidate := range []string{message, startupMessage} {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			return trimmed
+		}
+	}
+	return "unknown startup failure"
+}
+
+func resolvedQuantizationHint(resolved *knowledge.ResolvedConfig) string {
+	if resolved == nil || resolved.Config == nil {
+		return ""
+	}
+	if q, ok := resolved.Config["quantization"].(string); ok {
+		return q
+	}
+	return ""
+}
+
+func isGenericDeploymentFailure(msg string) bool {
+	switch strings.ToLower(strings.TrimSpace(msg)) {
+	case "process exited before readiness", "unknown startup failure":
+		return true
+	default:
+		return false
+	}
+}
+
+func summarizeErrorLines(errorLines string) string {
+	lines := strings.Split(errorLines, "\n")
+	bestFallback := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		if bestFallback == "" {
+			bestFallback = trimmed
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "error") ||
+			strings.Contains(lower, "exception") ||
+			strings.Contains(lower, "failed") ||
+			strings.Contains(lower, "cannot") ||
+			strings.Contains(lower, "panic") {
+			return trimmed
+		}
+	}
+	return bestFallback
 }
 
 // handlePowerSnapshot returns a JSON snapshot of current power/GPU metrics.

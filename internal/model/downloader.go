@@ -545,6 +545,128 @@ func PathLooksUsable(modelPath, format string) bool {
 	}
 }
 
+// PathLooksCompatible reports whether a local path is both structurally usable
+// for the requested format and compatible with the expected quantization hint.
+// Unknown quantization metadata is treated as compatible so callers degrade
+// gracefully when only partial metadata is available.
+func PathLooksCompatible(modelPath, format, quantization string) bool {
+	if !PathLooksUsable(modelPath, format) {
+		return false
+	}
+	expected := normalizeQuantString(quantization)
+	if expected == "" || expected == "unknown" {
+		return true
+	}
+	actual, ok := detectLocalQuantization(modelPath, format)
+	if !ok {
+		if requiresExplicitQuantizationMetadata(modelPath, format, expected) {
+			return false
+		}
+		return true
+	}
+	return normalizeQuantString(actual) == expected
+}
+
+func requiresExplicitQuantizationMetadata(modelPath, format, expected string) bool {
+	if !isCompressedQuantization(expected) {
+		return false
+	}
+	info, err := os.Stat(modelPath)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	return format == "" || strings.EqualFold(format, "safetensors")
+}
+
+func isCompressedQuantization(q string) bool {
+	switch normalizeQuantString(q) {
+	case "int4", "int5", "int6", "int8", "nf4", "fp8":
+		return true
+	default:
+		return false
+	}
+}
+
+func detectLocalQuantization(modelPath, format string) (string, bool) {
+	info, err := os.Stat(modelPath)
+	if err != nil {
+		return "", false
+	}
+	if !info.IsDir() {
+		q, _ := detectQuantization(nil, filepath.Base(modelPath), format)
+		if q == "" || q == "unknown" {
+			return "", false
+		}
+		return q, true
+	}
+
+	var config map[string]any
+	for _, name := range []string{"config.json", "configuration.json"} {
+		data, err := os.ReadFile(filepath.Join(modelPath, name))
+		if err != nil {
+			continue
+		}
+		if err := json.Unmarshal(data, &config); err != nil {
+			break
+		}
+		break
+	}
+	if q := quantizationFromSidecarConfig(modelPath); q != "" {
+		return q, true
+	}
+
+	entries, err := os.ReadDir(modelPath)
+	if err != nil {
+		return "", false
+	}
+	weightName := ""
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, ".safetensors") ||
+			strings.HasSuffix(lower, ".gguf") ||
+			strings.HasSuffix(lower, ".ggml") ||
+			strings.HasSuffix(lower, ".bin") {
+			weightName = name
+			break
+		}
+	}
+
+	q, _ := detectQuantization(config, weightName, format)
+	if q == "" || q == "unknown" {
+		q, _ = detectQuantization(config, filepath.Base(modelPath), format)
+	}
+	if q == "" || q == "unknown" {
+		return "", false
+	}
+	return q, true
+}
+
+func quantizationFromSidecarConfig(modelPath string) string {
+	for _, name := range []string{"quantize_config.json", "quantization_config.json", "quant_config.json"} {
+		data, err := os.ReadFile(filepath.Join(modelPath, name))
+		if err != nil {
+			continue
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			continue
+		}
+		if wrapped, ok := raw["quantization_config"].(map[string]any); ok {
+			if q := quantFromConfig(map[string]any{"quantization_config": wrapped}); q != "" {
+				return q
+			}
+		}
+		if q := quantFromConfig(map[string]any{"quantization_config": raw}); q != "" {
+			return q
+		}
+	}
+	return ""
+}
+
 func fileMatchesFormat(modelPath, format string) bool {
 	ext := strings.ToLower(filepath.Ext(modelPath))
 	switch strings.ToLower(format) {
@@ -579,7 +701,7 @@ func dirHasAnyExt(dir string, exts ...string) bool {
 }
 
 func dirHasCompleteSafetensorsModel(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
+	if !dirHasReadableFile(dir, "config.json") {
 		return false
 	}
 	entries, err := os.ReadDir(dir)
@@ -593,24 +715,27 @@ func dirHasCompleteSafetensorsModel(dir string) bool {
 			continue
 		}
 		name := entry.Name()
-		if strings.HasSuffix(strings.ToLower(name), ".safetensors") {
+		if strings.HasSuffix(strings.ToLower(name), ".safetensors") && dirHasReadableFile(dir, name) {
 			weights[name] = struct{}{}
 		}
 	}
 	if len(weights) == 0 {
 		return false
 	}
+	if !dirHasUsableTokenizerAssets(dir) {
+		return false
+	}
 
 	indexPath := filepath.Join(dir, "model.safetensors.index.json")
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
-		return true
+		return os.IsNotExist(err)
 	}
 	var index struct {
 		WeightMap map[string]string `json:"weight_map"`
 	}
 	if err := json.Unmarshal(data, &index); err != nil || len(index.WeightMap) == 0 {
-		return true
+		return false
 	}
 	required := make(map[string]struct{})
 	for _, shard := range index.WeightMap {
@@ -618,6 +743,44 @@ func dirHasCompleteSafetensorsModel(dir string) bool {
 	}
 	for shard := range required {
 		if _, ok := weights[shard]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func dirHasReadableFile(dir, name string) bool {
+	path := filepath.Join(dir, name)
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	return f.Close() == nil
+}
+
+func dirHasUsableTokenizerAssets(dir string) bool {
+	if dirHasAnyReadableFile(dir, "tokenizer.json", "tokenizer.model") {
+		return true
+	}
+	return dirHasAllReadableFiles(dir, "vocab.json", "merges.txt")
+}
+
+func dirHasAnyReadableFile(dir string, names ...string) bool {
+	for _, name := range names {
+		if dirHasReadableFile(dir, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func dirHasAllReadableFiles(dir string, names ...string) bool {
+	for _, name := range names {
+		if !dirHasReadableFile(dir, name) {
 			return false
 		}
 	}

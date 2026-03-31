@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,26 @@ import (
 	"github.com/jguan/aima/internal/mcp"
 	aimaRuntime "github.com/jguan/aima/internal/runtime"
 )
+
+type fakeRuntime struct {
+	name   string
+	status map[string]*aimaRuntime.DeploymentStatus
+	list   []*aimaRuntime.DeploymentStatus
+}
+
+func (r *fakeRuntime) Deploy(context.Context, *aimaRuntime.DeployRequest) error { return nil }
+func (r *fakeRuntime) Delete(context.Context, string) error                     { return nil }
+func (r *fakeRuntime) Status(_ context.Context, name string) (*aimaRuntime.DeploymentStatus, error) {
+	if s, ok := r.status[name]; ok {
+		return s, nil
+	}
+	return nil, fmt.Errorf("not found")
+}
+func (r *fakeRuntime) List(context.Context) ([]*aimaRuntime.DeploymentStatus, error) {
+	return r.list, nil
+}
+func (r *fakeRuntime) Logs(context.Context, string, int) (string, error) { return "", nil }
+func (r *fakeRuntime) Name() string                                      { return r.name }
 
 func TestParseExtraParamsStrict(t *testing.T) {
 	tests := []struct {
@@ -253,6 +274,49 @@ func TestDeployAutoPullAllowed(t *testing.T) {
 	}
 }
 
+func TestSummarizeDeploymentFailure(t *testing.T) {
+	tests := []struct {
+		name           string
+		message        string
+		startupMessage string
+		errorLines     string
+		want           string
+	}{
+		{
+			name:    "prefer non-generic message",
+			message: "GPU memory insufficient",
+			want:    "GPU memory insufficient",
+		},
+		{
+			name:           "fallback to startup message",
+			startupMessage: "GPU memory insufficient",
+			want:           "GPU memory insufficient",
+		},
+		{
+			name:    "fallback to specific error line when message is generic",
+			message: "process exited before readiness",
+			errorLines: strings.Join([]string{
+				"INFO booting",
+				"ValueError: Free memory on device is too low",
+			}, "\n"),
+			want: "ValueError: Free memory on device is too low",
+		},
+		{
+			name:       "fallback to unknown",
+			errorLines: "\n\n",
+			want:       "unknown startup failure",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := summarizeDeploymentFailure(tt.message, tt.startupMessage, tt.errorLines); got != tt.want {
+				t.Fatalf("summarizeDeploymentFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDeploymentMatchesQuery(t *testing.T) {
 	ds := &aimaRuntime.DeploymentStatus{
 		Name: "qwen3-8b",
@@ -315,6 +379,50 @@ func TestScenarioWaitForReadyUnknownMode(t *testing.T) {
 		})
 	if err == nil || !strings.Contains(err.Error(), `unknown wait_for "bogus"`) {
 		t.Fatalf("scenarioWaitForReady(unknown) error = %v", err)
+	}
+}
+
+func TestFindExistingDeploymentFallsBackToLabelMatch(t *testing.T) {
+	rt := &fakeRuntime{
+		name:   "native",
+		status: map[string]*aimaRuntime.DeploymentStatus{},
+		list: []*aimaRuntime.DeploymentStatus{{
+			Name:  "qwen3-30b-a3b-vllm",
+			Phase: "running",
+			Labels: map[string]string{
+				"aima.dev/model":  "qwen3-30b-a3b",
+				"aima.dev/engine": "vllm",
+			},
+		}},
+	}
+	got := findExistingDeployment(context.Background(), "qwen3-30b-a3b", rt)
+	if got == nil || got.Name != "qwen3-30b-a3b-vllm" {
+		t.Fatalf("findExistingDeployment(label match) = %#v", got)
+	}
+}
+
+func TestFindModelDirPrefersCompatibleAliasDirectory(t *testing.T) {
+	dataDir := t.TempDir()
+	aliasDir := filepath.Join(dataDir, "models", "Qwen3-30B-A3B-GPTQ-Int4")
+	if err := os.MkdirAll(aliasDir, 0o755); err != nil {
+		t.Fatalf("mkdir alias dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aliasDir, "config.json"), []byte(`{"model_type":"qwen3"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aliasDir, "quantize_config.json"), []byte(`{"bits":4,"quant_method":"gptq"}`), 0o644); err != nil {
+		t.Fatalf("write quantize config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aliasDir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aliasDir, "model.safetensors"), []byte("weights"), 0o644); err != nil {
+		t.Fatalf("write weights: %v", err)
+	}
+
+	got := findModelDir("qwen3-30b-a3b", dataDir, "safetensors", "gptq")
+	if got != aliasDir {
+		t.Fatalf("findModelDir() = %q, want %q", got, aliasDir)
 	}
 }
 

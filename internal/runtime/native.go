@@ -26,6 +26,7 @@ import (
 type deploymentMeta struct {
 	Name               string            `json:"name"`
 	PID                int               `json:"pid"`
+	ProcessGroupID     int               `json:"process_group_id,omitempty"`
 	Port               int               `json:"port"`
 	Engine             string            `json:"engine"`
 	Labels             map[string]string `json:"labels"`
@@ -41,6 +42,7 @@ type nativeProcess struct {
 	name           string
 	cmd            *exec.Cmd // nil when launched via schtasks on Windows
 	pid            int       // Process ID; set even when cmd is nil
+	processGroupID int
 	cancel         context.CancelFunc
 	done           chan struct{}
 	logFile        *os.File
@@ -111,9 +113,10 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	}
 	// Check persisted metadata: if a deployment with this name is still alive, reject
 	if meta, err := r.loadMeta(req.Name); err == nil {
-		if portAlive(meta.Port) {
+		status := r.metaToStatus(meta)
+		if status.Phase == "running" || status.Phase == "starting" {
 			r.mu.Unlock()
-			return fmt.Errorf("deployment %q already running (PID %d, port %d)", req.Name, meta.PID, meta.Port)
+			return fmt.Errorf("deployment %q already %s (PID %d, port %d)", req.Name, status.Phase, meta.PID, meta.Port)
 		}
 		// Stale metadata — clean up
 		r.removeMeta(req.Name)
@@ -155,7 +158,7 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	}
 
 	// Append other config values as CLI flags, with template substitution
-	for _, f := range configToFlags(req.Config) {
+	for _, f := range configToFlags(req.Config, req.Command, req.ModelPath) {
 		f = strings.ReplaceAll(f, "{{.ModelName}}", req.Name)
 		f = strings.ReplaceAll(f, "{{.ModelPath}}", req.ModelPath)
 		command = append(command, f)
@@ -193,6 +196,7 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 
 	var cmd *exec.Cmd
 	var procPID int
+	var procGroupID int
 	var procLogFile *os.File
 
 	if goruntime.GOOS == "windows" {
@@ -211,6 +215,7 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 		procLogFile = nil
 	} else {
 		cmd = exec.CommandContext(procCtx, command[0], command[1:]...)
+		configureDetachedProcess(cmd)
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
 		// Build environment: start with parent env, add distDir library path, then request env vars.
@@ -243,6 +248,7 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 			return fmt.Errorf("start %s: %w", req.Name, err)
 		}
 		procPID = cmd.Process.Pid
+		procGroupID = childProcessGroupID(procPID)
 		procLogFile = logFile
 	}
 
@@ -251,6 +257,7 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 		name:           req.Name,
 		cmd:            cmd,
 		pid:            procPID,
+		processGroupID: procGroupID,
 		cancel:         cancel,
 		done:           make(chan struct{}),
 		logFile:        procLogFile,
@@ -267,14 +274,15 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 
 	// Persist deployment metadata for cross-invocation discovery
 	meta := &deploymentMeta{
-		Name:      req.Name,
-		PID:       procPID,
-		Port:      req.Port,
-		Engine:    req.Engine,
-		Labels:    req.Labels,
-		LogPath:   logPath,
-		Command:   command,
-		StartTime: now,
+		Name:           req.Name,
+		PID:            procPID,
+		ProcessGroupID: procGroupID,
+		Port:           req.Port,
+		Engine:         req.Engine,
+		Labels:         req.Labels,
+		LogPath:        logPath,
+		Command:        command,
+		StartTime:      now,
 	}
 	if req.HealthCheck != nil {
 		meta.HealthCheckPath = req.HealthCheck.Path
@@ -307,9 +315,17 @@ func (r *NativeRuntime) Delete(_ context.Context, name string) error {
 	r.mu.Unlock()
 
 	if inMemory {
+		defer proc.cancel()
 		if proc.cmd != nil {
-			// Standard Go child process
-			proc.cancel()
+			// Standard Go child process. When launched detached on Unix, stop the
+			// whole process group so engine worker children do not survive the root.
+			if proc.processGroupID > 0 {
+				if err := killProcessGroup(proc.processGroupID); err != nil {
+					slog.Warn("kill process group", "name", name, "pgid", proc.processGroupID, "error", err)
+				}
+			} else {
+				proc.cancel()
+			}
 			if !waitForProcessExit(proc, 5*time.Second) {
 				slog.Warn("process did not exit within timeout; forcing kill", "name", name)
 				if proc.cmd.Process != nil {
@@ -340,7 +356,11 @@ func (r *NativeRuntime) Delete(_ context.Context, name string) error {
 		}
 		if meta.PID > 0 {
 			if processMatchesMeta(meta) {
-				if err := killProcessByPID(meta.PID); err != nil {
+				if meta.ProcessGroupID > 0 {
+					if err := killProcessGroup(meta.ProcessGroupID); err != nil {
+						slog.Warn("kill process group", "name", name, "pgid", meta.ProcessGroupID, "error", err)
+					}
+				} else if err := killProcessByPID(meta.PID); err != nil {
 					slog.Warn("kill process", "name", name, "pid", meta.PID, "error", err)
 				}
 			} else {
@@ -506,9 +526,11 @@ func (r *NativeRuntime) healthCheckAndWarmup(proc *nativeProcess, hc *HealthChec
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				slog.Info("health check passed", "name", proc.name)
-				// Run warmup before marking ready
-				if warmup != nil {
-					r.warmup(proc, warmup)
+				// Run warmup before marking ready. A successful health endpoint alone
+				// is not enough because another process may already own the same port.
+				if warmup != nil && !r.warmup(proc, warmup) {
+					time.Sleep(2 * time.Second)
+					continue
 				}
 				proc.mu.Lock()
 				proc.ready = true
@@ -524,7 +546,8 @@ func (r *NativeRuntime) healthCheckAndWarmup(proc *nativeProcess, hc *HealthChec
 }
 
 // warmup sends a dummy inference request to force model weight loading and CUDA kernel compilation.
-func (r *NativeRuntime) warmup(proc *nativeProcess, cfg *WarmupConfig) {
+// It returns true only when the engine accepts the request successfully.
+func (r *NativeRuntime) warmup(proc *nativeProcess, cfg *WarmupConfig) bool {
 	prompt := cfg.Prompt
 	if prompt == "" {
 		prompt = "Hello"
@@ -537,23 +560,29 @@ func (r *NativeRuntime) warmup(proc *nativeProcess, cfg *WarmupConfig) {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
+	modelName := proc.name
+	if proc.labels != nil && proc.labels["aima.dev/model"] != "" {
+		modelName = proc.labels["aima.dev/model"]
+	}
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", proc.port)
-	body := fmt.Sprintf(`{"model":"warmup","messages":[{"role":"user","content":%q}],"max_tokens":%d}`, prompt, maxTokens)
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}],"max_tokens":%d}`, modelName, prompt, maxTokens)
 
 	slog.Info("warming up engine", "name", proc.name, "url", url)
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Post(url, "application/json", strings.NewReader(body))
 	if err != nil {
 		slog.Warn("warmup request failed", "name", proc.name, "error", err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
 		slog.Info("warmup complete", "name", proc.name)
+		return true
 	} else {
 		slog.Warn("warmup returned non-200", "name", proc.name, "status", resp.StatusCode)
+		return false
 	}
 }
 
@@ -601,10 +630,14 @@ func (r *NativeRuntime) procToStatus(proc *nativeProcess) *DeploymentStatus {
 // before model weights are loaded, so TCP alive does NOT mean ready to serve.
 func (r *NativeRuntime) metaToStatus(meta *deploymentMeta) *DeploymentStatus {
 	alive := portAlive(meta.Port)
+	processMatches := meta.PID <= 0 || processMatchesMeta(meta)
 
 	phase := "running"
 	ready := false
-	if alive {
+	if !processMatches {
+		phase = "failed"
+		ready = false
+	} else if alive {
 		// Port is alive (TCP), but check HTTP health to confirm engine is truly ready.
 		// Look up engine asset for the health check path.
 		engineName := ""
@@ -624,10 +657,7 @@ func (r *NativeRuntime) metaToStatus(meta *deploymentMeta) *DeploymentStatus {
 		if timeout == 0 {
 			timeout = 60
 		}
-		if meta.PID > 0 && !processMatchesMeta(meta) {
-			phase = "failed"
-			ready = false
-		} else if time.Since(meta.StartTime) < time.Duration(timeout)*time.Second {
+		if time.Since(meta.StartTime) < time.Duration(timeout)*time.Second {
 			phase = "starting"
 		} else {
 			// Port dead past health check timeout: process crashed or never started.
@@ -654,8 +684,12 @@ func (r *NativeRuntime) metaToStatus(meta *deploymentMeta) *DeploymentStatus {
 			ds.Message = errMsg
 		}
 	}
-	if ds.Phase == "failed" && ds.Message == "" && meta.PID > 0 && !processMatchesMeta(meta) {
-		ds.Message = "process exited before readiness"
+	if ds.Phase == "failed" && ds.Message == "" && meta.PID > 0 && !processMatches {
+		if alive {
+			ds.Message = "deployment metadata is stale; port is in use by another process"
+		} else {
+			ds.Message = "process exited before readiness"
+		}
 	}
 
 	return ds
@@ -721,14 +755,19 @@ func processMatchesMeta(meta *deploymentMeta) bool {
 		if err != nil {
 			return false // process doesn't exist
 		}
-		// /proc/PID/cmdline is NUL-separated; extract the first arg (binary name).
-		parts := strings.SplitN(string(cmdline), "\x00", 2)
-		if len(parts) == 0 || parts[0] == "" {
+		raw := strings.TrimRight(string(cmdline), "\x00")
+		if raw == "" {
 			return false
 		}
-		procBin := filepath.Base(parts[0])
-		metaBin := filepath.Base(meta.Command[0])
-		return procBin == metaBin
+		procArgs := strings.Split(raw, "\x00")
+		return commandPrefixMatches(procArgs, meta.Command)
+	}
+	if goruntime.GOOS != "windows" {
+		out, err := exec.Command("ps", "-ww", "-p", strconv.Itoa(meta.PID), "-o", "command=").Output()
+		if err != nil {
+			return false
+		}
+		return commandLineMatches(strings.TrimSpace(string(out)), meta.Command)
 	}
 	// On non-Linux (macOS, Windows): fall back to port check as best-effort.
 	// If the port the deployment was using is still alive, assume the process is ours.
@@ -736,6 +775,41 @@ func processMatchesMeta(meta *deploymentMeta) bool {
 		return portAlive(meta.Port)
 	}
 	return false
+}
+
+func commandPrefixMatches(actual, expected []string) bool {
+	if len(actual) < len(expected) || len(expected) == 0 {
+		return false
+	}
+	if !sameCommandElement(actual[0], expected[0]) {
+		return false
+	}
+	for i := 1; i < len(expected); i++ {
+		if actual[i] != expected[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameCommandElement(actual, expected string) bool {
+	return actual == expected || filepath.Base(actual) == filepath.Base(expected)
+}
+
+func commandLineMatches(actualLine string, expected []string) bool {
+	if actualLine == "" || len(expected) == 0 {
+		return false
+	}
+	fields := strings.Fields(actualLine)
+	if len(fields) == 0 || !sameCommandElement(fields[0], expected[0]) {
+		return false
+	}
+	for _, arg := range expected[1:] {
+		if !strings.Contains(actualLine, arg) {
+			return false
+		}
+	}
+	return true
 }
 
 // portAlive checks if a TCP port is responding on localhost.

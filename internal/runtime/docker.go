@@ -204,7 +204,7 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 	}
 
 	// Append config values as CLI flags, with template substitution
-	for _, f := range configToFlags(req.Config) {
+	for _, f := range configToFlags(req.Config, req.Command, req.ModelPath) {
 		f = strings.ReplaceAll(f, "{{.ModelName}}", req.Name)
 		f = strings.ReplaceAll(f, "{{.ModelPath}}", containerModelPath)
 		command = append(command, f)

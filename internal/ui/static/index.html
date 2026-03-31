@@ -2331,6 +2331,46 @@ body {
   <div class="mobile-panel" :class="mobileTab !== 'chat' ? 'show' : ''" x-show="mobileTab !== 'chat'">
     <template x-if="mobileTab === 'dashboard'">
       <div style="display:flex;flex-direction:column;gap:8px">
+        <div class="panel">
+          <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
+          <template x-if="deployments.length === 0">
+            <div class="empty" x-text="t('no_deployments')"></div>
+          </template>
+          <ul class="panel-list">
+            <template x-for="(dep, di) in deployments" :key="di">
+              <li :class="{ starting: dep.startup_progress > 0 && dep.startup_progress < 100 }" style="flex-wrap:wrap">
+                <span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span>
+                <div style="flex:1;min-width:0">
+                  <div x-text="dep.name" style="text-overflow:ellipsis;overflow:hidden"></div>
+                  <div style="font-size:10px;color:var(--text-dim)" x-text="dep.detail"></div>
+                  <template x-if="dep.phase === 'running' && dep.ready && dep.address">
+                    <div style="font-size:10px;color:var(--success);margin-top:2px;display:flex;align-items:center;gap:4px">
+                      <span>●</span>
+                      <span x-text="'Ready: ' + dep.address"></span>
+                    </div>
+                  </template>
+                  <template x-if="(dep.phase === 'starting' || dep.startup_progress > 0) && !dep.ready">
+                    <div style="margin-top:6px">
+                      <div class="deploy-progress">
+                        <div class="deploy-progress-fill starting" :style="'width:' + Math.max(5, Math.min(dep.startup_progress || 5, 95)) + '%'"></div>
+                      </div>
+                      <div class="deploy-phase-text">
+                        <span>
+                          <span class="deploy-phase-icon">◐</span>
+                          <span x-text="dep.startup_message || dep.startup_phase || 'Initializing...'"></span>
+                        </span>
+                        <span class="deploy-eta" x-text="dep.eta ? '~' + dep.eta : (dep.startup_progress || 5) + '%'"></span>
+                      </div>
+                    </div>
+                  </template>
+                  <template x-if="dep.phase === 'failed' && dep.failure_detail">
+                    <div class="deploy-error-lines" x-text="dep.failure_detail" :title="dep.error_lines || dep.failure_detail"></div>
+                  </template>
+                </div>
+              </li>
+            </template>
+          </ul>
+        </div>
         <!-- Mobile Agent Status -->
         <div class="panel">
           <div class="panel-title">&#x25CE; <span x-text="t('agent_status')"></span></div>

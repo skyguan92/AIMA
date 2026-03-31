@@ -151,26 +151,26 @@ func deviceVolName(path string) string {
 }
 
 type podData struct {
-	PodName          string
-	Engine           string
-	EngineImage      string
-	ModelName        string
-	Slot             string
-	Port             int
-	Args             []string          // command arguments (excluding binary name -- image entrypoint is used)
-	ExtraEnv         map[string]string // merged: hardware container env (base) + engine env (override)
-	GPUMemoryMiB     int
-	GPUCoresPercent  int
-	CPUCores         int
-	RAMMiB           int
-	HealthCheckPath        string
+	PodName                 string
+	Engine                  string
+	EngineImage             string
+	ModelName               string
+	Slot                    string
+	Port                    int
+	Args                    []string          // command arguments (excluding binary name -- image entrypoint is used)
+	ExtraEnv                map[string]string // merged: hardware container env (base) + engine env (override)
+	GPUMemoryMiB            int
+	GPUCoresPercent         int
+	CPUCores                int
+	RAMMiB                  int
+	HealthCheckPath         string
 	HealthCheckInitDelaySec int
-	ModelHostPath          string
-	GPUResourceName        string
-	RuntimeClassName       string             // e.g. "nvidia" for NVIDIA CUDA containers
-	Devices                []string           // device paths to mount, e.g. ["/dev/kfd", "/dev/dri"]
-	ExtraVolumes           []ContainerVolume  // additional host mounts
-	Security               *ContainerSecurity // pod-level securityContext
+	ModelHostPath           string
+	GPUResourceName         string
+	RuntimeClassName        string             // e.g. "nvidia" for NVIDIA CUDA containers
+	Devices                 []string           // device paths to mount, e.g. ["/dev/kfd", "/dev/dri"]
+	ExtraVolumes            []ContainerVolume  // additional host mounts
+	Security                *ContainerSecurity // pod-level securityContext
 }
 
 func (d podData) HasAnnotations() bool {
@@ -267,6 +267,9 @@ func GeneratePod(resolved *ResolvedConfig) ([]byte, error) {
 		keys := make([]string, 0, len(resolved.Config))
 		for k := range resolved.Config {
 			if k == "model_path" {
+				continue
+			}
+			if !ShouldIncludeConfigFlag(resolved.Command, resolved.ModelPath, k, resolved.Config[k]) {
 				continue
 			}
 			flagName := "--" + strings.ReplaceAll(k, "_", "-")

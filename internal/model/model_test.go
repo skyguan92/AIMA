@@ -561,6 +561,9 @@ func TestPathLooksUsableSafetensorsRequiresAllIndexedShards(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen"}`), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "model.safetensors.index.json"), indexBytes, 0o644); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
@@ -575,6 +578,92 @@ func TestPathLooksUsableSafetensorsRequiresAllIndexedShards(t *testing.T) {
 	}
 	if !PathLooksUsable(dir, "safetensors") {
 		t.Fatal("expected complete indexed safetensors model to be reusable")
+	}
+}
+
+func TestPathLooksUsableSafetensorsRequiresTokenizerAssets(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors"), []byte("weights"), 0o644); err != nil {
+		t.Fatalf("write safetensors: %v", err)
+	}
+	if PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected safetensors directory without tokenizer assets to be rejected")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if !PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected tokenizer.json to satisfy safetensors reuse requirements")
+	}
+}
+
+func TestPathLooksUsableSafetensorsRejectsBrokenShardSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "missing.safetensors"), filepath.Join(dir, "model-00001-of-00001.safetensors")); err != nil {
+		t.Fatalf("symlink shard: %v", err)
+	}
+	if PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected broken shard symlink to be rejected")
+	}
+}
+
+func TestPathLooksCompatibleRejectsQuantizationMismatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen3","torch_dtype":"bfloat16"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model-00001-of-00001.safetensors"), []byte("weights"), 0o644); err != nil {
+		t.Fatalf("write safetensors: %v", err)
+	}
+	if PathLooksCompatible(dir, "safetensors", "gptq") {
+		t.Fatal("expected bf16 local path to be incompatible with gptq expectation")
+	}
+	if !PathLooksCompatible(dir, "safetensors", "") {
+		t.Fatal("expected empty quantization hint to accept usable local path")
+	}
+}
+
+func TestPathLooksCompatibleAcceptsGGUFQuantization(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "Qwen3-4B-Q4_K_M.gguf")
+	if err := os.WriteFile(filePath, []byte("gguf"), 0o644); err != nil {
+		t.Fatalf("write gguf: %v", err)
+	}
+	if !PathLooksCompatible(filePath, "gguf", "int4") {
+		t.Fatal("expected q4 GGUF file to match int4 requirement")
+	}
+}
+
+func TestPathLooksCompatibleRequiresExplicitSafetensorsQuantizationMetadata(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen3"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors"), []byte("weights"), 0o644); err != nil {
+		t.Fatalf("write safetensors: %v", err)
+	}
+	if PathLooksCompatible(dir, "safetensors", "gptq") {
+		t.Fatal("expected generic safetensors directory without quantization metadata to be incompatible with gptq")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "quantize_config.json"), []byte(`{"bits":4,"quant_method":"gptq"}`), 0o644); err != nil {
+		t.Fatalf("write quantize config: %v", err)
+	}
+	if !PathLooksCompatible(dir, "safetensors", "gptq") {
+		t.Fatal("expected quantize_config.json to satisfy gptq compatibility")
 	}
 }
 

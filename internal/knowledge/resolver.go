@@ -45,6 +45,7 @@ type ResolvedConfig struct {
 	EngineImage           string
 	ModelPath             string
 	ModelName             string
+	ModelFormat           string
 	Slot                  string
 	Config                map[string]any
 	Provenance            map[string]string
@@ -201,6 +202,7 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 	resolved := &ResolvedConfig{
 		Engine:             engineType,
 		ModelName:          model.Metadata.Name,
+		ModelFormat:        variant.Format,
 		Slot:               slot.Name,
 		Config:             config,
 		Provenance:         provenance,
