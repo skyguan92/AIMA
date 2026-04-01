@@ -76,6 +76,7 @@ func MergeAIMAConfigWithState(existing map[string]any, managed *ManagedState, re
 	mergeImageGeneration(existing, managed, next, result)
 	mergeLocalMediaProvider(existing, managed, next, result)
 	mergeMCPServer(existing, managed, next, result)
+	mergePluginAllowlist(existing, managed, next, result)
 
 	pruneEmptyMaps(existing)
 	normalizeManagedState(next)
@@ -650,6 +651,47 @@ func mergeMCPServer(cfg map[string]any, managed, next *ManagedState, result *Syn
 	status.Action = "managed"
 }
 
+func mergePluginAllowlist(cfg map[string]any, managed, next *ManagedState, result *SyncResult) {
+	desired := desiredPluginRoots(result)
+	plugins := ensureMap(cfg, "plugins")
+	existing := stringArgs(plugins["allow"])
+	owned := managedSet(managedPluginAllow(managed))
+	seen := make(map[string]struct{}, len(existing)+len(desired))
+	allow := make([]string, 0, len(existing)+len(desired))
+	for _, id := range existing {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := owned[id]; ok {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		allow = append(allow, id)
+	}
+	for _, id := range desired {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		allow = append(allow, id)
+	}
+	if len(allow) == 0 {
+		delete(plugins, "allow")
+		next.PluginAllow = nil
+		return
+	}
+	plugins["allow"] = allow
+	next.PluginAllow = append([]string(nil), desired...)
+}
+
 func stringArgs(value any) []string {
 	switch raw := value.(type) {
 	case []string:
@@ -694,6 +736,7 @@ func pruneEmptyMaps(cfg map[string]any) {
 	prunePath(cfg, "models")
 	prunePath(cfg, "mcp", "servers")
 	prunePath(cfg, "mcp")
+	prunePath(cfg, "plugins")
 	prunePath(cfg, "tools", "media")
 	prunePath(cfg, "tools")
 	prunePath(cfg, "messages")

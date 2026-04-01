@@ -1,0 +1,11 @@
+{
+  "id": "aima-local-audio",
+  "name": "AIMA Local Audio",
+  "description": "Expose the synced local AIMA ASR model as an OpenClaw tool for transcribing workspace audio files.",
+  "version": "0.2.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

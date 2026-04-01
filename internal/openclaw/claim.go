@@ -329,6 +329,8 @@ func mergeManagedStates(existing, extra *ManagedState) *ManagedState {
 		next.TTSModel = existing.TTSModel
 		next.ImageGenerationProvider = existing.ImageGenerationProvider
 		next.ImageGenerationModels = append(next.ImageGenerationModels, existing.ImageGenerationModels...)
+		next.PluginAllow = append(next.PluginAllow, existing.PluginAllow...)
+		next.MCPServerName = existing.MCPServerName
 	}
 	if extra != nil {
 		if extra.LLMProvider != "" {
@@ -350,6 +352,9 @@ func mergeManagedStates(existing, extra *ManagedState) *ManagedState {
 			next.ImageGenerationProvider = extra.ImageGenerationProvider
 		}
 		next.ImageGenerationModels = append(next.ImageGenerationModels, extra.ImageGenerationModels...)
+		if extra.MCPServerName != "" {
+			next.MCPServerName = extra.MCPServerName
+		}
 	}
 	normalizeManagedState(next)
 	return next

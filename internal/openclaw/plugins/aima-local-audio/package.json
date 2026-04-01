@@ -1,0 +1,12 @@
+{
+  "name": "aima-local-audio",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw plugin that exposes the synced local AIMA ASR model as a workspace-audio transcription tool.",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

@@ -22,6 +22,7 @@ type ManagedState struct {
 	TTSModel                string   `json:"tts_model,omitempty"`
 	ImageGenerationProvider string   `json:"image_generation_provider,omitempty"`
 	ImageGenerationModels   []string `json:"image_generation_models,omitempty"`
+	PluginAllow             []string `json:"plugin_allow,omitempty"`
 	MCPServerName           string   `json:"mcp_server_name,omitempty"`
 }
 
@@ -82,6 +83,7 @@ func (s *ManagedState) Empty() bool {
 		s.TTSModel == "" &&
 		s.ImageGenerationProvider == "" &&
 		len(s.ImageGenerationModels) == 0 &&
+		len(s.PluginAllow) == 0 &&
 		s.MCPServerName == ""
 }
 
@@ -94,6 +96,7 @@ func normalizeManagedState(state *ManagedState) {
 	state.VisionModels = uniqueSorted(state.VisionModels)
 	state.ImageModelModels = uniqueSorted(state.ImageModelModels)
 	state.ImageGenerationModels = uniqueSorted(state.ImageGenerationModels)
+	state.PluginAllow = uniqueSorted(state.PluginAllow)
 	if state.MediaProvider != "" && len(state.AudioModels) == 0 && len(state.VisionModels) == 0 {
 		state.MediaProvider = ""
 	}
@@ -135,4 +138,11 @@ func managedOwnsImageGeneration(state *ManagedState) bool {
 
 func managedOwnsImageModel(state *ManagedState) bool {
 	return state != nil && state.ImageModelProvider != ""
+}
+
+func managedPluginAllow(state *ManagedState) []string {
+	if state == nil {
+		return nil
+	}
+	return state.PluginAllow
 }

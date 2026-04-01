@@ -323,6 +323,14 @@ func TestSyncWritesLocalMediaProviderForASR(t *testing.T) {
 	if got := stringArgs(model["input"]); len(got) != 1 || got[0] != "text" {
 		t.Fatalf("provider model[0].input = %v, want [text]", got)
 	}
+	plugins := lookupMap(cfg, "plugins")
+	if plugins == nil {
+		t.Fatal("plugins missing after sync")
+	}
+	allow := stringArgs(plugins["allow"])
+	if len(allow) != 1 || allow[0] != "aima-local-audio" {
+		t.Fatalf("plugins.allow = %v, want [aima-local-audio]", allow)
+	}
 
 	managed, err := ReadManagedState(configPath)
 	if err != nil {
@@ -330,6 +338,9 @@ func TestSyncWritesLocalMediaProviderForASR(t *testing.T) {
 	}
 	if managed.MediaProvider != "aima-media" {
 		t.Fatalf("managed media provider = %q, want aima-media", managed.MediaProvider)
+	}
+	if got := managed.PluginAllow; len(got) != 1 || got[0] != "aima-local-audio" {
+		t.Fatalf("managed plugin allow = %v, want [aima-local-audio]", got)
 	}
 }
 
@@ -463,6 +474,14 @@ func TestSyncMigratesLegacyImageGenProvider(t *testing.T) {
 	if got := imageGen["primary"]; got != "aima-imagegen/z-image" {
 		t.Fatalf("imageGenerationModel.primary = %v, want aima-imagegen/z-image", got)
 	}
+	plugins := lookupMap(cfg, "plugins")
+	if plugins == nil {
+		t.Fatal("plugins missing after image generation sync")
+	}
+	allow := stringArgs(plugins["allow"])
+	if len(allow) != 1 || allow[0] != "aima-local-image" {
+		t.Fatalf("plugins.allow = %v, want [aima-local-image]", allow)
+	}
 
 	managed, err := ReadManagedState(configPath)
 	if err != nil {
@@ -470,6 +489,9 @@ func TestSyncMigratesLegacyImageGenProvider(t *testing.T) {
 	}
 	if managed.ImageGenerationProvider != "aima-imagegen" {
 		t.Fatalf("managed image generation provider = %q, want aima-imagegen", managed.ImageGenerationProvider)
+	}
+	if got := managed.PluginAllow; len(got) != 1 || got[0] != "aima-local-image" {
+		t.Fatalf("managed plugin allow = %v, want [aima-local-image]", got)
 	}
 }
 
@@ -515,6 +537,14 @@ func TestSyncMigratesLegacyImageGenProviderWithMedia(t *testing.T) {
 	if len(vision) != 1 || vision[0] != "glm-4.1v-9b" {
 		t.Fatalf("vision models = %v, want [glm-4.1v-9b]", vision)
 	}
+	plugins := lookupMap(cfg, "plugins")
+	if plugins == nil {
+		t.Fatal("plugins missing after mixed media sync")
+	}
+	allow := stringArgs(plugins["allow"])
+	if len(allow) != 2 || allow[0] != "aima-local-audio" || allow[1] != "aima-local-image" {
+		t.Fatalf("plugins.allow = %v, want [aima-local-audio aima-local-image]", allow)
+	}
 
 	managed, err := ReadManagedState(configPath)
 	if err != nil {
@@ -528,6 +558,56 @@ func TestSyncMigratesLegacyImageGenProviderWithMedia(t *testing.T) {
 	}
 	if len(managed.VisionModels) != 1 || managed.VisionModels[0] != "glm-4.1v-9b" {
 		t.Fatalf("managed vision models = %v, want [glm-4.1v-9b]", managed.VisionModels)
+	}
+	if got := managed.PluginAllow; len(got) != 2 || got[0] != "aima-local-audio" || got[1] != "aima-local-image" {
+		t.Fatalf("managed plugin allow = %v, want [aima-local-audio aima-local-image]", got)
+	}
+}
+
+func TestSyncPrunesManagedPluginsWhenCapabilityRemoved(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "openclaw.json")
+	deps := &Deps{
+		Backends: &mockBackends{backends: map[string]*Backend{
+			"qwen3-asr-1.7b": {ModelName: "qwen3-asr-1.7b", Address: "127.0.0.1:8002", Ready: true},
+		}},
+		Catalog:    &mockCatalog{},
+		ConfigPath: configPath,
+		ProxyAddr:  "http://127.0.0.1:6188/v1",
+	}
+
+	if _, err := Sync(context.Background(), deps, false); err != nil {
+		t.Fatalf("initial sync failed: %v", err)
+	}
+	audioPluginDir := filepath.Join(tmpDir, "extensions", "aima-local-audio")
+	if _, err := os.Stat(audioPluginDir); err != nil {
+		t.Fatalf("expected audio plugin after initial sync: %v", err)
+	}
+
+	deps.Backends = &mockBackends{backends: map[string]*Backend{}}
+	if _, err := Sync(context.Background(), deps, false); err != nil {
+		t.Fatalf("second sync failed: %v", err)
+	}
+
+	cfg, err := ReadConfig(configPath)
+	if err != nil {
+		t.Fatalf("ReadConfig failed: %v", err)
+	}
+	if plugins := lookupMap(cfg, "plugins"); plugins != nil && len(stringArgs(plugins["allow"])) > 0 {
+		t.Fatalf("plugins.allow = %v, want no managed plugin entries after capability removal", plugins["allow"])
+	}
+	if _, err := os.Stat(audioPluginDir); !os.IsNotExist(err) {
+		t.Fatalf("expected audio plugin dir to be pruned, stat err=%v", err)
+	}
+
+	managed, err := ReadManagedState(configPath)
+	if err != nil {
+		t.Fatalf("ReadManagedState failed: %v", err)
+	}
+	if len(managed.PluginAllow) != 0 {
+		t.Fatalf("managed plugin allow = %v, want empty", managed.PluginAllow)
 	}
 }
 
@@ -863,12 +943,36 @@ func TestDeploySkillsOnlyWritesControlSkill(t *testing.T) {
 	}
 }
 
-func TestDeployPluginsWritesAIMALocalImagePlugin(t *testing.T) {
+func TestDeployPluginsWritesAIMAPlugins(t *testing.T) {
 	t.Parallel()
 
 	targetDir := filepath.Join(t.TempDir(), "extensions")
 	if err := DeployPlugins(targetDir); err != nil {
 		t.Fatalf("DeployPlugins failed: %v", err)
+	}
+
+	audioEntryPath := filepath.Join(targetDir, "aima-local-audio", "index.js")
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-local-audio", "openclaw.plugin.json")); err != nil {
+		t.Fatalf("expected audio plugin manifest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-local-audio", "package.json")); err != nil {
+		t.Fatalf("expected audio plugin package.json: %v", err)
+	}
+	if _, err := os.Stat(audioEntryPath); err != nil {
+		t.Fatalf("expected audio plugin entrypoint: %v", err)
+	}
+	audioEntryData, err := os.ReadFile(audioEntryPath)
+	if err != nil {
+		t.Fatalf("ReadFile(audio plugin entrypoint): %v", err)
+	}
+	if !strings.Contains(string(audioEntryData), `name: "audio_transcribe"`) {
+		t.Fatal("expected audio plugin to register audio_transcribe tool")
+	}
+	if !strings.Contains(string(audioEntryData), `/audio/transcriptions`) {
+		t.Fatal("expected audio plugin to call the AIMA/OpenAI-compatible transcription route")
+	}
+	if !strings.Contains(string(audioEntryData), `path must stay within the OpenClaw workspace`) {
+		t.Fatal("expected audio plugin to restrict transcription paths to the OpenClaw workspace")
 	}
 
 	if _, err := os.Stat(filepath.Join(targetDir, "aima-local-image", "openclaw.plugin.json")); err != nil {
@@ -907,7 +1011,6 @@ func TestDeployPluginsWritesAIMALocalImagePlugin(t *testing.T) {
 		t.Fatal("expected image plugin to persist generated image references across hook contexts")
 	}
 }
-
 
 func TestSyncKeepsManagedMCPServerWithoutReadyBackends(t *testing.T) {
 	t.Parallel()

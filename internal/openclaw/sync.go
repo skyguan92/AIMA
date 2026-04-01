@@ -20,6 +20,7 @@ var deployedSkillRoots = []string{
 }
 
 var deployedPluginRoots = []string{
+	"aima-local-audio",
 	"aima-local-image",
 }
 
@@ -163,8 +164,8 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 		slog.Warn("openclaw sync: failed to deploy skills", "err", err)
 	}
 	pluginsDir := filepath.Join(stateDir, "extensions")
-	if err := DeployPlugins(pluginsDir); err != nil {
-		slog.Warn("openclaw sync: failed to deploy plugins", "err", err)
+	if err := deployPluginsWithRoots(pluginsDir, desiredPluginRoots(result)); err != nil {
+		return result, fmt.Errorf("openclaw sync: deploy plugins: %w", err)
 	}
 
 	slog.Info("openclaw sync complete",
@@ -200,7 +201,25 @@ func DeploySkills(targetDir string) error {
 
 // DeployPlugins copies embedded AIMA OpenClaw plugins to the target directory.
 func DeployPlugins(targetDir string) error {
-	return deployEmbeddedRoots(plugins.FS, targetDir, deployedPluginRoots, true)
+	return deployPluginsWithRoots(targetDir, deployedPluginRoots)
+}
+
+func deployPluginsWithRoots(targetDir string, roots []string) error {
+	return deployEmbeddedRoots(plugins.FS, targetDir, roots, true)
+}
+
+func desiredPluginRoots(result *SyncResult) []string {
+	if result == nil {
+		return nil
+	}
+	roots := make([]string, 0, 2)
+	if len(result.ASRModels) > 0 {
+		roots = append(roots, "aima-local-audio")
+	}
+	if len(result.ImageGenModels) > 0 {
+		roots = append(roots, "aima-local-image")
+	}
+	return roots
 }
 
 func deployEmbeddedRoots(embedded fs.FS, targetDir string, roots []string, pruneStale bool) error {

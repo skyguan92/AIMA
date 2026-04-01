@@ -61,6 +61,7 @@ func Inspect(ctx context.Context, deps *Deps) (*Status, error) {
 		GatewayURL: detectGatewayURL(deps.ConfigPath),
 		Expected:   summarizeExpected(expectedResult),
 	}
+	pluginReady := true
 	managed, managedErr := ReadManagedState(deps.ConfigPath)
 	if managedErr != nil {
 		status.Issues = append(status.Issues, managedErr.Error())
@@ -83,6 +84,11 @@ func Inspect(ctx context.Context, deps *Deps) (*Status, error) {
 			status.ClaimNeeded = summaryCount(status.Claimable) > 0
 			status.AIMAConfigured = summaryCount(status.Configured) > 0
 			status.MCPServer = inspectMCPServer(cfg, managed, expectedResult.MCPServer)
+			pluginIssues := inspectManagedPlugins(deps.ConfigPath, cfg, desiredPluginRoots(expectedResult))
+			if len(pluginIssues) > 0 {
+				pluginReady = false
+				status.Issues = append(status.Issues, pluginIssues...)
+			}
 		}
 	}
 
@@ -95,7 +101,7 @@ func Inspect(ctx context.Context, deps *Deps) (*Status, error) {
 	}
 
 	mcpReady := status.MCPServer == nil || status.MCPServer.Registered
-	status.SyncReady = summariesEqual(status.Expected, status.Configured) && mcpReady
+	status.SyncReady = summariesEqual(status.Expected, status.Configured) && mcpReady && pluginReady
 	if status.ClaimNeeded {
 		status.Issues = append(status.Issues, "legacy OpenClaw config points to the AIMA proxy but is not yet claimed; run openclaw.claim")
 	}
@@ -126,6 +132,35 @@ func Inspect(ctx context.Context, deps *Deps) (*Status, error) {
 	status.Issues = uniqueSorted(status.Issues)
 	status.Connected = status.GatewayLive && status.AIMAConfigured && status.SyncReady && !status.ClaimNeeded
 	return status, nil
+}
+
+func inspectManagedPlugins(configPath string, cfg map[string]any, desired []string) []string {
+	if len(desired) == 0 {
+		return nil
+	}
+	plugins := lookupMap(cfg, "plugins")
+	allowed := managedSet(stringArgs(plugins["allow"]))
+	extensionsDir := filepath.Join(filepath.Dir(configPath), "extensions")
+	var issues []string
+	for _, id := range desired {
+		if _, ok := allowed[id]; !ok {
+			issues = append(issues, fmt.Sprintf("plugins.allow is missing AIMA-managed plugin %q", id))
+		}
+		if !pluginAssetsExist(extensionsDir, id) {
+			issues = append(issues, fmt.Sprintf("AIMA-managed plugin %q is missing deployed assets under %s", id, filepath.Join(extensionsDir, id)))
+		}
+	}
+	return issues
+}
+
+func pluginAssetsExist(extensionsDir, id string) bool {
+	for _, name := range []string{"index.js", "openclaw.plugin.json", "package.json"} {
+		info, err := os.Stat(filepath.Join(extensionsDir, id, name))
+		if err != nil || info.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 func summarizeExpected(result *SyncResult) ModelSummary {

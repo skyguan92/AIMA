@@ -215,3 +215,43 @@ func TestInspectReportsMCPServer(t *testing.T) {
 		t.Fatalf("sync_ready = false, issues=%v", status.Issues)
 	}
 }
+
+func TestInspectReportsMissingManagedPluginAssets(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "openclaw.json")
+	deps := &Deps{
+		Backends: &mockBackends{backends: map[string]*Backend{
+			"qwen3-asr-1.7b": {ModelName: "qwen3-asr-1.7b", Address: "127.0.0.1:8002", Ready: true},
+		}},
+		Catalog:    &mockCatalog{},
+		ConfigPath: configPath,
+		ProxyAddr:  "http://127.0.0.1:6188/v1",
+	}
+
+	if _, err := Sync(context.Background(), deps, false); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if err := os.Remove(filepath.Join(tmpDir, "extensions", "aima-local-audio", "index.js")); err != nil {
+		t.Fatalf("remove plugin asset: %v", err)
+	}
+
+	status, err := Inspect(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if status.SyncReady {
+		t.Fatalf("sync_ready = true, want false when managed plugin assets are missing; issues=%v", status.Issues)
+	}
+	found := false
+	for _, issue := range status.Issues {
+		if strings.Contains(issue, `AIMA-managed plugin "aima-local-audio" is missing deployed assets`) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("issues = %v, want missing plugin asset issue", status.Issues)
+	}
+}
