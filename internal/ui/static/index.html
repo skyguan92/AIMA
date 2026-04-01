@@ -382,6 +382,64 @@ body {
   color: var(--text-tertiary);
   margin-left: auto;
 }
+.model-list-item {
+  min-width: 0;
+}
+.model-list-item .item-detail {
+  transition: opacity var(--duration-fast) var(--ease-smooth);
+}
+.model-name-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding-right: 74px;
+}
+.model-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-deploy-btn {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0.5px solid var(--border-medium);
+  background: var(--input-bg);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  line-height: 1;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth),
+    background var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth);
+}
+.model-deploy-btn:hover {
+  background: var(--btn-icon-hover);
+  border-color: var(--accent);
+}
+.model-deploy-btn:disabled {
+  cursor: default;
+}
+.model-name-wrap:hover .model-deploy-btn,
+.model-name-wrap:focus-within .model-deploy-btn,
+.model-deploy-btn.always-visible,
+.model-deploy-btn.is-busy {
+  opacity: 1;
+  pointer-events: auto;
+}
+.model-name-wrap:hover + .item-detail,
+.model-name-wrap:focus-within + .item-detail {
+  opacity: 0;
+}
 
 /* Fleet device card */
 .fleet-device {
@@ -1594,6 +1652,13 @@ body {
     font-size: 13px;
     padding: 6px 0;
   }
+  .model-deploy-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .model-list-item .item-detail {
+    opacity: 0;
+  }
 }
 
 @media (min-width: 769px) {
@@ -2337,9 +2402,17 @@ body {
             </li>
           </template>
           <template x-for="(m, mi) in models" :key="m.name || mi">
-            <li>
-              <span class="dot dot-green"></span>
-              <span x-text="m.name" style="flex:1;overflow:hidden;text-overflow:ellipsis"></span>
+            <li class="model-list-item">
+              <span class="dot" :class="modelDotClass(m.name)"></span>
+              <span class="model-name-wrap">
+                <span class="model-name" x-text="m.name"></span>
+                <button type="button"
+                  class="model-deploy-btn"
+                  :class="modelDeploying[m.name] ? 'is-busy' : ''"
+                  :disabled="modelDeployButtonDisabled(m.name)"
+                  @click="deployModel(m.name)"
+                  x-text="modelDeployButtonLabel(m.name)"></button>
+              </span>
               <span class="item-detail" x-text="m.size || ''"></span>
             </li>
           </template>
@@ -2768,7 +2841,21 @@ body {
           <div class="panel-title">&#x25C6; <span x-text="t('models')"></span></div>
           <ul class="panel-list">
             <template x-for="dl in downloads.filter(d => d.type === 'model' && d.phase !== 'complete')" :key="dl.id"><li><span class="dot dot-orange"></span><div style="flex:1;min-width:0"><div x-text="dl.name"></div><div class="deploy-progress" style="margin-top:2px"><div class="deploy-progress-fill starting" :style="'width:' + dlPercent(dl) + '%'"></div></div></div></li></template>
-            <template x-for="(m, mi) in models" :key="m.name || mi"><li><span class="dot dot-green"></span><span x-text="m.name"></span></li></template>
+            <template x-for="(m, mi) in models" :key="m.name || mi">
+              <li class="model-list-item">
+                <span class="dot" :class="modelDotClass(m.name)"></span>
+                <span class="model-name-wrap">
+                  <span class="model-name" x-text="m.name"></span>
+                  <button type="button"
+                    class="model-deploy-btn always-visible"
+                    :class="modelDeploying[m.name] ? 'is-busy' : ''"
+                    :disabled="modelDeployButtonDisabled(m.name)"
+                    @click="deployModel(m.name)"
+                    x-text="modelDeployButtonLabel(m.name)"></button>
+                </span>
+                <span class="item-detail" x-text="m.size || ''"></span>
+              </li>
+            </template>
           </ul>
         </div>
       </div>
@@ -3114,6 +3201,10 @@ var I18N = {
     no_models: 'No models found',
     no_fleet: 'No devices discovered',
     no_deployments: 'No active deployments',
+    deploy_label: 'Deploy',
+    deploying_label: 'Deploying...',
+    running_label: 'Running',
+    retry_label: 'Retry',
     chat_placeholder: 'Ask AIMA or run a command...',
     cli_hint: 'Use <code>/cli</code> to run AIMA CLI and MCP commands.<br>Example: <code>/cli help</code> to see more.',
     cli_hint_label: 'Show /cli usage help',
@@ -3232,6 +3323,10 @@ var I18N = {
     no_models: '\u672A\u53D1\u73B0\u6A21\u578B',
     no_fleet: '\u672A\u53D1\u73B0\u8BBE\u5907',
     no_deployments: '\u65E0\u6D3B\u52A8\u90E8\u7F72',
+    deploy_label: '\u90E8\u7F72',
+    deploying_label: '\u90E8\u7F72\u4E2D...',
+    running_label: '\u8FD0\u884C\u4E2D',
+    retry_label: '\u91CD\u8BD5',
     chat_placeholder: '\u8F93\u5165\u95EE\u9898\u6216\u547D\u4EE4...',
     cli_hint: '\u4F7F\u7528 <code>/cli</code> \u6267\u884C AIMA CLI \u548C MCP \u547D\u4EE4\u3002<br>\u793A\u4F8B\uFF1A<code>/cli help</code> \u67E5\u770B\u66F4\u591A\u3002',
     cli_hint_label: '\u663E\u793A /cli \u7528\u6CD5\u63D0\u793A',
@@ -3847,6 +3942,7 @@ function aimaApp() {
     _downloadTimer: null,
     _downloadPollMs: 15000,
     deployments: [],
+    modelDeploying: {},
     fleet: [],
     // View toggle (chat / support)
     currentView: 'chat',
@@ -5005,9 +5101,65 @@ function aimaApp() {
       }));
     },
 
+    deploymentForModel(modelName) {
+      return this.deployments.find(d => d.model === modelName) || null;
+    },
+
+    modelDotClass(modelName) {
+      if (this.modelDeploying[modelName]) return 'dot-orange';
+      const dep = this.deploymentForModel(modelName);
+      if (!dep) return 'dot-green';
+      if (dep.phase === 'failed') return 'dot-red';
+      if (dep.phase === 'running' && dep.ready) return 'dot-green';
+      return 'dot-orange';
+    },
+
+    modelDeployButtonLabel(modelName) {
+      if (this.modelDeploying[modelName]) return this.t('deploying_label');
+      const dep = this.deploymentForModel(modelName);
+      if (!dep) return this.t('deploy_label');
+      if (dep.phase === 'failed') return this.t('retry_label');
+      if (dep.phase === 'running' && dep.ready) return this.t('running_label');
+      return this.t('deploying_label');
+    },
+
+    modelDeployButtonDisabled(modelName) {
+      if (this.modelDeploying[modelName]) return true;
+      const dep = this.deploymentForModel(modelName);
+      return dep ? (dep.phase === 'starting' || dep.phase === 'running') : false;
+    },
+
+    async deployModel(modelName) {
+      if (!modelName || this.modelDeployButtonDisabled(modelName)) return;
+
+      this.modelDeploying = { ...this.modelDeploying, [modelName]: true };
+      this.messages.push({ role: 'system', text: 'Deploying ' + modelName + ' with local assets only...' });
+      this.scrollChat();
+
+      try {
+        const data = await this.callTool('deploy.run', { model: modelName, no_pull: true });
+        if (!data || data._err) {
+          const errMsg = data && data._err ? data._err : 'tool returned no data';
+          this.messages.push({ role: 'error', text: 'Deploy ' + modelName + ' failed: ' + errMsg });
+          return;
+        }
+        const address = data && data.address ? data.address : '';
+        this.messages.push({
+          role: 'system',
+          text: address ? ('Deploy ' + modelName + ' ready at ' + address + '.') : ('Deploy ' + modelName + ' started.')
+        });
+      } finally {
+        const next = { ...this.modelDeploying };
+        delete next[modelName];
+        this.modelDeploying = next;
+        await this.pollDeployments();
+        this.scrollChat();
+      }
+    },
+
     async pollDownloads() {
       const data = await this.callTool('download.list');
-      if (data._err) return;
+      if (!data || data._err) return;
       const list = Array.isArray(data) ? data : [];
       const hadActive = this.downloads.some(d => d.phase !== 'complete' && d.phase !== 'failed');
       this.downloads = list;
@@ -5058,6 +5210,7 @@ function aimaApp() {
         }
         return {
           name: d.name || 'unknown',
+          model: (d.labels && d.labels['aima.dev/model']) || '',
           phase: d.phase || 'unknown',
           ready: d.ready || false,
           address: d.address || '',
