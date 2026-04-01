@@ -710,6 +710,37 @@ func TestFindDeploymentStatusAllowsReplacementStartedAfterDelete(t *testing.T) {
 	}
 }
 
+func TestFindDeploymentStatusAllowsReplacementStartedLaterSameSecondAsDelete(t *testing.T) {
+	deleteAt := time.Date(2026, time.April, 1, 9, 0, 0, 100_000_000, time.UTC)
+	snapshot := deletedDeploymentSnapshot{
+		normalizeDeletedDeploymentKey("qwen3-30b-a3b-vllm"): deleteAt,
+		normalizeDeletedDeploymentKey("qwen3-30b-a3b"):      deleteAt,
+	}
+
+	replacementStart := deleteAt.Add(400 * time.Millisecond)
+	rt := &fakeRuntime{
+		name: "native",
+		status: map[string]*aimaRuntime.DeploymentStatus{
+			"qwen3-30b-a3b-vllm": {
+				Name:          "qwen3-30b-a3b-vllm",
+				Phase:         "starting",
+				Ready:         false,
+				StartTime:     replacementStart.Format(time.RFC3339Nano),
+				StartedAtUnix: replacementStart.Unix(),
+				Labels: map[string]string{
+					"aima.dev/model":  "qwen3-30b-a3b",
+					"aima.dev/engine": "vllm",
+				},
+			},
+		},
+	}
+
+	got, err := findDeploymentStatus(context.Background(), "qwen3-30b-a3b-vllm", snapshot.suppress, rt)
+	if err != nil || got == nil {
+		t.Fatalf("findDeploymentStatus(same-second replacement) = %#v, %v; want replacement visible", got, err)
+	}
+}
+
 func TestFindModelDirPrefersCompatibleAliasDirectory(t *testing.T) {
 	dataDir := t.TempDir()
 	aliasDir := filepath.Join(dataDir, "models", "Qwen3-30B-A3B-GPTQ-Int4")

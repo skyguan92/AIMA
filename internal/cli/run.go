@@ -9,9 +9,11 @@ import (
 
 func newRunCmd(app *App) *cobra.Command {
 	var (
-		engineType string
-		slot       string
-		noPull     bool
+		engineType      string
+		slot            string
+		noPull          bool
+		configOverrides []string
+		maxColdStartS   int
 	)
 
 	cmd := &cobra.Command{
@@ -29,6 +31,16 @@ func newRunCmd(app *App) *cobra.Command {
 				w:          w,
 				isTTY:      isTTY,
 				lastReport: -1,
+			}
+			configMap, err := parseConfigOverrides(configOverrides)
+			if err != nil {
+				return err
+			}
+			if maxColdStartS > 0 {
+				if configMap == nil {
+					configMap = map[string]any{}
+				}
+				configMap["max_cold_start_s"] = maxColdStartS
 			}
 
 			lastPhase := ""
@@ -71,7 +83,7 @@ func newRunCmd(app *App) *cobra.Command {
 				}
 			}
 
-			data, err := app.ToolDeps.DeployRun(ctx, modelName, engineType, slot, noPull, onPhase, pr.onProgress)
+			data, err := app.ToolDeps.DeployRun(ctx, modelName, engineType, slot, configMap, noPull, onPhase, pr.onProgress)
 			pr.finish()
 			if err != nil {
 				return err
@@ -100,6 +112,8 @@ func newRunCmd(app *App) *cobra.Command {
 
 	cmd.Flags().StringVar(&engineType, "engine", "", "Engine type override")
 	cmd.Flags().StringVar(&slot, "slot", "", "Partition slot name")
+	cmd.Flags().StringSliceVar(&configOverrides, "config", nil, "Config overrides (key=value, can repeat)")
+	cmd.Flags().IntVar(&maxColdStartS, "max-cold-start", 0, "Max acceptable cold start seconds (0=no constraint)")
 	cmd.Flags().BoolVar(&noPull, "no-pull", false, "Skip auto-downloading missing engine/model")
 	return cmd
 }

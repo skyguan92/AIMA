@@ -164,6 +164,31 @@ func TestRegisterRoutes_IndexIncludesOnboardingInteractionHelpers(t *testing.T) 
 	}
 }
 
+func TestRegisterRoutes_IndexIncludesDeploymentStageFeedback(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, token := range []string{
+		"startup_progress",
+		"startup_message || dep.startup_phase || 'Initializing...'",
+		"dep.eta ? '~' + dep.eta",
+		"failure_detail: this.summarizeDeploymentFailure(d)",
+		"summarizeDeploymentFailure(dep)",
+		"dep.phase === 'running' && dep.ready && dep.address",
+	} {
+		if !strings.Contains(body, token) {
+			t.Fatalf("body missing %q", token)
+		}
+	}
+}
+
 func TestRegisterRoutes_FaviconAssets(t *testing.T) {
 	t.Parallel()
 

@@ -37,7 +37,7 @@ type ToolDeps struct {
 	// Deployment (runtime package)
 	DeployApply  func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error)
 	DeployDryRun func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error)
-	DeployRun    func(ctx context.Context, model, engineType, slot string, noPull bool, onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent)) (json.RawMessage, error)
+	DeployRun    func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool, onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent)) (json.RawMessage, error)
 	DeployDelete func(ctx context.Context, name string) error
 	DeployStatus func(ctx context.Context, name string) (json.RawMessage, error)
 	DeployList   func(ctx context.Context) (json.RawMessage, error)

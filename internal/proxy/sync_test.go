@@ -21,7 +21,7 @@ func TestSyncBackends_ReadyDeployment(t *testing.T) {
 			Phase:   "running",
 			Ready:   true,
 			Address: "10.42.0.73:8000",
-			Labels:  map[string]string{"aima.dev/model": "qwen3-8b", "aima.dev/engine": "vllm"},
+			Labels:  map[string]string{"aima.dev/model": "qwen3-8b", "aima.dev/engine": "vllm", "aima.dev/context_window": "16384"},
 		},
 	})
 
@@ -38,6 +38,9 @@ func TestSyncBackends_ReadyDeployment(t *testing.T) {
 	}
 	if b.EngineType != "vllm" {
 		t.Errorf("engine = %q, want %q", b.EngineType, "vllm")
+	}
+	if b.ContextWindowTokens != 16384 {
+		t.Errorf("context_window_tokens = %d, want 16384", b.ContextWindowTokens)
 	}
 }
 
@@ -65,12 +68,13 @@ func TestSyncBackends_NotReady(t *testing.T) {
 func TestSyncBackends_NotReadyPreservesExistingRouteFields(t *testing.T) {
 	s := NewServer()
 	s.RegisterBackend("qwen3-8b", &Backend{
-		ModelName:  "qwen3-8b",
-		EngineType: "vllm",
-		Address:    "10.42.0.73:8000",
-		BasePath:   "/v1",
-		Ready:      true,
-		Remote:     true,
+		ModelName:           "qwen3-8b",
+		EngineType:          "vllm",
+		Address:             "10.42.0.73:8000",
+		BasePath:            "/v1",
+		Ready:               true,
+		Remote:              true,
+		ContextWindowTokens: 8192,
 	})
 
 	SyncBackends(s, []*DeploymentInfo{
@@ -99,6 +103,9 @@ func TestSyncBackends_NotReadyPreservesExistingRouteFields(t *testing.T) {
 	}
 	if b.EngineType != "vllm" {
 		t.Errorf("engine = %q, want %q", b.EngineType, "vllm")
+	}
+	if b.ContextWindowTokens != 8192 {
+		t.Errorf("context_window_tokens = %d, want 8192", b.ContextWindowTokens)
 	}
 }
 

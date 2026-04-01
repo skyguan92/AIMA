@@ -134,6 +134,14 @@ func (s deletedDeploymentSnapshot) suppress(d *runtime.DeploymentStatus) bool {
 	if !ok {
 		return false
 	}
+	if d.StartTime != "" {
+		if startedAt, err := time.Parse(time.RFC3339Nano, d.StartTime); err == nil {
+			return !startedAt.After(deletedAt)
+		}
+		if startedAt, err := time.Parse(time.RFC3339, d.StartTime); err == nil {
+			return !startedAt.After(deletedAt)
+		}
+	}
 	if d.StartedAtUnix == 0 {
 		return true
 	}

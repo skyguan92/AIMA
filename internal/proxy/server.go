@@ -24,12 +24,13 @@ const DefaultPort = 6188
 
 // Backend represents a running inference engine.
 type Backend struct {
-	ModelName  string `json:"model_name"`
-	EngineType string `json:"engine_type"`
-	Address    string `json:"address"`
-	BasePath   string `json:"base_path"`
-	Ready      bool   `json:"ready"`
-	Remote     bool   `json:"remote"` // true = discovered via mDNS, not a local deployment
+	ModelName           string `json:"model_name"`
+	EngineType          string `json:"engine_type"`
+	Address             string `json:"address"`
+	BasePath            string `json:"base_path"`
+	Ready               bool   `json:"ready"`
+	Remote              bool   `json:"remote"` // true = discovered via mDNS, not a local deployment
+	ContextWindowTokens int    `json:"context_window_tokens,omitempty"`
 }
 
 func cloneBackend(b *Backend) *Backend {
@@ -316,10 +317,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	models := make([]map[string]any, 0, len(backends))
 	for _, b := range backends {
 		models = append(models, map[string]any{
-			"model_name":  b.ModelName,
-			"engine_type": b.EngineType,
-			"ready":       b.Ready,
-			"remote":      b.Remote,
+			"model_name":            b.ModelName,
+			"engine_type":           b.EngineType,
+			"ready":                 b.Ready,
+			"remote":                b.Remote,
+			"context_window_tokens": b.ContextWindowTokens,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")

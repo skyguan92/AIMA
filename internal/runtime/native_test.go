@@ -325,6 +325,74 @@ func TestNativeDeleteNotFound(t *testing.T) {
 	}
 }
 
+func TestWaitForPortRelease(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	done := make(chan struct{})
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_ = ln.Close()
+		close(done)
+	}()
+
+	start := time.Now()
+	if !waitForPortRelease(port, time.Second) {
+		t.Fatal("waitForPortRelease = false, want true")
+	}
+	<-done
+	if elapsed := time.Since(start); elapsed < 150*time.Millisecond {
+		t.Fatalf("waitForPortRelease returned too early: %v", elapsed)
+	}
+}
+
+func TestNativeDeleteWaitsForPortReleaseBeforeReturning(t *testing.T) {
+	rt := newTestRuntime(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	oldTimeout := nativePortReleaseTimeout
+	oldPoll := nativePortReleasePollInterval
+	nativePortReleaseTimeout = time.Second
+	nativePortReleasePollInterval = 25 * time.Millisecond
+	defer func() {
+		nativePortReleaseTimeout = oldTimeout
+		nativePortReleasePollInterval = oldPoll
+	}()
+
+	if err := rt.saveMeta(&deploymentMeta{
+		Name:      "linger-port",
+		Port:      port,
+		Engine:    "llamacpp",
+		LogPath:   filepath.Join(t.TempDir(), "linger.log"),
+		Command:   []string{"llama-server", "--port", strconv.Itoa(port)},
+		StartTime: time.Now(),
+	}); err != nil {
+		t.Fatalf("saveMeta: %v", err)
+	}
+
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_ = ln.Close()
+	}()
+
+	start := time.Now()
+	if err := rt.Delete(context.Background(), "linger-port"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 150*time.Millisecond {
+		t.Fatalf("Delete returned before port release wait completed: %v", elapsed)
+	}
+	if _, err := rt.loadMeta("linger-port"); err == nil {
+		t.Fatal("expected metadata to be removed after delete")
+	}
+}
+
 func TestNativeProcessDoneChannelClosedOnExit(t *testing.T) {
 	rt := newTestRuntime(t)
 	port := freeTCPPort(t)

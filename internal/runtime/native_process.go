@@ -12,6 +12,10 @@ import (
 	"time"
 )
 
+var nativePortReleaseTimeout = 5 * time.Second
+
+var nativePortReleasePollInterval = 100 * time.Millisecond
+
 // processMatchesMeta validates that the process at the given PID still matches the
 // deployment metadata. This guards against PID reuse — if the OS recycled the PID
 // for a different process, we must not kill it.
@@ -131,6 +135,22 @@ func portAlive(port int) bool {
 	}
 	conn.Close()
 	return true
+}
+
+func waitForPortRelease(port int, timeout time.Duration) bool {
+	if port <= 0 {
+		return true
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if !portAlive(port) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(nativePortReleasePollInterval)
+	}
 }
 
 func (r *NativeRuntime) portConflict(port int, selfName string) string {

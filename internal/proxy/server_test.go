@@ -124,10 +124,11 @@ func TestHealthEndpoint(t *testing.T) {
 func TestStatusEndpoint(t *testing.T) {
 	s := NewServer()
 	s.RegisterBackend("qwen3-8b", &Backend{
-		ModelName:  "qwen3-8b",
-		EngineType: "vllm",
-		Address:    "10.42.0.5:8000",
-		Ready:      true,
+		ModelName:           "qwen3-8b",
+		EngineType:          "vllm",
+		Address:             "10.42.0.5:8000",
+		Ready:               true,
+		ContextWindowTokens: 16384,
 	})
 
 	handler := s.handler()
@@ -146,6 +147,13 @@ func TestStatusEndpoint(t *testing.T) {
 	models, ok := resp["models"].([]interface{})
 	if !ok || len(models) != 1 {
 		t.Errorf("expected 1 model in status, got %v", resp["models"])
+	}
+	first, ok := models[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("first model = %T, want object", models[0])
+	}
+	if got, ok := first["context_window_tokens"].(float64); !ok || got != 16384 {
+		t.Fatalf("context_window_tokens = %v, want 16384", first["context_window_tokens"])
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenAIClient_TextResponse(t *testing.T) {
@@ -444,5 +445,86 @@ func TestOpenAIClient_ContentAlwaysPresent(t *testing.T) {
 	raw := string(reqBody["messages"])
 	if !strings.Contains(raw, `"content":""`) {
 		t.Errorf("expected empty content field to be present in JSON, got: %s", raw)
+	}
+}
+
+func TestOpenAIClient_DefaultTimeoutUsesLoopbackPolicy(t *testing.T) {
+	local := NewOpenAIClient("http://127.0.0.1:6188/v1")
+	if local.httpClient.Timeout != 30*time.Minute {
+		t.Fatalf("local timeout = %v, want %v", local.httpClient.Timeout, 30*time.Minute)
+	}
+	remote := NewOpenAIClient("https://api.openai.com/v1")
+	if remote.httpClient.Timeout != 5*time.Minute {
+		t.Fatalf("remote timeout = %v, want %v", remote.httpClient.Timeout, 5*time.Minute)
+	}
+}
+
+func TestOpenAIClient_ContextPreflightBlocksKnownOverflow(t *testing.T) {
+	chatCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"models": []map[string]any{{
+					"model_name":            "tiny-model",
+					"context_window_tokens": 256,
+				}},
+			})
+		case "/v1/chat/completions":
+			chatCalled = true
+			json.NewEncoder(w).Encode(chatResponse{
+				Choices: []chatChoice{{Message: chatMessage{Role: "assistant", Content: "ok"}}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL+"/v1", WithModel("tiny-model"))
+	_, err := client.ChatCompletion(context.Background(), []Message{
+		{Role: "system", Content: strings.Repeat("system prompt ", 200)},
+		{Role: "user", Content: strings.Repeat("user prompt ", 200)},
+	}, []ToolDefinition{
+		{Name: "deploy.apply", Description: strings.Repeat("x", 512), InputSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`)},
+	})
+	if err == nil {
+		t.Fatal("expected context preflight error")
+	}
+	if !strings.Contains(err.Error(), "preflight") || !strings.Contains(err.Error(), "context window 256") {
+		t.Fatalf("error = %q, want context preflight message", err)
+	}
+	if chatCalled {
+		t.Fatal("chat endpoint should not be called when preflight fails")
+	}
+}
+
+func TestOpenAIClient_ContextPreflightIgnoredForNonAIMAEndpoint(t *testing.T) {
+	chatCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			http.NotFound(w, r)
+		case "/v1/chat/completions":
+			chatCalled = true
+			json.NewEncoder(w).Encode(chatResponse{
+				Choices: []chatChoice{{Message: chatMessage{Role: "assistant", Content: "ok"}}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL+"/v1", WithModel("m"))
+	_, err := client.ChatCompletion(context.Background(), []Message{
+		{Role: "user", Content: "hello"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if !chatCalled {
+		t.Fatal("expected chat endpoint to be called")
 	}
 }

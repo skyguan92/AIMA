@@ -57,6 +57,8 @@ func registerDeployTools(s *Server, deps *ToolDeps) {
 			`"model":{"type":"string","description":"Model to deploy, e.g. 'qwen3-8b'."},`+
 				`"engine":{"type":"string","description":"Engine type override. Omit to auto-select."},`+
 				`"slot":{"type":"string","description":"Partition slot name. Omit for default."},`+
+				`"config":{"type":"object","description":"Engine config overrides, e.g. {\"gpu_memory_utilization\": 0.9, \"max_model_len\": 131072}"},`+
+				`"max_cold_start_s":{"type":"integer","description":"Maximum acceptable cold start time in seconds. Engines exceeding this are excluded from auto-selection."},`+
 				`"no_pull":{"type":"boolean","description":"Skip auto-downloading missing engine/model. Default false."}`,
 			"model"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
@@ -64,10 +66,12 @@ func registerDeployTools(s *Server, deps *ToolDeps) {
 				return ErrorResult("deploy.run not implemented"), nil
 			}
 			var p struct {
-				Model  string `json:"model"`
-				Engine string `json:"engine"`
-				Slot   string `json:"slot"`
-				NoPull bool   `json:"no_pull"`
+				Model         string         `json:"model"`
+				Engine        string         `json:"engine"`
+				Slot          string         `json:"slot"`
+				Config        map[string]any `json:"config"`
+				MaxColdStartS int            `json:"max_cold_start_s"`
+				NoPull        bool           `json:"no_pull"`
 			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
@@ -75,8 +79,14 @@ func registerDeployTools(s *Server, deps *ToolDeps) {
 			if p.Model == "" {
 				return ErrorResult("model is required"), nil
 			}
+			if p.MaxColdStartS > 0 {
+				if p.Config == nil {
+					p.Config = map[string]any{}
+				}
+				p.Config["max_cold_start_s"] = p.MaxColdStartS
+			}
 			// MCP has no streaming; pass nil for progress callbacks.
-			data, err := deps.DeployRun(ctx, p.Model, p.Engine, p.Slot, p.NoPull, nil, nil)
+			data, err := deps.DeployRun(ctx, p.Model, p.Engine, p.Slot, p.Config, p.NoPull, nil, nil)
 			if err != nil {
 				return nil, fmt.Errorf("deploy run %s: %w", p.Model, err)
 			}

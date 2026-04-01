@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +35,7 @@ type OpenAIClient struct {
 	httpClient  *http.Client
 	discoverFn  DiscoverFunc
 
+	manageTimeout bool
 	mu            sync.RWMutex
 	cachedModel   string
 	modelCachedAt time.Time
@@ -58,7 +61,26 @@ func WithUserAgent(ua string) OpenAIOption {
 
 // WithHTTPClient sets a custom http.Client.
 func WithHTTPClient(hc *http.Client) OpenAIOption {
-	return func(c *OpenAIClient) { c.httpClient = hc }
+	return func(c *OpenAIClient) {
+		c.httpClient = hc
+		c.manageTimeout = false
+	}
+}
+
+// WithRequestTimeout overrides the default request timeout.
+func WithRequestTimeout(timeout time.Duration) OpenAIOption {
+	return func(c *OpenAIClient) {
+		if c.httpClient == nil {
+			c.httpClient = &http.Client{}
+		}
+		if timeout > 0 {
+			c.httpClient.Timeout = timeout
+			c.manageTimeout = false
+			return
+		}
+		c.httpClient.Timeout = defaultRequestTimeout(c.baseURL)
+		c.manageTimeout = true
+	}
 }
 
 // WithDiscoverFunc sets a fleet discovery function for LLM endpoint fallback.
@@ -76,8 +98,9 @@ func WithExtraParams(params map[string]any) OpenAIOption {
 // baseURL should include the /v1 prefix (e.g. "http://localhost:6188/v1").
 func NewOpenAIClient(baseURL string, opts ...OpenAIOption) *OpenAIClient {
 	c := &OpenAIClient{
-		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: 5 * time.Minute},
+		baseURL:       baseURL,
+		httpClient:    &http.Client{Timeout: defaultRequestTimeout(baseURL)},
+		manageTimeout: true,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -90,6 +113,9 @@ func (c *OpenAIClient) SetEndpoint(baseURL string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.baseURL = baseURL
+	if c.manageTimeout && c.httpClient != nil {
+		c.httpClient.Timeout = defaultRequestTimeout(baseURL)
+	}
 }
 
 // SetModel updates the model name at runtime and invalidates the cached model.
@@ -120,6 +146,22 @@ func (c *OpenAIClient) SetExtraParams(params map[string]any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.extraParams = params
+}
+
+// SetRequestTimeout updates the request timeout at runtime. Passing 0 restores the default policy.
+func (c *OpenAIClient) SetRequestTimeout(timeout time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.httpClient == nil {
+		c.httpClient = &http.Client{}
+	}
+	if timeout > 0 {
+		c.httpClient.Timeout = timeout
+		c.manageTimeout = false
+		return
+	}
+	c.httpClient.Timeout = defaultRequestTimeout(c.baseURL)
+	c.manageTimeout = true
 }
 
 // ChatCompletion sends a chat completion request with optional tool definitions.
@@ -194,6 +236,12 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+	if contextWindow, ok := c.resolveLocalContextWindow(ctx, baseURL, model, apiKey, userAgent); ok {
+		estimatedPromptTokens := estimatePromptTokens(body)
+		if estimatedPromptTokens > contextWindow {
+			return nil, fmt.Errorf("chat completions preflight: estimated prompt tokens %d exceed local context window %d for model %s; reduce prompt/tool load or redeploy with a larger ctx_size", estimatedPromptTokens, contextWindow, model)
+		}
+	}
 
 	url := baseURL + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
@@ -255,6 +303,84 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 }
 
 const modelCacheTTL = 30 * time.Second
+
+func defaultRequestTimeout(baseURL string) time.Duration {
+	if isLoopbackEndpoint(baseURL) {
+		return 30 * time.Minute
+	}
+	return 5 * time.Minute
+}
+
+func estimatePromptTokens(body []byte) int {
+	if len(body) == 0 {
+		return 0
+	}
+	return (len(body)+3)/4 + 64
+}
+
+func isLoopbackEndpoint(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func statusURLFromBaseURL(baseURL string) string {
+	trimmed := strings.TrimSpace(baseURL)
+	trimmed = strings.TrimSuffix(trimmed, "/")
+	trimmed = strings.TrimSuffix(trimmed, "/v1")
+	return trimmed + "/status"
+}
+
+func (c *OpenAIClient) resolveLocalContextWindow(ctx context.Context, baseURL, model, apiKey, userAgent string) (int, bool) {
+	if !isLoopbackEndpoint(baseURL) || strings.TrimSpace(model) == "" || c.httpClient == nil {
+		return 0, false
+	}
+	statusCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(statusCtx, http.MethodGet, statusURLFromBaseURL(baseURL), nil)
+	if err != nil {
+		return 0, false
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false
+	}
+	var status struct {
+		Models []struct {
+			ModelName           string `json:"model_name"`
+			ContextWindowTokens int    `json:"context_window_tokens"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 256*1024)).Decode(&status); err != nil {
+		return 0, false
+	}
+	for _, candidate := range status.Models {
+		if strings.EqualFold(candidate.ModelName, model) && candidate.ContextWindowTokens > 0 {
+			return candidate.ContextWindowTokens, true
+		}
+	}
+	return 0, false
+}
 
 func (c *OpenAIClient) resolveModel(ctx context.Context) (string, error) {
 	// Snapshot mutable fields under read lock

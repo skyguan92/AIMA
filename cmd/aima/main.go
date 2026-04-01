@@ -37,7 +37,6 @@ func main() {
 	}
 }
 
-
 func run() error {
 	ctx := context.Background()
 
@@ -699,7 +698,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	// deployRunCore orchestrates the full run workflow: resolve → pull → deploy → wait.
 	// Business logic lives here so CLI remains a thin presentation layer.
 	var deps *mcp.ToolDeps
-	deployRunCore := func(ctx context.Context, model, engineType, slot string, noPull bool,
+	deployRunCore := func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool,
 		onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent)) (json.RawMessage, error) {
 
 		notify := func(phase, msg string) {
@@ -775,7 +774,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 
 		// Step 1: Resolve via dry-run
 		notify("resolving", model)
-		dryRunData, err := deps.DeployDryRun(ctx, engineType, model, slot, nil)
+		dryRunData, err := deps.DeployDryRun(ctx, engineType, model, slot, configOverrides)
 		if err != nil {
 			return nil, fmt.Errorf("resolve: %w", err)
 		}
@@ -851,7 +850,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 		if noPull {
 			deployCtx = withDeployAutoPull(ctx, false)
 		}
-		deployData, err := deps.DeployApply(deployCtx, engineType, model, slot, nil)
+		deployData, err := deps.DeployApply(deployCtx, engineType, model, slot, configOverrides)
 		if err != nil {
 			return nil, fmt.Errorf("deploy: %w", err)
 		}
@@ -877,7 +876,3 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 
 	return deps
 }
-
-
-
-

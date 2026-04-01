@@ -307,6 +307,11 @@ func (r *NativeRuntime) Delete(_ context.Context, name string) error {
 	}
 	r.mu.Unlock()
 
+	port := 0
+	if proc != nil {
+		port = proc.port
+	}
+
 	if inMemory {
 		defer proc.cancel()
 		if proc.cmd != nil {
@@ -347,6 +352,7 @@ func (r *NativeRuntime) Delete(_ context.Context, name string) error {
 		if err != nil {
 			return fmt.Errorf("deployment %q not found", name)
 		}
+		port = meta.Port
 		if meta.PID > 0 {
 			if processMatchesMeta(meta) {
 				if meta.ProcessGroupID > 0 {
@@ -361,6 +367,11 @@ func (r *NativeRuntime) Delete(_ context.Context, name string) error {
 					"name", name, "pid", meta.PID)
 			}
 		}
+	}
+
+	if !waitForPortRelease(port, nativePortReleaseTimeout) {
+		r.removeMeta(name)
+		return fmt.Errorf("stop deployment %q: port %d is still in use after process exit", name, port)
 	}
 
 	r.removeMeta(name)

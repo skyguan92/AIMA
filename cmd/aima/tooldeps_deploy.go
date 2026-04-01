@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,7 +30,7 @@ import (
 // here rather than re-created to preserve the closure chain.
 func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 	pullModelCore func(ctx context.Context, name string, onStatus func(phase, msg string), onProgress func(downloaded, total int64)) error,
-	deployRunCore func(ctx context.Context, model, engineType, slot string, noPull bool,
+	deployRunCore func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool,
 		onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent)) (json.RawMessage, error),
 ) {
 	cat := ac.cat
@@ -120,6 +122,9 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 				"aima.dev/slot":   resolved.Slot,
 			},
 		}
+		if contextWindow := contextWindowFromResolvedConfig(resolved.Config); contextWindow > 0 {
+			req.Labels["aima.dev/context_window"] = strconv.Itoa(contextWindow)
+		}
 		if resolved.Partition != nil {
 			req.Partition = &runtime.PartitionRequest{
 				GPUMemoryMiB:    resolved.Partition.GPUMemoryMiB,
@@ -157,10 +162,11 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 		if existing, _ := findDeploymentStatus(ctx, deployName, suppressRecentlyDeleted, activeRt, rt, nativeRt, dockerRt); existing != nil {
 			if shouldReuseExistingDeployment(existing, engineType, slot, configOverrides) {
 				proxyServer.RegisterBackend(modelName, &proxy.Backend{
-					ModelName:  modelName,
-					EngineType: resolved.Engine,
-					Address:    existing.Address,
-					Ready:      existing.Ready,
+					ModelName:           modelName,
+					EngineType:          resolved.Engine,
+					Address:             existing.Address,
+					Ready:               existing.Ready,
+					ContextWindowTokens: firstPositiveInt(contextWindowFromStatus(existing), contextWindowFromResolvedConfig(resolved.Config)),
 				})
 				runtimeName := activeRt.Name()
 				if existing.Runtime != "" {
@@ -286,9 +292,10 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 			return nil, fmt.Errorf("deploy: %w", err)
 		}
 		proxyServer.RegisterBackend(modelName, &proxy.Backend{
-			ModelName:  modelName,
-			EngineType: resolved.Engine,
-			Ready:      false,
+			ModelName:           modelName,
+			EngineType:          resolved.Engine,
+			Ready:               false,
+			ContextWindowTokens: contextWindowFromResolvedConfig(resolved.Config),
 		})
 		result := map[string]any{
 			"name":  deployName,
@@ -444,17 +451,16 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 
 	deps.DeployDelete = func(ctx context.Context, name string) error {
 		// Gap 3: Save rollback snapshot before deletion (capture deployment state)
-		if deployments, listErr := rt.List(ctx); listErr == nil {
-			for _, d := range deployments {
-				if deploymentMatchesQuery(d, name) {
-					if snap, snapErr := json.Marshal(d); snapErr == nil {
-						_ = db.SaveSnapshot(ctx, &state.RollbackSnapshot{
-							ToolName: "deploy.delete", ResourceType: "deployment", ResourceName: d.Name, Snapshot: string(snap),
-						})
-					}
-					break
-				}
+		for _, d := range listAllRuntimes(ctx, rt, nativeRt, dockerRt) {
+			if !deploymentMatchesQuery(d, name) {
+				continue
 			}
+			if snap, snapErr := json.Marshal(d); snapErr == nil {
+				_ = db.SaveSnapshot(ctx, &state.RollbackSnapshot{
+					ToolName: "deploy.delete", ResourceType: "deployment", ResourceName: d.Name, Snapshot: string(snap),
+				})
+			}
+			break
 		}
 		deleted := name
 		modelKey := ""
@@ -595,4 +601,61 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 		}
 		return logs, err
 	}
+}
+
+func contextWindowFromResolvedConfig(config map[string]any) int {
+	if len(config) == 0 {
+		return 0
+	}
+	switch value := config["ctx_size"].(type) {
+	case int:
+		if value > 0 {
+			return value
+		}
+	case int32:
+		if value > 0 {
+			return int(value)
+		}
+	case int64:
+		if value > 0 {
+			return int(value)
+		}
+	case float64:
+		if value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0) {
+			return int(value)
+		}
+	case json.Number:
+		if parsed, err := value.Int64(); err == nil && parsed > 0 {
+			return int(parsed)
+		}
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func contextWindowFromStatus(status *runtime.DeploymentStatus) int {
+	if status == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(status.Labels["aima.dev/context_window"])
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return value
+}
+
+func firstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
