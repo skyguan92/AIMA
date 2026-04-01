@@ -386,16 +386,24 @@ func (r *NativeRuntime) Status(_ context.Context, name string) (*DeploymentStatu
 
 func (r *NativeRuntime) List(_ context.Context) ([]*DeploymentStatus, error) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	seen := make(map[string]bool)
-	statuses := make([]*DeploymentStatus, 0)
+	type procEntry struct {
+		name string
+		proc *nativeProcess
+	}
+	entries := make([]procEntry, 0, len(r.processes))
+	seen := make(map[string]bool, len(r.processes))
 	for name, proc := range r.processes {
 		if proc == nil {
 			continue // placeholder from in-progress deploy
 		}
+		entries = append(entries, procEntry{name: name, proc: proc})
 		seen[name] = true
-		statuses = append(statuses, r.procStatusWithPersistedOverride(name, proc))
+	}
+	r.mu.RUnlock()
+
+	statuses := make([]*DeploymentStatus, 0, len(entries))
+	for _, entry := range entries {
+		statuses = append(statuses, r.procStatusWithPersistedOverride(entry.name, entry.proc))
 	}
 
 	// Add persisted deployments not in memory (from previous CLI sessions)

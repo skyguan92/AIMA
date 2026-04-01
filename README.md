@@ -150,19 +150,19 @@ See [design/ARCHITECTURE.md](design/ARCHITECTURE.md) for the full architecture d
 ## Project Structure
 
 ```
-cmd/aima/          Entry point
+cmd/aima/          Entry point + dependency wiring split by domain
 internal/
   hal/             Hardware detection
   knowledge/       YAML knowledge base + SQLite resolver
   runtime/         K3S (Pod) + Docker (container) + Native (exec) runtimes
-  mcp/             94 MCP tool implementations
+  mcp/             MCP server + 94 MCP tool registrations/implementations
   agent/           Go Agent loop (L3a)
   cli/             Cobra CLI (thin wrappers over MCP tools)
   ui/              Embedded Web UI (Alpine.js SPA)
   proxy/           OpenAI-compatible HTTP proxy
   fleet/           mDNS fleet discovery + remote execution
-  state/           SQLite state store (modernc.org/sqlite, zero CGO)
-  model/           Model scan/download/import
+  sqlite.go        SQLite state store (`package state`, modernc.org/sqlite, zero CGO)
+  model/           Model scan/download/import + metadata detection
   engine/          Engine image management
   stack/           K3S + HAMi infrastructure installer
 catalog/

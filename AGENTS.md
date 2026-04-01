@@ -157,7 +157,7 @@ Read `design/ARCHITECTURE.md` §5 for full list. The critical ones:
 ## Project Structure
 
 ```
-cmd/aima/main.go              # Entry point
+cmd/aima/                     # Entry point + dependency wiring split across domain files
 internal/
   hal/                        # Hardware detection (nvidia-smi, /proc)
   k3s/                        # K3S client (kubectl wrapper)
@@ -166,12 +166,12 @@ internal/
                               #   + query engine (query.go) + vector similarity (similarity.go)
                               #   + Pod YAML generator (dynamic GPU resource names)
   runtime/                    # Multi-Runtime: K3S (Pod) + Docker (container) + Native (exec + warmup)
-  state/                      # SQLite (modernc.org/sqlite, zero CGO) — v2: 16 tables
-  model/                      # Model scan/download/import
+  sqlite.go                   # SQLite state store package (modernc.org/sqlite, zero CGO) — v2: 16 tables
+  model/                      # Model scan/download/import + metadata detection
   engine/                     # Engine image scan/pull/import + native binary manager
   stack/                      # Tiered stack installer (Docker/CTK/K3S/HAMi, archive/binary/helm, airgap)
   benchmark/                  # Live benchmark runner (SSE streaming, concurrency, percentile stats)
-  mcp/                        # MCP server + 94 tool implementations
+  mcp/                        # MCP server + RegisterAllTools + tools_*.go implementations
   agent/                      # Go Agent loop (L3a) + Dispatcher
   cli/                        # Cobra commands (thin wrappers over MCP tools)
   ui/                         # Embedded Web UI (go:embed, Alpine.js SPA on :6188/ui/)

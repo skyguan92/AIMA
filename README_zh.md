@@ -150,19 +150,19 @@ AIMA 采用分层智能架构（L0-L3）：
 ## 项目结构
 
 ```
-cmd/aima/          入口
+cmd/aima/          入口与按领域拆分的依赖装配
 internal/
   hal/             硬件检测
   knowledge/       YAML 知识库 + SQLite 解析器
   runtime/         K3S（Pod）+ Docker（容器）+ Native（exec）运行时
-  mcp/             94 个 MCP 工具实现
+  mcp/             MCP 服务端 + 94 个工具注册/实现
   agent/           Go Agent 循环（L3a）
   cli/             Cobra CLI（MCP 工具的薄包装）
   ui/              内嵌 Web UI（Alpine.js SPA）
   proxy/           OpenAI 兼容 HTTP 代理
   fleet/           mDNS 集群发现 + 远程执行
-  state/           SQLite 状态存储（modernc.org/sqlite，零 CGO）
-  model/           模型扫描/下载/导入
+  sqlite.go        SQLite 状态存储（`package state`，modernc.org/sqlite，零 CGO）
+  model/           模型扫描/下载/导入 + 元数据识别
   engine/          引擎镜像管理
   stack/           K3S + HAMi 基础设施安装器
 catalog/

@@ -724,6 +724,86 @@ func TestListPrefersPersistedFailureOverInMemoryProcess(t *testing.T) {
 	}
 }
 
+func TestListDoesNotHoldRuntimeLockDuringPersistedStatusChecks(t *testing.T) {
+	rt := newTestRuntime(t)
+
+	requestStarted := make(chan struct{}, 1)
+	releaseResponse := make(chan struct{})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case requestStarted <- struct{}{}:
+		default:
+		}
+		<-releaseResponse
+		w.WriteHeader(http.StatusOK)
+	})}
+	defer srv.Shutdown(context.Background())
+	go srv.Serve(ln)
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	name := "slow-list"
+	rt.processes[name] = &nativeProcess{
+		name:      name,
+		port:      port,
+		labels:    map[string]string{"aima.dev/engine": "llamacpp"},
+		startTime: time.Now(),
+	}
+
+	if err := rt.saveMeta(&deploymentMeta{
+		Name:               name,
+		Port:               port,
+		Labels:             map[string]string{"aima.dev/engine": "llamacpp"},
+		LogPath:            filepath.Join(t.TempDir(), "slow.log"),
+		Command:            []string{"/usr/local/bin/llama-server", "--port", strconv.Itoa(port)},
+		StartTime:          time.Now(),
+		HealthCheckPath:    "/health",
+		HealthCheckTimeout: 60,
+	}); err != nil {
+		t.Fatalf("saveMeta: %v", err)
+	}
+
+	listDone := make(chan struct{})
+	go func() {
+		defer close(listDone)
+		if _, err := rt.List(context.Background()); err != nil {
+			t.Errorf("List: %v", err)
+		}
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for persisted health check")
+	}
+
+	lockAcquired := make(chan struct{})
+	go func() {
+		rt.mu.Lock()
+		close(lockAcquired)
+		rt.mu.Unlock()
+	}()
+
+	select {
+	case <-lockAcquired:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("runtime write lock blocked while List was performing status checks")
+	}
+
+	close(releaseResponse)
+
+	select {
+	case <-listDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("List did not complete after releasing health check")
+	}
+}
+
 func TestStatusDoesNotOverrideLiveProcessWithStalePortReuseFailure(t *testing.T) {
 	rt := newTestRuntime(t)
 

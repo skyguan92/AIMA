@@ -242,14 +242,14 @@ func (inst *Installer) Init(ctx context.Context, components []knowledge.StackCom
 
 // DownloadItem describes a file that needs to be downloaded.
 type DownloadItem struct {
-	Name       string   `json:"name"`                   // component name
-	FileName   string   `json:"file_name"`              // e.g. "k3s" or "hami-chart.tgz"
-	FilePath   string   `json:"file_path"`              // full local path in dist/
-	URL        string   `json:"url"`                    // primary download URL
-	MirrorURLs []string `json:"mirror_urls,omitempty"`  // fallback URLs tried before primary (e.g. ghproxy mirrors)
-	SHA256     string   `json:"sha256,omitempty"`       // expected SHA-256 hex digest (optional)
-	Executable bool     `json:"executable,omitempty"`   // chmod +x after download
-	Optional   bool     `json:"optional,omitempty"`     // if true, download failure won't abort init (e.g. airgap tars)
+	Name       string   `json:"name"`                  // component name
+	FileName   string   `json:"file_name"`             // e.g. "k3s" or "hami-chart.tgz"
+	FilePath   string   `json:"file_path"`             // full local path in dist/
+	URL        string   `json:"url"`                   // primary download URL
+	MirrorURLs []string `json:"mirror_urls,omitempty"` // fallback URLs tried before primary (e.g. ghproxy mirrors)
+	SHA256     string   `json:"sha256,omitempty"`      // expected SHA-256 hex digest (optional)
+	Executable bool     `json:"executable,omitempty"`  // chmod +x after download
+	Optional   bool     `json:"optional,omitempty"`    // if true, download failure won't abort init (e.g. airgap tars)
 }
 
 // Preflight checks which components need files downloaded.
@@ -696,11 +696,18 @@ func (inst *Installer) installDaemonSystemd(ctx context.Context, comp knowledge.
 
 	// Write env file: K3S uses /etc/rancher/k3s/, other daemons use /etc/aima/
 	envDir := "/etc/aima"
+	envDirMode := os.FileMode(0o755)
 	if name == "k3s" {
 		envDir = "/etc/rancher/k3s"
+		envDirMode = 0o750
 	}
-	if err := os.MkdirAll(envDir, 0o750); err != nil {
+	if err := os.MkdirAll(envDir, envDirMode); err != nil {
 		return fmt.Errorf("create env dir %s: %w", envDir, err)
+	}
+	// Apply the mode even when the directory already exists so upgrades repair
+	// older installs that made /etc/aima unreadable to non-root CLI users.
+	if err := os.Chmod(envDir, envDirMode); err != nil {
+		return fmt.Errorf("set env dir permissions %s: %w", envDir, err)
 	}
 	var envLines []string
 	for k, v := range env {

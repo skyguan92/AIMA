@@ -26,8 +26,10 @@ AIMA 支持两种引擎运行时，提供统一的用户界面：
 | 命令 | 功能 |
 |------|------|
 | `aima engine scan` | 扫描本地引擎（容器镜像或 Native 二进制，自动检测） |
+| `aima engine info <name>` | 查看引擎详情（目录知识 + 本地可用性） |
 | `aima engine list` | 列出所有已注册引擎 |
-| `aima engine pull <name>` | 拉取引擎镜像（容器运行时） |
+| `aima engine plan` | 结合当前硬件给出兼容引擎和推荐项 |
+| `aima engine pull [name]` | 拉取引擎镜像（容器运行时） |
 | `aima engine import <path>` | 从 OCI tar 文件导入镜像（容器运行时） |
 | `aima engine remove <name>` | 删除引擎 |
 
@@ -36,8 +38,10 @@ AIMA 支持两种引擎运行时，提供统一的用户界面：
 | 工具 | JSON-RPC 方法 | 功能 |
 |------|---------------|------|
 | `engine.scan` | `engine.scan` | 扫描本地引擎（统一） |
+| `engine.info` | `engine.info` | 查询引擎详情（目录知识 + 本地状态） |
 | `engine.list` | `engine.list` | 列出所有引擎 |
 | `engine.pull` | `engine.pull` | 拉取引擎镜像 |
+| `engine.plan` | `engine.plan` | 结合当前硬件给出兼容引擎和推荐项 |
 | `engine.import` | `engine.import` | 导入引擎镜像 |
 | `engine.remove` | `engine.remove` | 删除引擎 |
 
@@ -359,9 +363,10 @@ docker save vllm/vllm-openai:latest -o /media/usb/vllm-latest.tar
 - `internal/engine/importer.go` - OCI tar 导入
 - `internal/engine/binary.go` - Native 二进制管理
 - `internal/cli/engine.go` - CLI 命令处理
-- `internal/mcp/tools.go` - MCP 工具定义
+- `internal/mcp/tools_engine.go` - Engine MCP 工具定义
+- `internal/mcp/tools.go` - `RegisterAllTools()` 注册入口
 - `internal/sqlite.go` - 数据库 schema (migrateV4 添加 runtime_type/binary_path)
 
 ---
 
-*最后更新：2026-03-04 (添加 SGLang-Ascend 引擎, engine scan runtime-scoped stale marking)*
+*最后更新：2026-04-01 (补齐 engine.info / engine.plan，并对齐 MCP 分文件结构)*
