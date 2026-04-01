@@ -29,6 +29,10 @@ startup:
     OMP_NUM_THREADS: "1"
     SGLANG_DISABLE_CUDNN_CHECK: "1"
     PYTORCH_ALLOC_CONF: "expandable_segments:True"
+    # WSL toolchain: symlink libcuda.so and cuda.h into conda paths
+    # AppImage only ships SM100 (Blackwell) pre-compiled ops
+    # SM89 (Ada) requires JIT: needs nvcc + ninja + gcc (conda install cuda-toolkit ninja gcc_linux-64)
+    # FlashInfer JIT: needs libcuda.so in LIBRARY_PATH, cuda.h in CPLUS_INCLUDE_PATH
   default_args:
     trust_remote_code: true
     # KTransformers-specific args

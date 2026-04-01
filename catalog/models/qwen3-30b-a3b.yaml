@@ -205,6 +205,10 @@ variants:
   # CPU RAM 需 ~12GB 放 CPU expert；WSL 需配置 memory>=24GB
   # i9-13980HX 有 AVX2 (P+E 核)，kt_cpuinfer=16 用全部 P-cores
   # 注意: v0.5.1 AppImage 的 BF16SafeTensorLoader 不支持 GPTQ, 需 v0.5.2+
+  # 实测 (v0.5.2, WSL2, triton+no-cuda-graph): ~6.5 tok/s decode
+  # 但 FlashInfer JIT 在 WSL 环境需额外 toolchain 配置 (libcuda.so + cuda.h symlinks)
+  # AppImage 仅预编译 SM100 (Blackwell), SM89 (Ada) 需 JIT → 首次启动慢
+  # llamacpp Q4_K_M 在同硬件达 21 tok/s，当前 sglang-kt 性能不占优
   - name: qwen3-30b-a3b-ada-1gpu-sglang-kt-gptq
     hardware:
       gpu_arch: Ada
@@ -225,13 +229,16 @@ variants:
       quantization: gptq_marlin
       context_length: 4096
       disable_shared_experts_fusion: true
+      disable_cuda_graph: true
+      attention_backend: triton
       max_running_requests: 4
       watchdog_timeout: 3000
     expected_performance:
-      startup_time_s: 60
+      startup_time_s: 50
       cold_start_time_s: 300
-      tokens_per_second: [5, 15]
-      notes: "SGLang-KT AppImage v0.5.2+, GPTQ-Int4 (AVX2 GPTQ_INT4 kernel), CPU-GPU hybrid MoE. 1× RTX 4060 8GB (WSL2) + 24GB+ CPU RAM. kt_num_gpu_experts=2 to fit in 8GB. Requires sym=true, desc_act=false GPTQ model."
+      tokens_per_second: [5, 8]
+      vram_mib: 6000
+      notes: "SGLang-KT AppImage v0.5.2, GPTQ-Int4 (AVX2 GPTQ_INT4 kernel), CPU-GPU hybrid MoE. 1× RTX 4060 8GB (WSL2, i9-13980HX) + 24GB CPU RAM. Measured 2026-04-02: 6.2-7.0 tok/s decode (triton attn, no CUDA graph). GPU mem 2.21GB weights + 2.6GB KV. WSL needs: libcuda.so symlink in conda/lib64, cuda.h symlinks in conda/include. AppImage only ships SM100 ops, SM89 needs JIT (FlashInfer headers missing in AppImage → fall back to triton). With FlashInfer + CUDA graphs performance should improve significantly. llamacpp Q4_K_M reaches 21 tok/s on same hardware."
 
   # --- 所有设备通用 (llamacpp + GGUF) ---
   # MoE Q4_K_M = 18.6GB → linux-1 (24GB/GPU ✓), amd395 (128GB unified ✓)
