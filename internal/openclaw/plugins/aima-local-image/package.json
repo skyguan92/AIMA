@@ -1,0 +1,12 @@
+{
+  "name": "aima-local-image",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw plugin that exposes the synced local AIMA image-generation model as a native image-generation provider.",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

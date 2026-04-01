@@ -70,6 +70,7 @@ func MergeAIMAConfigWithState(existing map[string]any, managed *ManagedState, re
 	mergeLLMProvider(existing, managed, next, result)
 	next.AudioModels = mergeMediaModels(existing, "audio", audioIDs(result.ASRModels), managedSet(managedAudioModels(managed)), result.ProxyAddr, false)
 	next.VisionModels = mergeMediaModels(existing, "image", modelIDs(vlmFromLLMs(result.LLMModels)), managedSet(managedVisionModels(managed)), result.ProxyAddr, false)
+	mergeImageModel(existing, managed, next, result)
 	mergeTTS(existing, managed, next, result)
 	mergeImageGeneration(existing, managed, next, result)
 	mergeLocalMediaProvider(existing, managed, next, result)
@@ -129,6 +130,53 @@ func canManageTTS(cfg map[string]any, managed *ManagedState) bool {
 	return lookupMap(cfg, "messages", "tts") == nil
 }
 
+func mergeImageModel(cfg map[string]any, managed, next *ManagedState, result *SyncResult) {
+	desired := uniqueSorted(modelIDs(vlmFromLLMs(result.LLMModels)))
+	if len(desired) == 0 {
+		if managedOwnsImageModel(managed) {
+			removeAgentDefaultModelIfManaged(cfg, "imageModel", managed.ImageModelProvider)
+		}
+		return
+	}
+	if !canManageImageModel(cfg, managed, result) {
+		return
+	}
+	setAgentDefaultModel(cfg, "imageModel", aimaLLMProviderID, desired)
+	next.ImageModelProvider = aimaLLMProviderID
+	next.ImageModelModels = desired
+}
+
+func canManageImageModel(cfg map[string]any, managed *ManagedState, result *SyncResult) bool {
+	if managedOwnsImageModel(managed) {
+		return true
+	}
+	if legacyImageModelOwned(cfg, result) {
+		return true
+	}
+	return !hasAgentDefaultModel(cfg, "imageModel")
+}
+
+func legacyImageModelOwned(cfg map[string]any, result *SyncResult) bool {
+	if result == nil {
+		return false
+	}
+	expected := uniqueSorted(modelIDs(vlmFromLLMs(result.LLMModels)))
+	if len(expected) == 0 {
+		return false
+	}
+	for _, providerID := range []string{aimaLLMProviderID, legacyLLMProviderID} {
+		provider := lookupMap(cfg, "models", "providers", providerID)
+		if !providerManagedByAIMA(provider, result.ProxyAddr) {
+			continue
+		}
+		configured := configuredAgentDefaultModelsForProviders(cfg, "imageModel", []string{providerID}, result.ProxyAddr)
+		if stringSlicesEqual(uniqueSorted(configured), expected) {
+			return true
+		}
+	}
+	return false
+}
+
 func mergeImageGeneration(cfg map[string]any, managed, next *ManagedState, result *SyncResult) {
 	ownsImageGen := managedOwnsImageGeneration(managed)
 	if len(result.ImageGenModels) == 0 {
@@ -146,7 +194,7 @@ func mergeImageGeneration(cfg map[string]any, managed, next *ManagedState, resul
 	}
 
 	providers := ensureMap(ensureMap(cfg, "models"), "providers")
-	providers[aimaImageGenProviderID] = buildProviderConfig(result.ProxyAddr, directToolAPIKey(result.APIKey), buildImageGenProviderModels(result.ImageGenModels))
+	providers[aimaImageGenProviderID] = buildProviderConfig(result.ProxyAddr, directToolAPIKey(result.APIKey), []any{})
 	setAgentDefaultModel(cfg, "imageGenerationModel", aimaImageGenProviderID, imageGenIDs(result.ImageGenModels))
 	next.ImageGenerationProvider = aimaImageGenProviderID
 	next.ImageGenerationModels = imageGenIDs(result.ImageGenModels)
@@ -223,7 +271,9 @@ func buildProviderConfig(baseURL, apiKey string, models []any) map[string]any {
 	cfg := map[string]any{
 		"baseUrl": baseURL,
 		"api":     "openai-completions",
-		"models":  models,
+	}
+	if models != nil {
+		cfg["models"] = models
 	}
 	if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
 		cfg["apiKey"] = trimmed
@@ -241,21 +291,6 @@ func buildLLMProviderModels(models []ModelEntry) []any {
 			"contextWindow": m.ContextWindow,
 			"maxTokens":     m.MaxTokens,
 			"cost":          map[string]any{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-		})
-	}
-	return out
-}
-
-func buildImageGenProviderModels(models []ImageGenEntry) []any {
-	out := make([]any, 0, len(models))
-	for _, m := range models {
-		out = append(out, map[string]any{
-			"id":            m.ID,
-			"name":          formatDisplayName(m.ID, "image_gen"),
-			"input":         []string{"text"},
-			"contextWindow": 8192,
-			"maxTokens":     1024,
-			"cost":          zeroCost(),
 		})
 	}
 	return out

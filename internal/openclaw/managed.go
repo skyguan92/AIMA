@@ -17,6 +17,8 @@ type ManagedState struct {
 	MediaProvider           string   `json:"media_provider,omitempty"`
 	AudioModels             []string `json:"audio_models,omitempty"`
 	VisionModels            []string `json:"vision_models,omitempty"`
+	ImageModelProvider      string   `json:"image_model_provider,omitempty"`
+	ImageModelModels        []string `json:"image_model_models,omitempty"`
 	TTSModel                string   `json:"tts_model,omitempty"`
 	ImageGenerationProvider string   `json:"image_generation_provider,omitempty"`
 	ImageGenerationModels   []string `json:"image_generation_models,omitempty"`
@@ -75,6 +77,8 @@ func (s *ManagedState) Empty() bool {
 		s.MediaProvider == "" &&
 		len(s.AudioModels) == 0 &&
 		len(s.VisionModels) == 0 &&
+		s.ImageModelProvider == "" &&
+		len(s.ImageModelModels) == 0 &&
 		s.TTSModel == "" &&
 		s.ImageGenerationProvider == "" &&
 		len(s.ImageGenerationModels) == 0 &&
@@ -91,9 +95,13 @@ func normalizeManagedState(state *ManagedState) {
 	}
 	state.AudioModels = uniqueSorted(state.AudioModels)
 	state.VisionModels = uniqueSorted(state.VisionModels)
+	state.ImageModelModels = uniqueSorted(state.ImageModelModels)
 	state.ImageGenerationModels = uniqueSorted(state.ImageGenerationModels)
 	if state.MediaProvider != "" && len(state.AudioModels) == 0 && len(state.VisionModels) == 0 {
 		state.MediaProvider = ""
+	}
+	if state.ImageModelProvider != "" && len(state.ImageModelModels) == 0 {
+		state.ImageModelProvider = ""
 	}
 }
 
@@ -126,4 +134,8 @@ func managedOwnsMediaProvider(state *ManagedState) bool {
 
 func managedOwnsImageGeneration(state *ManagedState) bool {
 	return state != nil && state.ImageGenerationProvider != ""
+}
+
+func managedOwnsImageModel(state *ManagedState) bool {
+	return state != nil && state.ImageModelProvider != ""
 }

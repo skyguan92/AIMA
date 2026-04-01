@@ -332,6 +332,52 @@ func TestSyncWritesLocalMediaProviderForASR(t *testing.T) {
 	}
 }
 
+func TestSyncWritesImageModelForVLM(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "openclaw.json")
+	deps := &Deps{
+		Backends: &mockBackends{backends: map[string]*Backend{
+			"glm-4.1v-9b": {ModelName: "glm-4.1v-9b", EngineType: "vllm", Address: "http://127.0.0.1:8004", Ready: true},
+		}},
+		Catalog:    &mockCatalog{},
+		ConfigPath: configPath,
+		ProxyAddr:  "http://127.0.0.1:6188/v1",
+	}
+
+	if _, err := Sync(context.Background(), deps, false); err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	cfg, err := ReadConfig(configPath)
+	if err != nil {
+		t.Fatalf("ReadConfig failed: %v", err)
+	}
+	defaults := lookupMap(cfg, "agents", "defaults")
+	if defaults == nil {
+		t.Fatal("agents.defaults missing after sync")
+	}
+	imageModel, ok := defaults["imageModel"].(map[string]any)
+	if !ok {
+		t.Fatalf("imageModel = %T, want map", defaults["imageModel"])
+	}
+	if got := imageModel["primary"]; got != "aima/glm-4.1v-9b" {
+		t.Fatalf("imageModel.primary = %v, want aima/glm-4.1v-9b", got)
+	}
+
+	managed, err := ReadManagedState(configPath)
+	if err != nil {
+		t.Fatalf("ReadManagedState failed: %v", err)
+	}
+	if managed.ImageModelProvider != "aima" {
+		t.Fatalf("managed image model provider = %q, want aima", managed.ImageModelProvider)
+	}
+	if len(managed.ImageModelModels) != 1 || managed.ImageModelModels[0] != "glm-4.1v-9b" {
+		t.Fatalf("managed image model models = %v, want [glm-4.1v-9b]", managed.ImageModelModels)
+	}
+}
+
 func TestMergeAIMAConfigImageGenUsesAIMAProvider(t *testing.T) {
 	merged := MergeAIMAConfig(nil, &SyncResult{
 		ImageGenModels: []ImageGenEntry{{ID: "z-image"}},
@@ -347,6 +393,13 @@ func TestMergeAIMAConfigImageGenUsesAIMAProvider(t *testing.T) {
 	}
 	if got := provider["apiKey"]; got != "local" {
 		t.Fatalf("provider apiKey = %v, want local", got)
+	}
+	models, ok := provider["models"].([]any)
+	if !ok {
+		t.Fatalf("aima-imagegen provider models = %T, want []any", provider["models"])
+	}
+	if len(models) != 0 {
+		t.Fatalf("aima-imagegen provider should expose an empty model catalog, got %v", models)
 	}
 	defaults := lookupMap(merged, "agents", "defaults")
 	if defaults == nil {
@@ -390,6 +443,13 @@ func TestSyncMigratesLegacyImageGenProvider(t *testing.T) {
 	provider := lookupMap(cfg, "models", "providers", "aima-imagegen")
 	if provider == nil {
 		t.Fatal("aima-imagegen provider missing after sync")
+	}
+	models, ok := provider["models"].([]any)
+	if !ok {
+		t.Fatalf("aima-imagegen provider models = %T, want []any", provider["models"])
+	}
+	if len(models) != 0 {
+		t.Fatalf("aima-imagegen provider should expose an empty model catalog, got %v", models)
 	}
 	defaults := lookupMap(cfg, "agents", "defaults")
 	if defaults == nil {
@@ -525,6 +585,9 @@ func TestMergeAIMAConfigPreservesUnownedSharedSections(t *testing.T) {
 		},
 		"agents": map[string]any{
 			"defaults": map[string]any{
+				"imageModel": map[string]any{
+					"primary": "minimax/MiniMax-VL-01",
+				},
 				"imageGenerationModel": map[string]any{
 					"primary": "openai/z-image",
 				},
@@ -568,6 +631,9 @@ func TestMergeAIMAConfigPreservesUnownedSharedSections(t *testing.T) {
 		t.Fatal("env should be preserved without explicit ownership")
 	}
 	if defaults := lookupMap(merged, "agents", "defaults"); defaults != nil {
+		if got := lookupMap(merged, "agents", "defaults")["imageModel"]; got == nil {
+			t.Fatal("imageModel should be preserved without explicit ownership")
+		}
 		if _, ok := defaults["imageGenerationModel"]; !ok {
 			t.Fatal("imageGenerationModel should be preserved without explicit ownership")
 		}
@@ -618,6 +684,9 @@ func TestMergeAIMAConfigWithManagedStateRemovesOwnedSharedSections(t *testing.T)
 		},
 		"agents": map[string]any{
 			"defaults": map[string]any{
+				"imageModel": map[string]any{
+					"primary": "openai/glm-4.1v-9b",
+				},
 				"imageGenerationModel": map[string]any{
 					"primary": "openai/z-image",
 				},
@@ -630,6 +699,8 @@ func TestMergeAIMAConfigWithManagedStateRemovesOwnedSharedSections(t *testing.T)
 		MediaProvider:           "openai",
 		AudioModels:             []string{"qwen3-asr-1.7b"},
 		VisionModels:            []string{"glm-4.1v-9b"},
+		ImageModelProvider:      "openai",
+		ImageModelModels:        []string{"glm-4.1v-9b"},
 		TTSModel:                "qwen3-tts-0.6b",
 		ImageGenerationProvider: "openai",
 		ImageGenerationModels:   []string{"z-image"},
@@ -662,6 +733,9 @@ func TestMergeAIMAConfigWithManagedStateRemovesOwnedSharedSections(t *testing.T)
 		t.Fatalf("managed env should be removed: %v", env)
 	}
 	if defaults := lookupMap(merged, "agents", "defaults"); defaults != nil {
+		if _, ok := defaults["imageModel"]; ok {
+			t.Fatal("managed imageModel should be removed")
+		}
 		if _, ok := defaults["imageGenerationModel"]; ok {
 			t.Fatal("managed imageGenerationModel should be removed")
 		}
@@ -754,6 +828,121 @@ func TestSyncPreservesUnmanagedMCPServer(t *testing.T) {
 	}
 	if managed.MCPServerName != "" {
 		t.Fatalf("managed mcp server = %q, want empty", managed.MCPServerName)
+	}
+}
+
+func TestDeploySkillsOnlyWritesControlSkill(t *testing.T) {
+	t.Parallel()
+
+	targetDir := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(filepath.Join(targetDir, "aima-asr"), 0755); err != nil {
+		t.Fatalf("mkdir stale skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "aima-asr", "SKILL.md"), []byte("stale"), 0644); err != nil {
+		t.Fatalf("write stale skill: %v", err)
+	}
+	if err := DeploySkills(targetDir); err != nil {
+		t.Fatalf("DeploySkills failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-control", "SKILL.md")); err != nil {
+		t.Fatalf("expected aima-control skill: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-asr")); !os.IsNotExist(err) {
+		t.Fatalf("aima-asr should not be deployed by default, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-tts")); !os.IsNotExist(err) {
+		t.Fatalf("aima-tts should not be deployed by default, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-image-gen")); !os.IsNotExist(err) {
+		t.Fatalf("aima-image-gen should not be deployed by default, stat err=%v", err)
+	}
+}
+
+func TestDeployPluginsWritesAIMALocalImagePlugin(t *testing.T) {
+	t.Parallel()
+
+	targetDir := filepath.Join(t.TempDir(), "extensions")
+	if err := DeployPlugins(targetDir); err != nil {
+		t.Fatalf("DeployPlugins failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-local-image", "openclaw.plugin.json")); err != nil {
+		t.Fatalf("expected plugin manifest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-local-image", "package.json")); err != nil {
+		t.Fatalf("expected plugin package.json: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-local-image", "index.js")); err != nil {
+		t.Fatalf("expected plugin entrypoint: %v", err)
+	}
+}
+
+func TestCleanupLegacyAgentModelCatalogsRemovesLegacyImageGenProvider(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	modelsPath := filepath.Join(stateDir, "agents", "main", "agent", "models.json")
+	if err := os.MkdirAll(filepath.Dir(modelsPath), 0755); err != nil {
+		t.Fatalf("mkdir models dir: %v", err)
+	}
+
+	initial := map[string]any{
+		"providers": map[string]any{
+			"aima": map[string]any{
+				"baseUrl": "http://127.0.0.1:6188/v1",
+				"models": []any{
+					map[string]any{"id": "qwen3.5-9b"},
+				},
+			},
+			"openai": map[string]any{
+				"baseUrl": "http://127.0.0.1:6188/v1",
+				"models": []any{
+					map[string]any{"id": "z-image"},
+				},
+			},
+			"external-openai": map[string]any{
+				"baseUrl": "https://api.openai.com/v1",
+				"models": []any{
+					map[string]any{"id": "gpt-4o"},
+				},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(initial, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal initial models.json: %v", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(modelsPath, data, 0644); err != nil {
+		t.Fatalf("write models.json: %v", err)
+	}
+
+	if err := CleanupLegacyAgentModelCatalogs(stateDir, "http://127.0.0.1:6188/v1", []ImageGenEntry{{ID: "z-image"}}); err != nil {
+		t.Fatalf("CleanupLegacyAgentModelCatalogs failed: %v", err)
+	}
+
+	var cleaned map[string]any
+	raw, err := os.ReadFile(modelsPath)
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	if err := json.Unmarshal(raw, &cleaned); err != nil {
+		t.Fatalf("unmarshal cleaned models.json: %v", err)
+	}
+
+	providers, ok := cleaned["providers"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers = %T, want map", cleaned["providers"])
+	}
+	if _, ok := providers["openai"]; ok {
+		t.Fatal("legacy openai image-generation provider should be removed from agent models cache")
+	}
+	if _, ok := providers["aima"]; !ok {
+		t.Fatal("aima provider should be preserved")
+	}
+	if _, ok := providers["external-openai"]; !ok {
+		t.Fatal("external openai provider should be preserved")
 	}
 }
 

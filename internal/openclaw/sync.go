@@ -11,8 +11,17 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jguan/aima/internal/openclaw/plugins"
 	"github.com/jguan/aima/internal/openclaw/skills"
 )
+
+var deployedSkillRoots = []string{
+	"aima-control",
+}
+
+var deployedPluginRoots = []string{
+	"aima-local-image",
+}
 
 // SyncResult holds the categorized models ready for OpenClaw config generation.
 type SyncResult struct {
@@ -147,10 +156,19 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 	}
 	result.Written = true
 
+	stateDir := filepath.Dir(deps.ConfigPath)
+	if err := CleanupLegacyAgentModelCatalogs(stateDir, result.ProxyAddr, result.ImageGenModels); err != nil {
+		slog.Warn("openclaw sync: failed to clean legacy agent model catalogs", "err", err)
+	}
+
 	// Deploy AIMA skills to ~/.openclaw/skills/
-	skillsDir := filepath.Join(filepath.Dir(deps.ConfigPath), "skills")
+	skillsDir := filepath.Join(stateDir, "skills")
 	if err := DeploySkills(skillsDir); err != nil {
 		slog.Warn("openclaw sync: failed to deploy skills", "err", err)
+	}
+	pluginsDir := filepath.Join(stateDir, "extensions")
+	if err := DeployPlugins(pluginsDir); err != nil {
+		slog.Warn("openclaw sync: failed to deploy plugins", "err", err)
 	}
 
 	slog.Info("openclaw sync complete",
@@ -181,24 +199,67 @@ func desiredMCPServer(deps *Deps) *MCPServerEntry {
 // DeploySkills copies embedded AIMA skills to the target directory.
 // Existing files are overwritten to keep skills in sync with the binary.
 func DeploySkills(targetDir string) error {
-	return fs.WalkDir(skills.FS, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
+	return deployEmbeddedRoots(skills.FS, targetDir, deployedSkillRoots, true)
+}
+
+// DeployPlugins copies embedded AIMA OpenClaw plugins to the target directory.
+func DeployPlugins(targetDir string) error {
+	return deployEmbeddedRoots(plugins.FS, targetDir, deployedPluginRoots, true)
+}
+
+func deployEmbeddedRoots(embedded fs.FS, targetDir string, roots []string, pruneStale bool) error {
+	if pruneStale {
+		if err := pruneEmbeddedRoots(embedded, targetDir, roots); err != nil {
 			return err
 		}
-		dest := filepath.Join(targetDir, path)
-		if d.IsDir() {
-			return os.MkdirAll(dest, 0755)
+	}
+	for _, root := range roots {
+		if err := fs.WalkDir(embedded, root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			dest := filepath.Join(targetDir, path)
+			if d.IsDir() {
+				return os.MkdirAll(dest, 0755)
+			}
+			data, err := fs.ReadFile(embedded, path)
+			if err != nil {
+				return fmt.Errorf("read embedded asset %s: %w", path, err)
+			}
+			perm := os.FileMode(0644)
+			if strings.HasSuffix(path, ".sh") {
+				perm = 0755
+			}
+			return os.WriteFile(dest, data, perm)
+		}); err != nil {
+			return err
 		}
-		data, err := skills.FS.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read embedded skill %s: %w", path, err)
+	}
+	return nil
+}
+
+func pruneEmbeddedRoots(embedded fs.FS, targetDir string, keepRoots []string) error {
+	entries, err := fs.ReadDir(embedded, ".")
+	if err != nil {
+		return fmt.Errorf("read embedded root entries: %w", err)
+	}
+	keep := make(map[string]struct{}, len(keepRoots))
+	for _, root := range keepRoots {
+		keep[root] = struct{}{}
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
-		perm := os.FileMode(0644)
-		if strings.HasSuffix(path, ".sh") {
-			perm = 0755
+		name := entry.Name()
+		if _, ok := keep[name]; ok {
+			continue
 		}
-		return os.WriteFile(dest, data, perm)
-	})
+		if err := os.RemoveAll(filepath.Join(targetDir, name)); err != nil {
+			return fmt.Errorf("remove stale embedded root %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // formatDisplayName creates a human-readable display name from a model ID.

@@ -160,6 +160,8 @@ func claimableState(cfg map[string]any, managed *ManagedState, expected ModelSum
 		MediaProvider:           candidate.MediaProvider,
 		AudioModels:             append([]string(nil), candidate.AudioModels...),
 		VisionModels:            append([]string(nil), candidate.VisionModels...),
+		ImageModelProvider:      candidate.ImageModelProvider,
+		ImageModelModels:        append([]string(nil), candidate.ImageModelModels...),
 		TTSModel:                candidate.TTSModel,
 		ImageGenerationProvider: candidate.ImageGenerationProvider,
 		ImageGenerationModels:   append([]string(nil), candidate.ImageGenerationModels...),
@@ -173,6 +175,10 @@ func claimableState(cfg map[string]any, managed *ManagedState, expected ModelSum
 		}
 		next.AudioModels = subtractStrings(next.AudioModels, managed.AudioModels)
 		next.VisionModels = subtractStrings(next.VisionModels, managed.VisionModels)
+		if managedOwnsImageModel(managed) {
+			next.ImageModelProvider = ""
+			next.ImageModelModels = nil
+		}
 		if managedOwnsTTS(managed) {
 			next.TTSModel = ""
 		}
@@ -195,6 +201,8 @@ func limitClaimableState(cfg map[string]any, candidate *ManagedState, expected M
 		MediaProvider:           candidate.MediaProvider,
 		AudioModels:             intersectStrings(candidate.AudioModels, expected.ASRModels),
 		VisionModels:            intersectStrings(candidate.VisionModels, expected.VisionModels),
+		ImageModelProvider:      candidate.ImageModelProvider,
+		ImageModelModels:        intersectStrings(candidate.ImageModelModels, expected.ImageToolModels),
 		TTSModel:                candidate.TTSModel,
 		ImageGenerationProvider: candidate.ImageGenerationProvider,
 		ImageGenerationModels:   append([]string(nil), candidate.ImageGenerationModels...),
@@ -211,6 +219,13 @@ func limitClaimableState(cfg map[string]any, candidate *ManagedState, expected M
 	}
 	if len(limited.AudioModels) == 0 && len(limited.VisionModels) == 0 {
 		limited.MediaProvider = ""
+	}
+	if limited.ImageModelProvider != "" {
+		limited.ImageModelModels = uniqueSorted(limited.ImageModelModels)
+		if !stringSlicesEqual(limited.ImageModelModels, expected.ImageToolModels) {
+			limited.ImageModelProvider = ""
+			limited.ImageModelModels = nil
+		}
 	}
 	if limited.ImageGenerationProvider != "" {
 		limited.ImageGenerationModels = uniqueSorted(limited.ImageGenerationModels)
@@ -230,6 +245,16 @@ func detectLegacyState(cfg map[string]any, proxyAddr string) *ManagedState {
 		state.LLMProvider = aimaLLMProviderID
 	} else if providerManagedByAIMA(lookupMap(cfg, "models", "providers", legacyLLMProviderID), proxyAddr) {
 		state.LLMProvider = legacyLLMProviderID
+	}
+	for _, pid := range []string{aimaLLMProviderID, legacyLLMProviderID} {
+		if providerManagedByAIMA(lookupMap(cfg, "models", "providers", pid), proxyAddr) {
+			models := configuredAgentDefaultModelsForProviders(cfg, "imageModel", []string{pid}, proxyAddr)
+			if len(models) > 0 {
+				state.ImageModelProvider = pid
+				state.ImageModelModels = models
+				break
+			}
+		}
 	}
 	state.AudioModels = mediaModels(lookupMap(cfg, "tools", "media", "audio"), proxyAddr)
 	state.VisionModels = mediaModels(lookupMap(cfg, "tools", "media", "image"), proxyAddr)
@@ -274,6 +299,8 @@ func selectClaimSections(state *ManagedState, sections []string) *ManagedState {
 	if _, ok := allowed[claimSectionVision]; ok {
 		selected.MediaProvider = state.MediaProvider
 		selected.VisionModels = append([]string(nil), state.VisionModels...)
+		selected.ImageModelProvider = state.ImageModelProvider
+		selected.ImageModelModels = append([]string(nil), state.ImageModelModels...)
 	}
 	if _, ok := allowed[claimSectionTTS]; ok {
 		selected.TTSModel = state.TTSModel
@@ -293,6 +320,8 @@ func mergeManagedStates(existing, extra *ManagedState) *ManagedState {
 		next.MediaProvider = existing.MediaProvider
 		next.AudioModels = append(next.AudioModels, existing.AudioModels...)
 		next.VisionModels = append(next.VisionModels, existing.VisionModels...)
+		next.ImageModelProvider = existing.ImageModelProvider
+		next.ImageModelModels = append(next.ImageModelModels, existing.ImageModelModels...)
 		next.TTSModel = existing.TTSModel
 		next.ImageGenerationProvider = existing.ImageGenerationProvider
 		next.ImageGenerationModels = append(next.ImageGenerationModels, existing.ImageGenerationModels...)
@@ -306,6 +335,10 @@ func mergeManagedStates(existing, extra *ManagedState) *ManagedState {
 		}
 		next.AudioModels = append(next.AudioModels, extra.AudioModels...)
 		next.VisionModels = append(next.VisionModels, extra.VisionModels...)
+		if extra.ImageModelProvider != "" {
+			next.ImageModelProvider = extra.ImageModelProvider
+		}
+		next.ImageModelModels = append(next.ImageModelModels, extra.ImageModelModels...)
 		if extra.TTSModel != "" {
 			next.TTSModel = extra.TTSModel
 		}
@@ -328,6 +361,7 @@ func summaryFromManagedState(cfg map[string]any, state *ManagedState) ModelSumma
 	}
 	summary.ASRModels = append(summary.ASRModels, state.AudioModels...)
 	summary.VisionModels = append(summary.VisionModels, state.VisionModels...)
+	summary.ImageToolModels = append(summary.ImageToolModels, state.ImageModelModels...)
 	summary.TTSModel = state.TTSModel
 	summary.ImageGenModels = append(summary.ImageGenModels, state.ImageGenerationModels...)
 	normalizeSummary(&summary)

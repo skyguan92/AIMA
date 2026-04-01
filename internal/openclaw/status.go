@@ -36,11 +36,12 @@ type Status struct {
 
 // ModelSummary captures the OpenClaw-facing models that AIMA expects or has configured.
 type ModelSummary struct {
-	ChatModels     []string `json:"chat_models,omitempty"`
-	VisionModels   []string `json:"vision_models,omitempty"`
-	ASRModels      []string `json:"asr_models,omitempty"`
-	TTSModel       string   `json:"tts_model,omitempty"`
-	ImageGenModels []string `json:"image_gen_models,omitempty"`
+	ChatModels      []string `json:"chat_models,omitempty"`
+	VisionModels    []string `json:"vision_models,omitempty"`
+	ImageToolModels []string `json:"image_tool_models,omitempty"`
+	ASRModels       []string `json:"asr_models,omitempty"`
+	TTSModel        string   `json:"tts_model,omitempty"`
+	ImageGenModels  []string `json:"image_gen_models,omitempty"`
 }
 
 // Inspect returns a best-effort snapshot of the current OpenClaw wiring state.
@@ -138,6 +139,7 @@ func summarizeExpected(result *SyncResult) ModelSummary {
 		for _, input := range model.Input {
 			if input == "image" {
 				summary.VisionModels = append(summary.VisionModels, model.ID)
+				summary.ImageToolModels = append(summary.ImageToolModels, model.ID)
 				break
 			}
 		}
@@ -185,6 +187,10 @@ func summarizeConfigured(cfg map[string]any, managed *ManagedState, proxyAddr st
 		if managed != nil && len(managed.VisionModels) > 0 {
 			summary.VisionModels = append(summary.VisionModels, managedMediaModels(media["image"], managed.VisionModels, proxyAddr)...)
 		}
+	}
+
+	if managedOwnsImageModel(managed) {
+		summary.ImageToolModels = append(summary.ImageToolModels, configuredAgentDefaultModelsForProviders(cfg, "imageModel", []string{managed.ImageModelProvider}, proxyAddr)...)
 	}
 
 	if managedOwnsTTS(managed) && currentTTSManagedByAIMA(cfg, proxyAddr) {
@@ -383,13 +389,14 @@ func inspectMCPServer(cfg map[string]any, managed *ManagedState, desired *MCPSer
 func summariesEqual(a, b ModelSummary) bool {
 	return strings.Join(a.ChatModels, "\x00") == strings.Join(b.ChatModels, "\x00") &&
 		strings.Join(a.VisionModels, "\x00") == strings.Join(b.VisionModels, "\x00") &&
+		strings.Join(a.ImageToolModels, "\x00") == strings.Join(b.ImageToolModels, "\x00") &&
 		strings.Join(a.ASRModels, "\x00") == strings.Join(b.ASRModels, "\x00") &&
 		a.TTSModel == b.TTSModel &&
 		strings.Join(a.ImageGenModels, "\x00") == strings.Join(b.ImageGenModels, "\x00")
 }
 
 func summaryCount(summary ModelSummary) int {
-	count := len(summary.ChatModels) + len(summary.VisionModels) + len(summary.ASRModels) + len(summary.ImageGenModels)
+	count := len(summary.ChatModels) + len(summary.VisionModels) + len(summary.ImageToolModels) + len(summary.ASRModels) + len(summary.ImageGenModels)
 	if summary.TTSModel != "" {
 		count++
 	}
@@ -402,6 +409,7 @@ func normalizeSummary(summary *ModelSummary) {
 	}
 	summary.ChatModels = uniqueSorted(summary.ChatModels)
 	summary.VisionModels = uniqueSorted(summary.VisionModels)
+	summary.ImageToolModels = uniqueSorted(summary.ImageToolModels)
 	summary.ASRModels = uniqueSorted(summary.ASRModels)
 	summary.ImageGenModels = uniqueSorted(summary.ImageGenModels)
 }
