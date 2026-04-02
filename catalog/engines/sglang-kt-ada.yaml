@@ -29,16 +29,21 @@ startup:
     OMP_NUM_THREADS: "1"
     SGLANG_DISABLE_CUDNN_CHECK: "1"
     PYTORCH_ALLOC_CONF: "expandable_segments:True"
-    # WSL toolchain: symlink libcuda.so and cuda.h into conda paths
-    # AppImage only ships SM100 (Blackwell) pre-compiled ops
-    # SM89 (Ada) requires JIT: needs nvcc + ninja + gcc (conda install cuda-toolkit ninja gcc_linux-64)
-    # FlashInfer JIT: needs libcuda.so in LIBRARY_PATH, cuda.h in CPLUS_INCLUDE_PATH
+    # WSL toolchain for SM89 JIT (AppImage only ships SM100 pre-compiled ops):
+    #   conda install -y -c nvidia/label/cuda-12.6.3 cuda-toolkit libcurand-dev ninja gcc_linux-64
+    #   Symlink cuda.h + curand.h from conda/targets/x86_64-linux/include/ to conda/include/
+    #   Symlink libcuda.so from /usr/lib/wsl/lib/ to conda/lib64/
+    #   Set CPLUS_INCLUDE_PATH, LIBRARY_PATH, LD_LIBRARY_PATH
+    # Key tuning findings (i9-13980HX, RTX 4060 8GB, 2026-04-02):
+    #   cpuinfer MUST match physical cores (24), NOT logical (32=5× regression)
+    #   threadpool_count=2 gives 3-6% boost
+    #   gpu_experts=4 marginally better than 2; gpu=6 OOMs on 8GB
   default_args:
     trust_remote_code: true
     # KTransformers-specific args
     kt_weight_path: "{{.ModelPath}}"
     kt_cpuinfer: 40
-    kt_threadpool_count: 1
+    kt_threadpool_count: 2
     kt_num_gpu_experts: 6
     kt_method: BF16
     # SGLang standard args

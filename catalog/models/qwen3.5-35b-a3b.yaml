@@ -270,9 +270,9 @@ variants:
   # --- Ada 单卡 (RTX 4060 8GB via WSL, KTransformers, GPTQ-Int4) ---
   # GPTQ-Int4 权重 ~18GB，kt_method=GPTQ_INT4 使用 GPTQSafeTensorLoader + AVX2 内核
   # 要求: sym=true, desc_act=false
-  # 单卡 8GB: 非 expert 层 ~3GB + 2 GPU expert ~1GB + KV = ~6GB
+  # 单卡 8GB: 非 expert 层 ~3GB + 4 GPU expert ~2GB + KV = ~6GB
   # v0.5.2 AppImage 支持 qwen3_5_moe + GPTQ_INT4 CPU expert offload
-  # 参考 qwen3-30b-a3b 实测: ~6.5 tok/s (triton+no-cuda-graph), 35B 同 3B active 应类似
+  # 参考 qwen3-30b-a3b 优化实测: 8.53 tok/s (triton+CUDA graph, gpu=4, cpu=24, tp=2)
   - name: qwen3.5-35b-a3b-ada-1gpu-sglang-kt-gptq
     hardware:
       gpu_arch: Ada
@@ -285,24 +285,24 @@ variants:
       repo: Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
       quantization: gptq
     default_config:
-      mem_fraction_static: 0.70
+      mem_fraction_static: 0.55
       tp_size: 1
-      kt_cpuinfer: 16
-      kt_num_gpu_experts: 2
+      kt_cpuinfer: 24
+      kt_num_gpu_experts: 4
+      kt_threadpool_count: 2
       kt_method: GPTQ_INT4
       quantization: gptq_marlin
       context_length: 4096
       disable_shared_experts_fusion: true
-      disable_cuda_graph: true
       attention_backend: triton
-      max_running_requests: 4
+      max_running_requests: 2
       watchdog_timeout: 3000
     expected_performance:
-      startup_time_s: 50
+      startup_time_s: 20
       cold_start_time_s: 300
-      tokens_per_second: [5, 8]
+      tokens_per_second: [7, 9]
       vram_mib: 6000
-      notes: "SGLang-KT AppImage v0.5.2, GPTQ-Int4 (AVX2 GPTQ_INT4 kernel), CPU-GPU hybrid MoE. 1× RTX 4060 8GB (WSL2) + 24GB+ CPU RAM. 35B/3B active — same active params as 30B. Estimated from qwen3-30b-a3b benchmark: 6.2-7.0 tok/s (triton attn, no CUDA graph). Same WSL toolchain requirements as qwen3-30b-a3b."
+      notes: "SGLang-KT AppImage v0.5.2, GPTQ-Int4 (AVX2 GPTQ_INT4 kernel), CPU-GPU hybrid MoE. 1× RTX 4060 8GB (WSL2) + 24GB+ CPU RAM. 35B/3B active — same active params as 30B. Config from qwen3-30b-a3b optimization: 8.53 tok/s (triton+CUDA graph). Same WSL toolchain requirements."
 
   # --- 所有设备通用 (llamacpp + GGUF Q4_K_M=21GB) ---
   # linux-1 fallback, dev-win (8GB) / mac-m4 (16GB) 需大量 CPU offload
