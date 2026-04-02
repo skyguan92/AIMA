@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 )
 
 // LLMClient sends messages to an LLM and returns the response.
@@ -91,12 +93,27 @@ func toolResultError(result *ToolResult) error {
 	return nil
 }
 
+// toolMode tracks whether the LLM backend supports tool calling.
+type toolMode int
+
+const (
+	toolModeUnknown     toolMode = iota // not yet probed
+	toolModeEnabled                     // tools work — full agent mode
+	toolModeContextOnly                 // tools rejected — context-only chat
+)
+
+const toolModeRetryInterval = 5 * time.Minute
+
 // Agent is the L3a Go Agent (simple tool-calling loop).
 type Agent struct {
 	llm      LLMClient
 	tools    ToolExecutor
 	maxTurns int
 	sessions *SessionStore
+
+	mu              sync.RWMutex
+	mode            toolMode
+	modeDetectedAt  time.Time
 }
 
 // AgentOption configures the Agent.
@@ -134,6 +151,59 @@ func (a *Agent) Available() bool {
 	return a.llm != nil
 }
 
+// ToolMode returns "enabled", "context_only", or "unknown".
+func (a *Agent) ToolMode() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	switch a.mode {
+	case toolModeEnabled:
+		return "enabled"
+	case toolModeContextOnly:
+		return "context_only"
+	default:
+		return "unknown"
+	}
+}
+
+// toolsActive returns true if tools should be sent in the current request.
+// In contextOnly mode, periodically retries tools in case the backend was
+// restarted with tool support.
+func (a *Agent) toolsActive() bool {
+	a.mu.RLock()
+	mode := a.mode
+	detected := a.modeDetectedAt
+	a.mu.RUnlock()
+
+	switch mode {
+	case toolModeEnabled:
+		return true
+	case toolModeContextOnly:
+		return time.Since(detected) > toolModeRetryInterval
+	default: // unknown
+		return true
+	}
+}
+
+func (a *Agent) setToolMode(m toolMode) {
+	a.mu.Lock()
+	a.mode = m
+	a.modeDetectedAt = time.Now()
+	a.mu.Unlock()
+}
+
+// isToolRejectionError checks if the error is caused by the backend not
+// supporting tool calling (e.g., vLLM missing --enable-auto-tool-choice).
+func isToolRejectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "tool choice requires") ||
+		strings.Contains(msg, "tool_choice") ||
+		strings.Contains(msg, "enable-auto-tool-choice") ||
+		strings.Contains(msg, "tools is not supported")
+}
+
 // Ask processes a user query through the agent loop and returns the final text response.
 // If sessionID is empty, a new session is created. Returns (result, sessionID, toolCalls, error).
 func (a *Agent) Ask(ctx context.Context, sessionID, query string) (string, string, []ToolCallInfo, error) {
@@ -161,7 +231,8 @@ func (a *Agent) AskStream(ctx context.Context, sessionID, query string, cb Strea
 	}
 	messages = append(messages, Message{Role: "user", Content: query})
 
-	tools := a.tools.ListTools()
+	allTools := a.tools.ListTools()
+	useTools := len(allTools) > 0 && a.toolsActive()
 	var allToolCalls []ToolCallInfo
 
 	for turn := 0; turn < a.maxTurns; turn++ {
@@ -171,9 +242,23 @@ func (a *Agent) AskStream(ctx context.Context, sessionID, query string, cb Strea
 		default:
 		}
 
-		resp, err := a.llm.ChatCompletion(ctx, messages, tools)
+		var activeTools []ToolDefinition
+		if useTools {
+			activeTools = allTools
+		}
+		resp, err := a.llm.ChatCompletion(ctx, messages, activeTools)
+		if err != nil && useTools && isToolRejectionError(err) {
+			// Backend doesn't support tools → switch to context-only mode.
+			slog.Warn("tool calling not supported, switching to context-only mode", "error", err)
+			a.setToolMode(toolModeContextOnly)
+			useTools = false
+			resp, err = a.llm.ChatCompletion(ctx, messages, nil)
+		}
 		if err != nil {
 			return "", "", allToolCalls, fmt.Errorf("chat completion (turn %d): %w", turn, err)
+		}
+		if useTools && a.mode == toolModeUnknown {
+			a.setToolMode(toolModeEnabled)
 		}
 
 		// If no tool calls, return the text response

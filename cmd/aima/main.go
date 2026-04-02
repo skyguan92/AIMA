@@ -158,6 +158,7 @@ func run() error {
 		}
 		return json.Marshal(map[string]any{
 			"agent_available":         agentAvailable(ctx, llmClient),
+			"agent_tool_mode":         goAgent.ToolMode(),
 			"active_exploration_runs": activeRuns,
 		})
 	}

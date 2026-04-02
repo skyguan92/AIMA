@@ -1363,3 +1363,66 @@ func searchString(s, substr string) bool {
 	}
 	return false
 }
+
+// mockToolRejectLLM fails with an error when tools are provided, succeeds without tools.
+type mockToolRejectLLM struct {
+	responses    []*Response
+	calls        int
+	toolAttempts int // how many times tools were sent
+}
+
+func (m *mockToolRejectLLM) ChatCompletion(_ context.Context, _ []Message, tools []ToolDefinition) (*Response, error) {
+	if len(tools) > 0 {
+		m.toolAttempts++
+		return nil, fmt.Errorf(`"auto" tool choice requires --enable-auto-tool-choice`)
+	}
+	if m.calls >= len(m.responses) {
+		return nil, fmt.Errorf("no more mock responses")
+	}
+	resp := m.responses[m.calls]
+	m.calls++
+	return resp, nil
+}
+
+func TestAgent_ContextOnlyMode_ToolCallRejected(t *testing.T) {
+	llm := &mockToolRejectLLM{
+		responses: []*Response{
+			{Content: "I can answer without tools."},
+			{Content: "Still in context-only mode."},
+		},
+	}
+	tools := &mockTools{
+		tools: []ToolDefinition{
+			{Name: "deploy.list", Description: "List deployments"},
+		},
+	}
+
+	a := NewAgent(llm, tools)
+
+	// First ask: detects tool rejection, falls back to context-only
+	result, _, _, err := a.Ask(context.Background(), "", "what is deployed?")
+	if err != nil {
+		t.Fatalf("expected context-only fallback, got error: %v", err)
+	}
+	if result != "I can answer without tools." {
+		t.Errorf("result = %q, want degraded response", result)
+	}
+	if a.ToolMode() != "context_only" {
+		t.Errorf("ToolMode = %q, want context_only", a.ToolMode())
+	}
+	if llm.toolAttempts != 1 {
+		t.Errorf("toolAttempts = %d, want 1 (probed once)", llm.toolAttempts)
+	}
+
+	// Second ask: should NOT attempt tools again (remembered context-only)
+	result, _, _, err = a.Ask(context.Background(), "", "hi again")
+	if err != nil {
+		t.Fatalf("second ask: %v", err)
+	}
+	if result != "Still in context-only mode." {
+		t.Errorf("result = %q, want context-only response", result)
+	}
+	if llm.toolAttempts != 1 {
+		t.Errorf("toolAttempts = %d after 2nd ask, want 1 (should not retry tools)", llm.toolAttempts)
+	}
+}
