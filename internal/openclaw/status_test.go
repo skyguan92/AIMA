@@ -74,8 +74,11 @@ func TestInspectConnected(t *testing.T) {
 	if status.ClaimNeeded {
 		t.Fatal("claim_needed = true, want false")
 	}
-	if got, want := strings.Join(status.Expected.ChatModels, ","), "glm-4.1v-9b,qwen3-8b"; got != want {
+	if got, want := strings.Join(status.Expected.ChatModels, ","), "qwen3-8b"; got != want {
 		t.Fatalf("expected chat models = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(status.Expected.VisionModels, ","), "glm-4.1v-9b"; got != want {
+		t.Fatalf("expected vision models = %q, want %q", got, want)
 	}
 	if got := status.Configured.TTSModel; got != "qwen3-tts-0.6b" {
 		t.Fatalf("configured tts = %q, want qwen3-tts-0.6b", got)

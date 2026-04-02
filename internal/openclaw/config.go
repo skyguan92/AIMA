@@ -70,7 +70,7 @@ func MergeAIMAConfigWithState(existing map[string]any, managed *ManagedState, re
 
 	mergeLLMProvider(existing, managed, next, result)
 	next.AudioModels = mergeMediaModels(existing, "audio", audioIDs(result.ASRModels), managedSet(managedAudioModels(managed)), result.ProxyAddr, false)
-	next.VisionModels = mergeMediaModels(existing, "image", modelIDs(vlmFromLLMs(result.LLMModels)), managedSet(managedVisionModels(managed)), result.ProxyAddr, false)
+	next.VisionModels = mergeMediaModels(existing, "image", modelIDs(result.VLMModels), managedSet(managedVisionModels(managed)), result.ProxyAddr, false)
 	mergeImageModel(existing, managed, next, result)
 	mergeTTS(existing, managed, next, result)
 	mergeImageGeneration(existing, managed, next, result)
@@ -133,7 +133,7 @@ func canManageTTS(cfg map[string]any, managed *ManagedState) bool {
 }
 
 func mergeImageModel(cfg map[string]any, managed, next *ManagedState, result *SyncResult) {
-	desired := uniqueSorted(modelIDs(vlmFromLLMs(result.LLMModels)))
+	desired := uniqueSorted(modelIDs(result.VLMModels))
 	if len(desired) == 0 {
 		if managedOwnsImageModel(managed) {
 			removeAgentDefaultModelIfManaged(cfg, "imageModel", managed.ImageModelProvider)
@@ -143,8 +143,8 @@ func mergeImageModel(cfg map[string]any, managed, next *ManagedState, result *Sy
 	if !canManageImageModel(cfg, managed, result) {
 		return
 	}
-	setAgentDefaultModel(cfg, "imageModel", aimaLLMProviderID, desired)
-	next.ImageModelProvider = aimaLLMProviderID
+	setAgentDefaultModel(cfg, "imageModel", aimaMediaProviderID, desired)
+	next.ImageModelProvider = aimaMediaProviderID
 	next.ImageModelModels = desired
 }
 
@@ -162,11 +162,11 @@ func legacyImageModelOwned(cfg map[string]any, result *SyncResult) bool {
 	if result == nil {
 		return false
 	}
-	expected := uniqueSorted(modelIDs(vlmFromLLMs(result.LLMModels)))
+	expected := uniqueSorted(modelIDs(result.VLMModels))
 	if len(expected) == 0 {
 		return false
 	}
-	for _, providerID := range []string{aimaLLMProviderID, legacyLLMProviderID} {
+	for _, providerID := range []string{aimaLLMProviderID, aimaMediaProviderID, legacyLLMProviderID} {
 		provider := lookupMap(cfg, "models", "providers", providerID)
 		if !providerManagedByAIMA(provider, result.ProxyAddr) {
 			continue
@@ -299,7 +299,7 @@ func buildLocalMediaProviderModels(result *SyncResult) []any {
 	if result == nil {
 		return nil
 	}
-	out := make([]any, 0, len(result.ASRModels)+len(vlmFromLLMs(result.LLMModels)))
+	out := make([]any, 0, len(result.ASRModels)+len(result.VLMModels))
 	for _, model := range result.ASRModels {
 		out = append(out, map[string]any{
 			"id":            model.ID,
@@ -310,7 +310,7 @@ func buildLocalMediaProviderModels(result *SyncResult) []any {
 			"cost":          zeroCost(),
 		})
 	}
-	for _, model := range vlmFromLLMs(result.LLMModels) {
+	for _, model := range result.VLMModels {
 		out = append(out, map[string]any{
 			"id":            model.ID,
 			"name":          model.Name,
@@ -707,19 +707,6 @@ func stringArgs(value any) []string {
 	default:
 		return nil
 	}
-}
-
-func vlmFromLLMs(models []ModelEntry) []ModelEntry {
-	var vlms []ModelEntry
-	for _, m := range models {
-		for _, inp := range m.Input {
-			if inp == "image" {
-				vlms = append(vlms, m)
-				break
-			}
-		}
-	}
-	return vlms
 }
 
 func ensureMap(cfg map[string]any, key string) map[string]any {

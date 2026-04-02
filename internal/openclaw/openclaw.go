@@ -43,6 +43,7 @@ type CatalogReader interface {
 	ModelType(name string) string
 	ModelContextWindow(name string) int
 	ModelFamily(name string) string
+	ModelChatProvider(name string) bool // whether model should register as LLM chat provider
 	OpenClawRequestPatches(name string) []RequestPatch
 }
 

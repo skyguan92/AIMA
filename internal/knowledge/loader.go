@@ -319,6 +319,7 @@ type ModelMetadata struct {
 }
 
 type OpenClawHints struct {
+	ChatProvider   *bool                  `yaml:"chat_provider,omitempty"` // register as LLM chat provider (default true)
 	RequestPatches []OpenClawRequestPatch `yaml:"request_patches,omitempty"`
 }
 

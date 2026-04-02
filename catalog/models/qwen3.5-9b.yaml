@@ -5,6 +5,7 @@ metadata:
   family: qwen
   parameter_count: "9B"
 openclaw:
+  chat_provider: false
   request_patches:
     - path: /v1/chat/completions
       engine_prefixes: [vllm]
@@ -50,6 +51,8 @@ variants:
       enforce_eager: true
       dtype: bfloat16
       trust_remote_code: true
+      enable_auto_tool_choice: true
+      tool_call_parser: qwen3_xml
     expected_performance:
       startup_time_s: 60
       cold_start_time_s: 120
@@ -77,6 +80,8 @@ variants:
       max_model_len: 32768
       dtype: bfloat16
       trust_remote_code: true
+      enable_auto_tool_choice: true
+      tool_call_parser: qwen3_xml
     expected_performance:
       startup_time_s: 30
       cold_start_time_s: 90

@@ -524,6 +524,18 @@ func (a catalogAdapter) ModelFamily(name string) string {
 	return ""
 }
 
+func (a catalogAdapter) ModelChatProvider(name string) bool {
+	for _, m := range a.cat.ModelAssets {
+		if m.Metadata.Name == name {
+			if m.OpenClaw != nil && m.OpenClaw.ChatProvider != nil {
+				return *m.OpenClaw.ChatProvider
+			}
+			return true // default: register as chat provider
+		}
+	}
+	return true
+}
+
 func (a catalogAdapter) OpenClawRequestPatches(name string) []openclaw.RequestPatch {
 	for _, m := range a.cat.ModelAssets {
 		if m.Metadata.Name != name || m.OpenClaw == nil {

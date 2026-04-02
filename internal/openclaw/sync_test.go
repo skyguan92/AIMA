@@ -58,6 +58,11 @@ func (m *mockCatalog) ModelFamily(name string) string {
 	}
 }
 
+func (m *mockCatalog) ModelChatProvider(name string) bool {
+	// glm-4.1v-9b is VLM-only (chat_provider: false in YAML)
+	return name != "glm-4.1v-9b"
+}
+
 func (m *mockCatalog) OpenClawRequestPatches(name string) []RequestPatch {
 	if name != "qwen3.5-9b" {
 		return nil
@@ -374,16 +379,16 @@ func TestSyncWritesImageModelForVLM(t *testing.T) {
 	if !ok {
 		t.Fatalf("imageModel = %T, want map", defaults["imageModel"])
 	}
-	if got := imageModel["primary"]; got != "aima/glm-4.1v-9b" {
-		t.Fatalf("imageModel.primary = %v, want aima/glm-4.1v-9b", got)
+	if got := imageModel["primary"]; got != "aima-media/glm-4.1v-9b" {
+		t.Fatalf("imageModel.primary = %v, want aima-media/glm-4.1v-9b", got)
 	}
 
 	managed, err := ReadManagedState(configPath)
 	if err != nil {
 		t.Fatalf("ReadManagedState failed: %v", err)
 	}
-	if managed.ImageModelProvider != "aima" {
-		t.Fatalf("managed image model provider = %q, want aima", managed.ImageModelProvider)
+	if managed.ImageModelProvider != "aima-media" {
+		t.Fatalf("managed image model provider = %q, want aima-media", managed.ImageModelProvider)
 	}
 	if len(managed.ImageModelModels) != 1 || managed.ImageModelModels[0] != "glm-4.1v-9b" {
 		t.Fatalf("managed image model models = %v, want [glm-4.1v-9b]", managed.ImageModelModels)
@@ -841,12 +846,15 @@ func TestSyncVLMInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sync failed: %v", err)
 	}
-	if len(result.LLMModels) != 1 {
-		t.Fatalf("expected 1 LLM model, got %d", len(result.LLMModels))
+	// VLM models go to VLMModels, not LLMModels
+	if len(result.LLMModels) != 0 {
+		t.Fatalf("expected 0 LLM models, got %d", len(result.LLMModels))
 	}
-	// VLM models should have ["text", "image"] input
-	if len(result.LLMModels[0].Input) != 2 || result.LLMModels[0].Input[1] != "image" {
-		t.Errorf("VLM input should be [text, image], got %v", result.LLMModels[0].Input)
+	if len(result.VLMModels) != 1 {
+		t.Fatalf("expected 1 VLM model, got %d", len(result.VLMModels))
+	}
+	if len(result.VLMModels[0].Input) != 2 || result.VLMModels[0].Input[1] != "image" {
+		t.Errorf("VLM input should be [text, image], got %v", result.VLMModels[0].Input)
 	}
 }
 

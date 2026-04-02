@@ -27,6 +27,7 @@ var deployedPluginRoots = []string{
 // SyncResult holds the categorized models ready for OpenClaw config generation.
 type SyncResult struct {
 	LLMModels      []ModelEntry    `json:"llmModels,omitempty"`
+	VLMModels      []ModelEntry    `json:"vlmModels,omitempty"`
 	ASRModels      []AudioEntry    `json:"asrModels,omitempty"`
 	TTSModel       *TTSEntry       `json:"ttsModel,omitempty"`
 	ImageGenModels []ImageGenEntry `json:"imageGenModels,omitempty"`
@@ -109,7 +110,11 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 			} else {
 				entry.Input = []string{"text"}
 			}
-			result.LLMModels = append(result.LLMModels, entry)
+			if deps.Catalog.ModelChatProvider(b.ModelName) {
+				result.LLMModels = append(result.LLMModels, entry)
+			} else {
+				result.VLMModels = append(result.VLMModels, entry)
+			}
 
 		case "asr":
 			result.ASRModels = append(result.ASRModels, AudioEntry{ID: b.ModelName})
@@ -126,6 +131,7 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 		}
 	}
 	sort.Slice(result.LLMModels, func(i, j int) bool { return result.LLMModels[i].ID < result.LLMModels[j].ID })
+	sort.Slice(result.VLMModels, func(i, j int) bool { return result.VLMModels[i].ID < result.VLMModels[j].ID })
 	sort.Slice(result.ASRModels, func(i, j int) bool { return result.ASRModels[i].ID < result.ASRModels[j].ID })
 	sort.Slice(result.ImageGenModels, func(i, j int) bool { return result.ImageGenModels[i].ID < result.ImageGenModels[j].ID })
 	sort.Strings(ttsIDs)
@@ -174,6 +180,7 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 
 	slog.Info("openclaw sync complete",
 		"llm", len(result.LLMModels),
+		"vlm", len(result.VLMModels),
 		"asr", len(result.ASRModels),
 		"tts", result.TTSModel != nil,
 		"image_gen", len(result.ImageGenModels),

@@ -173,13 +173,10 @@ func summarizeExpected(result *SyncResult) ModelSummary {
 
 	for _, model := range result.LLMModels {
 		summary.ChatModels = append(summary.ChatModels, model.ID)
-		for _, input := range model.Input {
-			if input == "image" {
-				summary.VisionModels = append(summary.VisionModels, model.ID)
-				summary.ImageToolModels = append(summary.ImageToolModels, model.ID)
-				break
-			}
-		}
+	}
+	for _, model := range result.VLMModels {
+		summary.VisionModels = append(summary.VisionModels, model.ID)
+		summary.ImageToolModels = append(summary.ImageToolModels, model.ID)
 	}
 	for _, model := range result.ASRModels {
 		summary.ASRModels = append(summary.ASRModels, model.ID)
