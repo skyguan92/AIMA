@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,9 @@ const DefaultPort = 6188
 // requests to this model when the engine expects a different served name.
 const LabelServedModel = "aima.dev/served-model"
 
+// LabelParameterCount stores the model parameter count used for agent ranking.
+const LabelParameterCount = "aima.dev/parameter_count"
+
 // Backend represents a running inference engine.
 type Backend struct {
 	ModelName           string `json:"model_name"`
@@ -36,6 +40,7 @@ type Backend struct {
 	BasePath            string `json:"base_path"`
 	Ready               bool   `json:"ready"`
 	Remote              bool   `json:"remote"` // true = discovered via mDNS, not a local deployment
+	ParameterCount      string `json:"parameter_count,omitempty"`
 	ContextWindowTokens int    `json:"context_window_tokens,omitempty"`
 }
 
@@ -331,12 +336,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	backends := s.ListBackends()
 	models := make([]map[string]any, 0, len(backends))
-	for _, b := range backends {
+	for _, b := range rankedBackends(backends, false) {
 		models = append(models, map[string]any{
 			"model_name":            b.ModelName,
 			"engine_type":           b.EngineType,
 			"ready":                 b.Ready,
 			"remote":                b.Remote,
+			"parameter_count":       b.ParameterCount,
 			"context_window_tokens": b.ContextWindowTokens,
 		})
 	}
@@ -350,10 +356,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	backends := s.ListBackends()
 	data := make([]map[string]string, 0, len(backends))
-	for _, b := range backends {
-		if !b.Ready || b.Address == "" {
-			continue
-		}
+	for _, b := range rankedBackends(backends, true) {
 		data = append(data, map[string]string{
 			"id":       b.ModelName,
 			"object":   "model",
@@ -365,6 +368,33 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		"object": "list",
 		"data":   data,
 	})
+}
+
+func rankedBackends(backends map[string]*Backend, readyOnly bool) []*Backend {
+	items := make([]*Backend, 0, len(backends))
+	for _, b := range backends {
+		if readyOnly && (!b.Ready || b.Address == "") {
+			continue
+		}
+		items = append(items, b)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return BetterAdvertisedModel(
+			AdvertisedModel{
+				ID:                  items[i].ModelName,
+				ParameterCount:      items[i].ParameterCount,
+				ContextWindowTokens: items[i].ContextWindowTokens,
+				Remote:              items[i].Remote,
+			},
+			AdvertisedModel{
+				ID:                  items[j].ModelName,
+				ParameterCount:      items[j].ParameterCount,
+				ContextWindowTokens: items[j].ContextWindowTokens,
+				Remote:              items[j].Remote,
+			},
+		)
+	})
+	return items
 }
 
 func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {

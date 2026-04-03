@@ -1,0 +1,137 @@
+kind: model_asset
+metadata:
+  name: gemma-4-31b-it
+  type: llm
+  family: gemma
+  parameter_count: "31B"
+  license: apache-2.0
+  description: "Google DeepMind Gemma 4 31B-it: dense 30.7B, hybrid attention (sliding window 1024 + global), head_size=512, 60 layers, vocab 262K"
+storage:
+  formats: [safetensors]
+  default_path_pattern: "{{.DataDir}}/models/{{.Name}}"
+  sources:
+    - type: huggingface
+      repo: google/gemma-4-31b-it
+      format: safetensors
+    - type: local_path
+      path: ""
+variants:
+  # --- AMD W7900D RDNA3 (8× 48GB, vLLM 0.19.0 ROCm, BF16) ---
+  # 31B dense, 60 layers, head_size=512, hybrid sliding-window + global attention
+  # BF16 weights ~59GB → TP=4 (~16.8 GiB/GPU) leaves ~28 GiB for KV cache
+  # DP=2 runs two TP=4 replicas for 2× concurrency throughput
+  # REQUIRES vLLM >= 0.19.0 (Gemma4ForConditionalGeneration/Gemma4ForCausalLM added)
+  # REQUIRES transformers >= 5.0 (gemma4 model type recognition)
+  # TRITON_ATTN required — ROCM_ATTN doesn't support head_size=512
+  # Validated 2026-04-03: 26.2 tok/s decode (single), 280 tok/s at C=16
+  - name: gemma-4-31b-it-rdna3-vllm-bf16
+    hardware:
+      gpu_arch: RDNA3
+      vram_min_mib: 40960
+      gpu_count_min: 8
+      unified_memory: false
+    engine: vllm
+    format: safetensors
+    source:
+      type: huggingface
+      repo: google/gemma-4-31b-it
+    default_config:
+      # Optimal: TP=4 × DP=2 (two replicas of 4-GPU shards)
+      # TP=4 saturates PCIe all-reduce bandwidth; TP=8 gives <1% gain
+      # DP=2 doubles aggregate throughput at concurrency ≥2
+      gpu_memory_utilization: 0.95
+      max_model_len: 16384
+      dtype: bfloat16
+      tensor_parallel_size: 4
+      data_parallel_size: 2
+      enforce_eager: true
+      trust_remote_code: true
+      attention_backend: TRITON_ATTN
+      kv_cache_dtype: fp8
+    expected_performance:
+      tokens_per_second: [25, 27]
+      latency_first_token_ms: [40, 60]
+      startup_time_s: 60
+      vram_mib: 274432
+      notes: |
+        Validated 2026-04-03 on 8× W7900D 48GB RDNA3. vLLM 0.19.0+rocm721 (pip wheel),
+        transformers 5.5.0, torch 2.10.0, BF16 weights, FP8 KV cache, TP=4×DP=2.
+        Single stream: 26.2 tok/s decode, TTFT 45ms. Model load: 16.79 GiB/GPU, 17s.
+        FP8 KV cache: 245,664 tokens capacity per replica (62× concurrency at 16K).
+        Concurrency scaling (aggregate tok/s): C=2→52.3, C=4→99.9, C=8→202.8, C=16→280.2.
+        Per-request at C=16: 17.6 tok/s (acceptable degradation).
+        TRITON_ATTN required — ROCM_ATTN does not support head_size=512 (PR #38824 pending).
+        enforce_eager required — torch.compile/CUDA graphs hang on RDNA3 gfx1100.
+        FP8 weight quantization NOT available (requires MI300+ or CUDA SM89+).
+        26 tok/s is RDNA3 BF16 ceiling for 31B dense: GDDR6 effective BW < peak,
+        no FP8 GEMM, WMMA < MFMA, PCIe all-reduce overhead.
+
+  # --- AMD W7900D RDNA3 (TP=4 single replica, BF16) ---
+  # Same hardware, single TP=4 replica for simpler deployment
+  # Lower aggregate throughput but simpler resource management
+  - name: gemma-4-31b-it-rdna3-vllm-bf16-tp4
+    hardware:
+      gpu_arch: RDNA3
+      vram_min_mib: 40960
+      gpu_count_min: 4
+      unified_memory: false
+    engine: vllm
+    format: safetensors
+    source:
+      type: huggingface
+      repo: google/gemma-4-31b-it
+    default_config:
+      gpu_memory_utilization: 0.95
+      max_model_len: 16384
+      dtype: bfloat16
+      tensor_parallel_size: 4
+      enforce_eager: true
+      trust_remote_code: true
+      attention_backend: TRITON_ATTN
+      kv_cache_dtype: fp8
+    expected_performance:
+      tokens_per_second: [24, 27]
+      latency_first_token_ms: [40, 60]
+      startup_time_s: 60
+      vram_mib: 137216
+      notes: |
+        Validated 2026-04-03 on W7900D 48GB RDNA3. vLLM 0.19.0+rocm721, TP=4 single replica.
+        24.7 tok/s (BF16 KV) → 26.2 tok/s (FP8 KV). TTFT 45ms.
+        4 GPUs free for other workloads or a second manual replica.
+
+  # --- AMD W7900D RDNA3 (TP=2, minimal GPU usage, BF16) ---
+  # Minimum viable config: 2 GPUs, lower decode speed but frees 6 GPUs
+  - name: gemma-4-31b-it-rdna3-vllm-bf16-tp2
+    hardware:
+      gpu_arch: RDNA3
+      vram_min_mib: 40960
+      gpu_count_min: 2
+      unified_memory: false
+    engine: vllm
+    format: safetensors
+    source:
+      type: huggingface
+      repo: google/gemma-4-31b-it
+    default_config:
+      gpu_memory_utilization: 0.95
+      max_model_len: 16384
+      dtype: bfloat16
+      tensor_parallel_size: 2
+      enforce_eager: true
+      trust_remote_code: true
+      attention_backend: TRITON_ATTN
+      kv_cache_dtype: fp8
+    expected_performance:
+      tokens_per_second: [19, 21]
+      latency_first_token_ms: [50, 80]
+      startup_time_s: 45
+      vram_mib: 68608
+      notes: |
+        Validated 2026-04-03 on W7900D 48GB RDNA3. vLLM 0.19.0+rocm721, TP=2.
+        20.4 tok/s decode. Baseline config — sufficient for low-concurrency use.
+        Frees 6 GPUs for other models or TP=2×DP=4 (324 tok/s at C=32).
+
+  # --- AMD W7900D RDNA3 (Ollama GGUF) ---
+  # BLOCKED: GPU offload fails — Ollama offloads 0 layers to GPU (100% CPU)
+  # Tested 2026-04-03: Ollama 0.20.0, gemma4:31b (GGUF), 8× W7900D gfx1100
+  #   CPU-only: 1.61 tok/s. Root cause: ggml ROCm lacks GPU kernels for gfx1100

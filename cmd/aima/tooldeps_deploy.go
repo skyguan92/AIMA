@@ -124,6 +124,9 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 				proxy.LabelServedModel: upstreamModel,
 			},
 		}
+		if parameterCount := catalogModelParameterCount(cat, modelName); parameterCount != "" {
+			req.Labels[proxy.LabelParameterCount] = parameterCount
+		}
 		if contextWindow := contextWindowFromResolvedConfig(resolved.Config); contextWindow > 0 {
 			req.Labels["aima.dev/context_window"] = strconv.Itoa(contextWindow)
 		}
@@ -169,6 +172,7 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 					EngineType:          resolved.Engine,
 					Address:             existing.Address,
 					Ready:               existing.Ready,
+					ParameterCount:      firstNonEmpty(existing.Labels[proxy.LabelParameterCount], catalogModelParameterCount(cat, modelName)),
 					ContextWindowTokens: firstPositiveInt(contextWindowFromStatus(existing), contextWindowFromResolvedConfig(resolved.Config)),
 				})
 				runtimeName := activeRt.Name()
@@ -299,6 +303,7 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 			UpstreamModel:       upstreamModel,
 			EngineType:          resolved.Engine,
 			Ready:               false,
+			ParameterCount:      catalogModelParameterCount(cat, modelName),
 			ContextWindowTokens: contextWindowFromResolvedConfig(resolved.Config),
 		})
 		result := map[string]any{
@@ -605,6 +610,27 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 		}
 		return logs, err
 	}
+}
+
+func catalogModelParameterCount(cat *knowledge.Catalog, name string) string {
+	if cat == nil {
+		return ""
+	}
+	for _, model := range cat.ModelAssets {
+		if strings.EqualFold(model.Metadata.Name, name) {
+			return strings.TrimSpace(model.Metadata.ParameterCount)
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func contextWindowFromResolvedConfig(config map[string]any) int {

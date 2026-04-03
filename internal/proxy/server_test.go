@@ -128,6 +128,7 @@ func TestStatusEndpoint(t *testing.T) {
 		EngineType:          "vllm",
 		Address:             "10.42.0.5:8000",
 		Ready:               true,
+		ParameterCount:      "8B",
 		ContextWindowTokens: 16384,
 	})
 
@@ -154,6 +155,9 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 	if got, ok := first["context_window_tokens"].(float64); !ok || got != 16384 {
 		t.Fatalf("context_window_tokens = %v, want 16384", first["context_window_tokens"])
+	}
+	if got := first["parameter_count"]; got != "8B" {
+		t.Fatalf("parameter_count = %v, want 8B", got)
 	}
 }
 
@@ -222,6 +226,42 @@ func TestModelsEndpoint_FiltersNotReady(t *testing.T) {
 	}
 	if resp.Data[0].ID != "ready-model" {
 		t.Errorf("model = %q, want ready-model", resp.Data[0].ID)
+	}
+}
+
+func TestModelsEndpoint_SortsByStrength(t *testing.T) {
+	s := NewServer()
+	s.RegisterBackend("qwen3-8b", &Backend{
+		ModelName:      "qwen3-8b",
+		Address:        "10.0.0.1:8000",
+		Ready:          true,
+		ParameterCount: "8B",
+	})
+	s.RegisterBackend("qwen3.5-122b-a10b", &Backend{
+		ModelName:      "qwen3.5-122b-a10b",
+		Address:        "10.0.0.2:8000",
+		Ready:          true,
+		ParameterCount: "122B",
+	})
+
+	handler := s.handler()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode /v1/models: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(resp.Data))
+	}
+	if resp.Data[0].ID != "qwen3.5-122b-a10b" {
+		t.Fatalf("first model = %q, want qwen3.5-122b-a10b", resp.Data[0].ID)
 	}
 }
 
@@ -859,4 +899,3 @@ func TestBackendWithBasePath(t *testing.T) {
 		t.Errorf("backend received path %q, want '/v1/chat/completions'", receivedPath)
 	}
 }
-

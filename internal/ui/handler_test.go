@@ -189,6 +189,46 @@ func TestRegisterRoutes_IndexIncludesDeploymentStageFeedback(t *testing.T) {
 	}
 }
 
+func TestRegisterRoutes_IndexIncludesDirectModeRoutingAndModelCards(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	for _, token := range []string{
+		"headerModeTone()",
+		"agentModeTone()",
+		"directQuickActions()",
+		"inferDirectCommand(text)",
+		"directMatchMessage(command)",
+		"routeSelectedModel()",
+		"routeSelectedEndpoint()",
+		"routeSelectionLabel()",
+		"configuredAgentModel()",
+		"configuredAgentEndpoint()",
+		"chat-mode-strip",
+		"modelStatusNote(m.name)",
+		"model-entry-meta",
+		"agent_strategy",
+		"selected_model",
+		"configured_model",
+		"direct_mode_ready",
+	} {
+		if !strings.Contains(body, token) {
+			t.Fatalf("body missing %q", token)
+		}
+	}
+}
+
 func TestRegisterRoutes_FaviconAssets(t *testing.T) {
 	t.Parallel()
 

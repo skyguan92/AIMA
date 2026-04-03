@@ -49,10 +49,17 @@ amplifier:
   performance_gain: "High throughput on RDNA3 discrete GPU with ROCm 7.2.1, supports TP up to 8 GPUs"
   notes: |
     Validated on 8× AMD W7900D 48GB (gfx1100, RDNA3).
-    enforce_eager recommended — torch.compile consumes ~1GB extra VRAM per GPU.
-    Qwen3.5 models NOT supported (vLLM 0.16.0 lacks Qwen3_5 arch).
-    Supported: Qwen3, InternVL3, Step3.5, Llama, Mistral, DeepSeek, etc.
+    enforce_eager required — torch.compile/CUDA graphs hang on RDNA3 gfx1100.
+    Base image is vLLM 0.16.0. For newer models (Gemma 4, Qwen3.5), use vLLM 0.19.0:
+      pip install vllm==0.19.0 --extra-index-url https://wheels.vllm.ai/rocm/0.19.0/rocm721/
+      Also requires: transformers>=5.0 (pip install --upgrade transformers)
+    vLLM 0.19.0 adds: Gemma4, Qwen3.5 MoE, and other new architectures.
+    TRITON_ATTN required for models with head_size=512 (e.g. Gemma 4).
+    ROCM_ATTN head_size=512 support pending (vLLM PR #38824).
+    FP8 KV cache supported. FP8 weights NOT supported (requires MI300+ or CUDA SM89+).
+    Supported: Qwen3, Qwen3.5, Gemma 4, InternVL3, Step3.5, Llama, Mistral, DeepSeek, etc.
     InternVL3-78B TP=8: 17.8 tok/s decode (BF16, 512 tokens).
+    Gemma 4 31B TP=4×DP=2: 26.2 tok/s single, 280 tok/s at C=16 (vLLM 0.19.0).
 time_constraints:
   cold_start_s: [60, 300]
   model_switch_s: [60, 300]

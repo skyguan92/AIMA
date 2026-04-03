@@ -255,7 +255,7 @@ body {
 /* Main content area */
 .main {
   display: grid;
-  grid-template-columns: 260px 1fr 300px;
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) minmax(296px, 336px);
   flex: 1;
   overflow: hidden;
   gap: 0;
@@ -383,28 +383,60 @@ body {
   margin-left: auto;
 }
 .model-list-item {
+  display: flex;
+  align-items: flex-start;
   min-width: 0;
+  padding: 10px 0;
 }
-.model-list-item .item-detail {
-  transition: opacity var(--duration-fast) var(--ease-smooth);
+.model-list-item .dot {
+  margin-top: 6px;
 }
-.model-name-wrap {
-  position: relative;
+.model-entry {
+  display: flex;
   flex: 1;
   min-width: 0;
-  padding-right: 74px;
+  flex-direction: column;
+  gap: 8px;
+}
+.model-entry-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.model-entry-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.model-status-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
 }
 .model-name {
-  display: block;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.35;
+  font-weight: 500;
+}
+.model-size {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: right;
 }
 .model-deploy-btn {
-  position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
+  position: static;
   border: 0.5px solid var(--border-medium);
   background: var(--input-bg);
   color: var(--text);
@@ -414,10 +446,8 @@ body {
   line-height: 1;
   font-family: var(--font-sans);
   cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
+  flex-shrink: 0;
   transition:
-    opacity var(--duration-fast) var(--ease-smooth),
     background var(--duration-fast) var(--ease-smooth),
     border-color var(--duration-fast) var(--ease-smooth),
     color var(--duration-fast) var(--ease-smooth);
@@ -428,17 +458,7 @@ body {
 }
 .model-deploy-btn:disabled {
   cursor: default;
-}
-.model-name-wrap:hover .model-deploy-btn,
-.model-name-wrap:focus-within .model-deploy-btn,
-.model-deploy-btn.always-visible,
-.model-deploy-btn.is-busy {
-  opacity: 1;
-  pointer-events: auto;
-}
-.model-name-wrap:hover + .item-detail,
-.model-name-wrap:focus-within + .item-detail {
-  opacity: 0;
+  opacity: 0.55;
 }
 
 /* Fleet device card */
@@ -517,22 +537,43 @@ body {
 .agent-info-row {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 12px;
   padding: 8px 0;
   font-size: 13px;
   border-bottom: 0.5px solid var(--border-light);
 }
 .agent-info-row:last-child { border-bottom: none; }
-.agent-info-label { color: var(--text-tertiary); }
+.agent-info-label {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  padding-top: 1px;
+}
 .agent-info-value {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text);
-  max-width: 130px;
+  max-width: 176px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: right;
+}
+.agent-info-value.wrap {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
+  word-break: break-word;
+  overflow: visible;
+  text-overflow: clip;
+}
+.agent-info-value.wrap-mono {
+  line-height: 1.45;
+  white-space: normal;
+  word-break: break-word;
+  overflow: visible;
+  text-overflow: clip;
 }
 .agent-info-value.clickable {
   color: var(--accent);
@@ -542,6 +583,12 @@ body {
   transition: text-decoration-color var(--duration-fast) var(--ease-smooth);
 }
 .agent-info-value.clickable:hover { text-decoration-color: var(--accent); }
+.agent-status-note {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
 
 /* ===== Center: Agent Chat ===== */
 .center {
@@ -1061,6 +1108,47 @@ body {
 }
 
 /* Chat input - clean minimal style */
+.chat-mode-strip {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 24px 0;
+  flex-shrink: 0;
+}
+.chat-mode-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.chat-mode-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.chat-shortcut-btn {
+  border: 0.5px solid var(--border-medium);
+  background: var(--input-bg);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth);
+}
+.chat-shortcut-btn:hover,
+.chat-shortcut-btn:focus-visible {
+  color: var(--text);
+  background: var(--btn-icon-hover);
+  border-color: var(--accent);
+}
 .chat-input-wrap {
   display: flex;
   align-items: center;
@@ -1606,6 +1694,15 @@ body {
     padding: 10px 12px;
     gap: 8px;
     padding-bottom: calc(10px + env(safe-area-inset-bottom, 0));
+  }
+  .chat-mode-strip {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 10px 12px 0;
+  }
+  .chat-mode-actions {
+    justify-content: flex-start;
   }
   .chat-prompt {
     font-size: 13px;
@@ -2404,16 +2501,21 @@ body {
           <template x-for="(m, mi) in models" :key="m.name || mi">
             <li class="model-list-item">
               <span class="dot" :class="modelDotClass(m.name)"></span>
-              <span class="model-name-wrap">
-                <span class="model-name" x-text="m.name"></span>
-                <button type="button"
-                  class="model-deploy-btn"
-                  :class="modelDeploying[m.name] ? 'is-busy' : ''"
-                  :disabled="modelDeployButtonDisabled(m.name)"
-                  @click="deployModel(m.name)"
-                  x-text="modelDeployButtonLabel(m.name)"></button>
-              </span>
-              <span class="item-detail" x-text="m.size || ''"></span>
+              <div class="model-entry">
+                <div class="model-entry-top">
+                  <span class="model-name" x-text="m.name" :title="m.name"></span>
+                  <span class="model-size" x-text="m.size || ''" :title="m.size || ''"></span>
+                </div>
+                <div class="model-entry-meta">
+                  <span class="model-status-note" x-text="modelStatusNote(m.name)" :title="modelStatusNote(m.name)"></span>
+                  <button type="button"
+                    class="model-deploy-btn"
+                    :class="modelDeploying[m.name] ? 'is-busy' : ''"
+                    :disabled="modelDeployButtonDisabled(m.name)"
+                    @click="deployModel(m.name)"
+                    x-text="modelDeployButtonLabel(m.name)"></button>
+                </div>
+              </div>
             </li>
           </template>
         </ul>
@@ -2428,8 +2530,8 @@ body {
           <div class="agent-meta">
             <div class="agent-name">AIMA Agent</div>
             <div class="agent-mode">
-              <span class="status-dot" :class="currentView === 'support' ? (supportConnected ? 'online' : 'offline') : (agentAvailable ? 'online' : 'offline')" style="width:6px;height:6px"></span>
-              <span x-text="currentView === 'support' ? (supportConnected ? supportEntryLabel() : t('support_connecting')) : (agentAvailable ? t('agent_ready') : t('direct_mode'))"></span>
+              <span class="status-dot" :class="headerModeTone()" style="width:6px;height:6px"></span>
+              <span x-text="headerModeLabel()"></span>
             </div>
           </div>
         </div>
@@ -2492,6 +2594,15 @@ body {
             </div>
           </template>
           <div class="thinking" x-show="thinking">&middot;&middot;&middot;</div>
+        </div>
+
+        <div class="chat-mode-strip" x-show="!agentAvailable && systemOnline">
+          <div class="chat-mode-note" x-text="t('direct_mode_hint')"></div>
+          <div class="chat-mode-actions">
+            <template x-for="action in directQuickActions()" :key="action.command">
+              <button type="button" class="chat-shortcut-btn" @click="sendSuggestedInput(action.command)" x-text="action.label"></button>
+            </template>
+          </div>
         </div>
 
         <div class="chat-input-wrap">
@@ -2640,17 +2751,33 @@ body {
         <div class="agent-info-row">
           <span class="agent-info-label" x-text="t('mode')"></span>
           <span class="agent-info-value">
-            <span class="status-dot" :class="agentAvailable ? 'online' : agentInfo.llmEndpoint ? 'online' : 'offline'" style="width:6px;height:6px;vertical-align:middle"></span>
-            <span x-text="agentInfo.llmEndpoint ? 'L3a Agent' : t('direct_mode')"></span>
+            <span class="status-dot" :class="agentModeTone()" style="width:6px;height:6px;vertical-align:middle"></span>
+            <span x-text="agentModeLabel()"></span>
           </span>
         </div>
         <div class="agent-info-row">
-          <span class="agent-info-label" x-text="t('llm_model')"></span>
-          <span class="agent-info-value" x-text="agentInfo.llmModel || t('not_configured')" :title="agentInfo.llmModel || ''"></span>
+          <span class="agent-info-label" x-text="t('agent_strategy')"></span>
+          <span class="agent-info-value wrap" x-text="agentRouteSummary()"></span>
         </div>
         <div class="agent-info-row">
-          <span class="agent-info-label" x-text="t('llm_endpoint')"></span>
-          <span class="agent-info-value" x-text="agentInfo.llmEndpoint ? truncateUrl(agentInfo.llmEndpoint) : t('not_configured')" :title="agentInfo.llmEndpoint || ''"></span>
+          <span class="agent-info-label" x-text="t('selected_model')"></span>
+          <span class="agent-info-value wrap-mono" x-text="routeSelectedModel() || t('not_configured')" :title="routeSelectedModel() || ''"></span>
+        </div>
+        <div class="agent-info-row">
+          <span class="agent-info-label" x-text="t('selected_endpoint')"></span>
+          <span class="agent-info-value wrap-mono" x-text="routeSelectedEndpoint() ? truncateUrl(routeSelectedEndpoint()) : t('not_configured')" :title="routeSelectedEndpoint() || ''"></span>
+        </div>
+        <div class="agent-info-row">
+          <span class="agent-info-label" x-text="t('selection')"></span>
+          <span class="agent-info-value wrap" x-text="routeSelectionLabel()"></span>
+        </div>
+        <div class="agent-info-row">
+          <span class="agent-info-label" x-text="t('configured_model')"></span>
+          <span class="agent-info-value wrap-mono" x-text="configuredAgentModel() || t('not_configured')" :title="configuredAgentModel() || ''"></span>
+        </div>
+        <div class="agent-info-row">
+          <span class="agent-info-label" x-text="t('configured_endpoint')"></span>
+          <span class="agent-info-value wrap-mono" x-text="configuredAgentEndpoint() ? truncateUrl(configuredAgentEndpoint()) : t('not_configured')" :title="configuredAgentEndpoint() || ''"></span>
         </div>
         <div class="agent-info-row">
           <span class="agent-info-label">OpenClaw</span>
@@ -2667,6 +2794,7 @@ body {
           <span class="agent-info-label" x-text="t('session')"></span>
           <span class="agent-info-value" x-text="sessionId ? sessionId.substring(0, 8) + '...' : t('none')"></span>
         </div>
+        <div class="agent-status-note" x-text="agentStatusHint()"></div>
         <div style="margin-top:8px;text-align:right">
           <span class="agent-info-value clickable" @click="openSettings()" x-text="t('configure')"></span>
         </div>
@@ -2798,11 +2926,34 @@ body {
           <div class="panel-title">&#x25CE; <span x-text="t('agent_status')"></span></div>
           <div class="agent-info-row">
             <span class="agent-info-label" x-text="t('mode')"></span>
-            <span class="agent-info-value" x-text="agentInfo.llmEndpoint ? 'L3a' : t('direct_mode')"></span>
+            <span class="agent-info-value">
+              <span class="status-dot" :class="agentModeTone()" style="width:6px;height:6px;vertical-align:middle"></span>
+              <span x-text="agentModeLabel()"></span>
+            </span>
           </div>
           <div class="agent-info-row">
-            <span class="agent-info-label" x-text="t('llm_model')"></span>
-            <span class="agent-info-value" x-text="agentInfo.llmModel || t('not_configured')"></span>
+            <span class="agent-info-label" x-text="t('agent_strategy')"></span>
+            <span class="agent-info-value wrap" x-text="agentRouteSummary()"></span>
+          </div>
+          <div class="agent-info-row">
+            <span class="agent-info-label" x-text="t('selected_model')"></span>
+            <span class="agent-info-value wrap-mono" x-text="routeSelectedModel() || t('not_configured')"></span>
+          </div>
+          <div class="agent-info-row">
+            <span class="agent-info-label" x-text="t('selected_endpoint')"></span>
+            <span class="agent-info-value wrap-mono" x-text="routeSelectedEndpoint() ? truncateUrl(routeSelectedEndpoint()) : t('not_configured')"></span>
+          </div>
+          <div class="agent-info-row">
+            <span class="agent-info-label" x-text="t('selection')"></span>
+            <span class="agent-info-value wrap" x-text="routeSelectionLabel()"></span>
+          </div>
+          <div class="agent-info-row">
+            <span class="agent-info-label" x-text="t('configured_model')"></span>
+            <span class="agent-info-value wrap-mono" x-text="configuredAgentModel() || t('not_configured')"></span>
+          </div>
+          <div class="agent-info-row">
+            <span class="agent-info-label" x-text="t('configured_endpoint')"></span>
+            <span class="agent-info-value wrap-mono" x-text="configuredAgentEndpoint() ? truncateUrl(configuredAgentEndpoint()) : t('not_configured')"></span>
           </div>
           <div class="agent-info-row">
             <span class="agent-info-label">OpenClaw</span>
@@ -2815,6 +2966,7 @@ body {
             <button type="button" class="support-summary-btn" @click="claimOpenClaw()" :disabled="openclawClaiming" x-text="openclawClaiming ? t('openclaw_claiming') : t('openclaw_claim_action')"></button>
           </div>
           <div class="support-feedback" x-show="openclawClaimError" x-text="openclawClaimError" style="margin-top:8px"></div>
+          <div class="agent-status-note" x-text="agentStatusHint()"></div>
           <div style="margin-top:6px;text-align:right">
             <span class="agent-info-value clickable" @click="openSettings()" x-text="t('configure')"></span>
           </div>
@@ -2844,16 +2996,21 @@ body {
             <template x-for="(m, mi) in models" :key="m.name || mi">
               <li class="model-list-item">
                 <span class="dot" :class="modelDotClass(m.name)"></span>
-                <span class="model-name-wrap">
-                  <span class="model-name" x-text="m.name"></span>
-                  <button type="button"
-                    class="model-deploy-btn always-visible"
-                    :class="modelDeploying[m.name] ? 'is-busy' : ''"
-                    :disabled="modelDeployButtonDisabled(m.name)"
-                    @click="deployModel(m.name)"
-                    x-text="modelDeployButtonLabel(m.name)"></button>
-                </span>
-                <span class="item-detail" x-text="m.size || ''"></span>
+                <div class="model-entry">
+                  <div class="model-entry-top">
+                    <span class="model-name" x-text="m.name" :title="m.name"></span>
+                    <span class="model-size" x-text="m.size || ''" :title="m.size || ''"></span>
+                  </div>
+                  <div class="model-entry-meta">
+                    <span class="model-status-note" x-text="modelStatusNote(m.name)" :title="modelStatusNote(m.name)"></span>
+                    <button type="button"
+                      class="model-deploy-btn"
+                      :class="modelDeploying[m.name] ? 'is-busy' : ''"
+                      :disabled="modelDeployButtonDisabled(m.name)"
+                      @click="deployModel(m.name)"
+                      x-text="modelDeployButtonLabel(m.name)"></button>
+                  </div>
+                </div>
               </li>
             </template>
           </ul>
@@ -3179,9 +3336,21 @@ var I18N = {
     agent_status: 'Agent Status',
     agent_ready: 'L3a Agent Ready',
     direct_mode: 'Direct Mode',
+    direct_mode_ready: 'Direct Command Mode',
     mode: 'Mode',
+    agent_strategy: 'Routing',
     llm_model: 'LLM Model',
     llm_endpoint: 'LLM Endpoint',
+    selected_model: 'Selected Model',
+    selected_endpoint: 'Selected Endpoint',
+    configured_model: 'Configured Model',
+    configured_endpoint: 'Configured Endpoint',
+    selection: 'Selection',
+    route_reason_best_local_model: 'Best local model',
+    route_reason_fleet_fallback: 'Fleet fallback',
+    route_reason_configured_model_endpoint: 'Configured model on endpoint',
+    route_reason_configured_model_endpoint_unverified: 'Configured model on endpoint (unverified)',
+    route_reason_configured_model_fleet: 'Configured model from fleet',
     openclaw_connected: 'Connected',
     openclaw_unconfigured: 'Not linked',
     openclaw_offline: 'Gateway offline',
@@ -3212,8 +3381,16 @@ var I18N = {
     agent: 'Agent',
     dashboard: 'Dashboard',
     welcome: 'Welcome to AIMA. Type a command or ask a question.',
+    direct_mode_hint: 'Direct mode is active. Ask about local models, hardware, deployments, or tap a shortcut.',
+    agent_route_full: 'Natural language + tool calls',
+    agent_route_direct: 'Local commands + intent match',
+    agent_hint_full: 'Natural-language questions use the L3a agent and can invoke MCP tools.',
+    agent_hint_direct: 'Direct mode stays local. Common questions are mapped to status, hardware, models, and deployments.',
+    system_status: 'Status',
+    help: 'Help',
     help_text: 'Direct Mode Commands:\n  status      - System status\n  hardware    - Hardware detection\n  metrics     - Hardware metrics\n  models      - List models\n  engines     - List engines\n  deployments - List deployments\n  fleet       - List fleet devices',
     agent_unavailable: 'Agent not available. Type "help" for direct commands.',
+    direct_match_note: 'Direct mode matched this request to',
     access_auth: 'Access Authentication',
     api_key: 'AIMA API Key',
     api_key_hint: 'Enter API key (optional)',
@@ -3301,9 +3478,21 @@ var I18N = {
     agent_status: 'Agent \u72B6\u6001',
     agent_ready: 'L3a Agent \u5C31\u7EEA',
     direct_mode: '\u76F4\u63A5\u6A21\u5F0F',
+    direct_mode_ready: '\u76F4\u8FDE\u547D\u4EE4\u6A21\u5F0F',
     mode: '\u6A21\u5F0F',
+    agent_strategy: '\u524D\u53F0\u7B56\u7565',
     llm_model: 'LLM \u6A21\u578B',
     llm_endpoint: 'LLM \u7AEF\u70B9',
+    selected_model: '\u5B9E\u9645\u9009\u4E2D\u6A21\u578B',
+    selected_endpoint: '\u5B9E\u9645\u9009\u4E2D\u7AEF\u70B9',
+    configured_model: '\u914D\u7F6E\u6A21\u578B',
+    configured_endpoint: '\u914D\u7F6E\u7AEF\u70B9',
+    selection: '\u9009\u8DEF',
+    route_reason_best_local_model: '\u672C\u673A\u6700\u5F3A\u6A21\u578B',
+    route_reason_fleet_fallback: '\u96C6\u7FA4\u56DE\u9000',
+    route_reason_configured_model_endpoint: '\u7AEF\u70B9\u4E0A\u7684\u914D\u7F6E\u6A21\u578B',
+    route_reason_configured_model_endpoint_unverified: '\u7AEF\u70B9\u4E0A\u7684\u914D\u7F6E\u6A21\u578B\uff08\u672A\u6821\u9A8C\uff09',
+    route_reason_configured_model_fleet: '\u96C6\u7FA4\u4E2D\u7684\u914D\u7F6E\u6A21\u578B',
     openclaw_connected: '\u5DF2\u8054\u901A',
     openclaw_unconfigured: '\u672A\u63A5\u5165',
     openclaw_offline: '\u7F51\u5173\u79BB\u7EBF',
@@ -3334,8 +3523,16 @@ var I18N = {
     agent: 'Agent',
     dashboard: '\u4EEA\u8868\u76D8',
     welcome: '\u6B22\u8FCE\u4F7F\u7528 AIMA\u3002\u8F93\u5165\u547D\u4EE4\u6216\u63D0\u95EE\u3002',
+    direct_mode_hint: '\u5F53\u524D\u662F\u76F4\u8FDE\u6A21\u5F0F\uff0c\u53EF\u4EE5\u76F4\u63A5\u95EE\u672C\u673A\u6A21\u578B\u3001\u786C\u4EF6\u3001\u90E8\u7F72\uff0c\u4E5F\u53EF\u4EE5\u70B9\u4E0B\u9762\u7684\u5FEB\u6377\u5165\u53E3\u3002',
+    agent_route_full: '\u81EA\u7136\u8BED\u8A00 + \u5DE5\u5177\u8C03\u7528',
+    agent_route_direct: '\u672C\u5730\u547D\u4EE4 + \u5E38\u89C1\u610F\u56FE\u5339\u914D',
+    agent_hint_full: '\u81EA\u7136\u8BED\u8A00\u95EE\u9898\u4F1A\u8D70 L3a Agent\uff0c\u5E76\u53EF\u8C03 MCP \u5DE5\u5177\u3002',
+    agent_hint_direct: '\u76F4\u8FDE\u6A21\u5F0F\u53EA\u505A\u672C\u5730\u67E5\u8BE2\u3002\u5E38\u89C1\u95EE\u9898\u4F1A\u81EA\u52A8\u5339\u914D\u5230 status\u3001hardware\u3001models\u3001deployments\u3002',
+    system_status: '\u7CFB\u7EDF\u72B6\u6001',
+    help: '\u5E2E\u52A9',
     help_text: '\u76F4\u63A5\u6A21\u5F0F\u547D\u4EE4:\n  status      - \u7CFB\u7EDF\u72B6\u6001\n  hardware    - \u786C\u4EF6\u68C0\u6D4B\n  metrics     - \u786C\u4EF6\u6307\u6807\n  models      - \u6A21\u578B\u5217\u8868\n  engines     - \u5F15\u64CE\u5217\u8868\n  deployments - \u90E8\u7F72\u5217\u8868\n  fleet       - \u8BBE\u5907\u5217\u8868',
     agent_unavailable: 'Agent \u4E0D\u53EF\u7528\u3002\u8F93\u5165 "help" \u67E5\u770B\u76F4\u63A5\u547D\u4EE4\u3002',
+    direct_match_note: '\u76F4\u8FDE\u6A21\u5F0F\u5DF2\u5C06\u672C\u6B21\u95EE\u9898\u6620\u5C04\u4E3A',
     access_auth: '\u8BBF\u95EE\u8BA4\u8BC1',
     api_key: 'AIMA API Key',
     api_key_hint: '\u8F93\u5165 API Key\uFF08\u53EF\u9009\uFF09',
@@ -3925,7 +4122,8 @@ function aimaApp() {
       llmEndpoint: '',
       llmModel: '',
       llmUserAgent: '',
-      agentAvailableFromStatus: false
+      agentAvailableFromStatus: false,
+      llmRoute: null
     },
 
     // Dashboard data
@@ -5130,6 +5328,17 @@ function aimaApp() {
       return dep ? (dep.phase === 'starting' || dep.phase === 'running') : false;
     },
 
+    modelStatusNote(modelName) {
+      if (this.modelDeploying[modelName]) return this.t('deploying_label');
+      const dep = this.deploymentForModel(modelName);
+      if (!dep) return this.lang === 'zh' ? '仅本地资产' : 'Local only';
+      if (dep.phase === 'failed') return dep.failure_detail || dep.detail || this.t('retry_label');
+      if (dep.phase === 'running' && dep.ready) {
+        return dep.address ? (this.t('running_label') + ' · ' + dep.address) : this.t('running_label');
+      }
+      return dep.startup_message || dep.startup_phase || dep.phase || this.t('deploying_label');
+    },
+
     async deployModel(modelName) {
       if (!modelName || this.modelDeployButtonDisabled(modelName)) return;
 
@@ -5262,8 +5471,10 @@ function aimaApp() {
       const statusData = await this.callTool('agent.status');
       if (statusData && !statusData._err) {
         this.agentInfo.agentAvailableFromStatus = statusData.agent_available === true;
+        this.agentInfo.llmRoute = statusData.llm_route && typeof statusData.llm_route === 'object' ? statusData.llm_route : null;
       } else {
         this.agentInfo.agentAvailableFromStatus = false;
+        this.agentInfo.llmRoute = null;
       }
 
       // Fetch LLM config from system.config
@@ -5280,6 +5491,122 @@ function aimaApp() {
       if (!this.agentAvailable) this._agentConfirmed = false;
     },
     _agentConfirmed: false,
+
+    headerModeTone() {
+      if (this.currentView === 'support') {
+        if (this.supportConnected) return 'online';
+        return this.systemOnline ? 'warn' : 'offline';
+      }
+      if (!this.systemOnline) return 'offline';
+      return this.agentAvailable ? 'online' : 'warn';
+    },
+
+    headerModeLabel() {
+      if (this.currentView === 'support') {
+        return this.supportConnected ? this.supportEntryLabel() : this.t('support_connecting');
+      }
+      if (!this.systemOnline) return this.t('unavailable');
+      return this.agentAvailable ? this.t('agent_ready') : this.t('direct_mode_ready');
+    },
+
+    agentModeTone() {
+      if (!this.systemOnline) return 'offline';
+      return this.agentAvailable ? 'online' : 'warn';
+    },
+
+    agentModeLabel() {
+      if (!this.systemOnline) return this.t('unavailable');
+      return this.agentAvailable ? 'L3a Agent' : this.t('direct_mode_ready');
+    },
+
+    routeSelectedModel() {
+      const route = this.agentInfo.llmRoute || {};
+      const selected = route.selected || {};
+      return selected.model || '';
+    },
+
+    routeSelectedEndpoint() {
+      const route = this.agentInfo.llmRoute || {};
+      const selected = route.selected || {};
+      return selected.base_url || '';
+    },
+
+    configuredAgentModel() {
+      const route = this.agentInfo.llmRoute || {};
+      return route.configured_model || this.agentInfo.llmModel || '';
+    },
+
+    configuredAgentEndpoint() {
+      const route = this.agentInfo.llmRoute || {};
+      return route.configured_endpoint || this.agentInfo.llmEndpoint || '';
+    },
+
+    routeSelectionLabel() {
+      const route = this.agentInfo.llmRoute || {};
+      const reason = String(route.selection_reason || '').trim();
+      if (!reason) return this.agentAvailable ? this.t('healthy') : this.t('not_configured');
+      const key = 'route_reason_' + reason;
+      const label = this.t(key);
+      return label === key ? reason.replace(/_/g, ' ') : label;
+    },
+
+    agentRouteSummary() {
+      return this.agentAvailable ? this.t('agent_route_full') : this.t('agent_route_direct');
+    },
+
+    agentStatusHint() {
+      if (!this.systemOnline) return this.t('connecting');
+      return this.agentAvailable ? this.t('agent_hint_full') : this.t('agent_hint_direct');
+    },
+
+    directQuickActions() {
+      return [
+        { command: 'status', label: this.t('system_status') },
+        { command: 'models', label: this.t('models') },
+        { command: 'hardware', label: this.t('hardware') },
+        { command: 'deployments', label: this.t('deployments') }
+      ];
+    },
+
+    sendSuggestedInput(command) {
+      if (!command || this.thinking) return;
+      this.input = command;
+      this.send();
+    },
+
+    directMatchMessage(command) {
+      return this.t('direct_match_note') + ' `' + command + '`.';
+    },
+
+    inferDirectCommand(text) {
+      const raw = String(text || '').trim();
+      if (!raw) return '';
+
+      const rules = [
+        { command: 'help', patterns: [/\bhelp\b/i, /\bcommands?\b/i, /\bhow\b.*\b(use|work)\b/i, /\bwhat can you do\b/i, /帮助|命令|怎么用|怎么操作|如何使用/] },
+        { command: 'models', patterns: [/\bmodels?\b/i, /模型/] },
+        { command: 'deployments', patterns: [/\bdeploy(ment|ments)?\b/i, /\brunning\b/i, /部署|运行中|服务列表/] },
+        { command: 'metrics', patterns: [/\bmetrics?\b/i, /\butili[sz]ation\b/i, /\btemperature\b/i, /指标|利用率|温度|负载/] },
+        { command: 'hardware', patterns: [/\bhardware\b/i, /\bgpu\b/i, /\bcpu\b/i, /\bvram\b/i, /\bram\b/i, /硬件|显卡|显存|内存|算力/] },
+        { command: 'engines', patterns: [/\bengines?\b/i, /引擎|推理框架/] },
+        { command: 'fleet', patterns: [/\bfleet\b/i, /\bdevices?\b/i, /\bnodes?\b/i, /设备|节点|机器列表/] },
+        { command: 'status', patterns: [/\bstatus\b/i, /\boverview\b/i, /\bsystem\b/i, /状态|概况|总览/] }
+      ];
+
+      let best = '';
+      let bestScore = 0;
+      for (const rule of rules) {
+        let score = 0;
+        for (const pattern of rule.patterns) {
+          if (pattern.test(raw)) score += 1;
+        }
+        if (score > bestScore) {
+          best = rule.command;
+          bestScore = score;
+        }
+      }
+      return bestScore > 0 ? best : '';
+    },
 
     // ── Chat ──
 
@@ -5788,15 +6115,20 @@ function aimaApp() {
       };
 
       const lower = text.toLowerCase().trim();
+      const exactCommand = toolMap[lower] ? lower : '';
+      const directCommand = exactCommand || (lower === '?' ? 'help' : this.inferDirectCommand(text));
 
-      if (lower === 'help' || lower === '?') {
+      if (directCommand === 'help' || lower === 'help' || lower === '?') {
         this.messages.push({ role: 'ai', text: this.t('help_text') });
         this.scrollChat();
         return;
       }
 
-      if (toolMap[lower]) {
-        const toolName = toolMap[lower];
+      if (directCommand && toolMap[directCommand]) {
+        if (!exactCommand) {
+          this.messages.push({ role: 'system', text: this.directMatchMessage(directCommand) });
+        }
+        const toolName = toolMap[directCommand];
         const toolIndex = this.messages.length;
 
         // Show tool call
@@ -5830,7 +6162,7 @@ function aimaApp() {
         return;
       }
 
-      this.messages.push({ role: 'error', text: this.t('agent_unavailable') });
+      this.messages.push({ role: 'error', text: this.t('agent_unavailable') + '\n' + this.t('direct_mode_hint') });
     },
 
     // ── CLI Mode (/cli prefix) ──
@@ -6047,6 +6379,7 @@ function aimaApp() {
 
       this.agentInfo.llmEndpoint = '';
       this.agentInfo.llmModel = '';
+      this.agentInfo.llmRoute = null;
       this.settingsFeedback = { type: 'success', text: this.t('settings_cleared') };
       setTimeout(() => { this.settingsFeedback = null; }, 2000);
     },

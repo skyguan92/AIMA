@@ -42,6 +42,7 @@ func SyncBackends(s *Server, deployments []*DeploymentInfo) {
 				EngineType:          d.Labels["aima.dev/engine"],
 				Address:             d.Address,
 				Ready:               true,
+				ParameterCount:      parameterCountFromLabels(d.Labels),
 				ContextWindowTokens: contextWindowFromLabels(d.Labels),
 			})
 			continue
@@ -66,6 +67,7 @@ func SyncBackends(s *Server, deployments []*DeploymentInfo) {
 				BasePath:            b.BasePath,
 				Ready:               false,
 				Remote:              b.Remote,
+				ParameterCount:      preserveParameterCount(b.ParameterCount, d.Labels),
 				ContextWindowTokens: preserveContextWindow(b.ContextWindowTokens, d.Labels),
 			})
 		} else {
@@ -74,6 +76,7 @@ func SyncBackends(s *Server, deployments []*DeploymentInfo) {
 				UpstreamModel:       upstreamModel,
 				EngineType:          d.Labels["aima.dev/engine"],
 				Ready:               false,
+				ParameterCount:      parameterCountFromLabels(d.Labels),
 				ContextWindowTokens: contextWindowFromLabels(d.Labels),
 			})
 		}
@@ -108,6 +111,20 @@ func preserveContextWindow(existing int, labels map[string]string) int {
 		return value
 	}
 	return existing
+}
+
+func parameterCountFromLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(labels[LabelParameterCount])
+}
+
+func preserveParameterCount(existing string, labels map[string]string) string {
+	if value := parameterCountFromLabels(labels); value != "" {
+		return value
+	}
+	return strings.TrimSpace(existing)
 }
 
 // StartSyncLoop runs SyncBackends immediately and then every interval until ctx is cancelled.

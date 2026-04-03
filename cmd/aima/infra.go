@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -59,6 +60,25 @@ func agentAvailable(ctx context.Context, llmClient *agent.OpenAIClient) bool {
 		return false
 	}
 	return llmClient.Available(ctx)
+}
+
+func buildAgentStatusPayload(ctx context.Context, llmClient *agent.OpenAIClient, toolMode string, activeRuns int) (json.RawMessage, error) {
+	payload := map[string]any{
+		"agent_available":         false,
+		"agent_tool_mode":         toolMode,
+		"active_exploration_runs": activeRuns,
+	}
+	if llmClient == nil {
+		payload["llm_route"] = agent.RouteStatus{Error: "no LLM client configured"}
+		return json.Marshal(payload)
+	}
+
+	statusCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	route := llmClient.RouteStatus(statusCtx)
+	payload["agent_available"] = route.Available
+	payload["llm_route"] = route
+	return json.Marshal(payload)
 }
 
 func loadLLMSettings(ctx context.Context, db *state.DB) llmSettings {
@@ -172,17 +192,36 @@ func discoverFleetLLM(ctx context.Context, apiKey string) []agent.FleetEndpoint 
 		if proxy.IsLocalIP(addr) {
 			continue
 		}
-		models := proxy.QueryRemoteModels(ctx, addr, svc.Port, apiKey)
-		if len(models) == 0 {
+		models := proxy.QueryRemoteStatus(ctx, addr, svc.Port, apiKey)
+		bestModel, ok := proxy.BestAdvertisedModel(models)
+		if !ok || strings.TrimSpace(bestModel.ID) == "" {
 			continue
 		}
 		baseURL := fmt.Sprintf("http://%s:%d/v1", addr, svc.Port)
 		slog.Debug("fleet LLM discovery: candidate", "addr", baseURL, "models", models)
 		endpoints = append(endpoints, agent.FleetEndpoint{
-			BaseURL: baseURL,
-			Model:   models[0],
+			BaseURL:             baseURL,
+			Model:               bestModel.ID,
+			ParameterCount:      bestModel.ParameterCount,
+			ContextWindowTokens: bestModel.ContextWindowTokens,
 		})
 	}
+	sort.SliceStable(endpoints, func(i, j int) bool {
+		return proxy.BetterAdvertisedModel(
+			proxy.AdvertisedModel{
+				ID:                  endpoints[i].Model,
+				ParameterCount:      endpoints[i].ParameterCount,
+				ContextWindowTokens: endpoints[i].ContextWindowTokens,
+				Remote:              true,
+			},
+			proxy.AdvertisedModel{
+				ID:                  endpoints[j].Model,
+				ParameterCount:      endpoints[j].ParameterCount,
+				ContextWindowTokens: endpoints[j].ContextWindowTokens,
+				Remote:              true,
+			},
+		)
+	})
 	return endpoints
 }
 

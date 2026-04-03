@@ -156,11 +156,7 @@ func run() error {
 		if explorationMgr != nil {
 			activeRuns = explorationMgr.ActiveCount()
 		}
-		return json.Marshal(map[string]any{
-			"agent_available":         agentAvailable(ctx, llmClient),
-			"agent_tool_mode":         goAgent.ToolMode(),
-			"active_exploration_runs": activeRuns,
-		})
+		return buildAgentStatusPayload(ctx, llmClient, goAgent.ToolMode(), activeRuns)
 	}
 	deps.AgentGuide = func(ctx context.Context) (json.RawMessage, error) {
 		guide, err := catalog.FS.ReadFile("agent-guide.md")
@@ -470,6 +466,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	dlTracker := NewDownloadTracker(filepath.Join(dataDir, "downloads"))
 
 	scanEnginesCore := func(ctx context.Context, runtimeFilter string, autoImport bool) (json.RawMessage, error) {
+		hwInfo := buildHardwareInfo(ctx, cat, rt.Name())
 		assetPatterns := make(map[string][]string)
 		binaryAssets := make(map[string]string)
 		// Generic interpreters — not engine binaries, skip when inferring from startup.command[0].
@@ -523,6 +520,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 		if err != nil {
 			return nil, err
 		}
+		images = dedupeScannedEngines(images, preferredContainerImagesByTypeTag(cat, hwInfo))
 		filtered := make([]*engine.EngineImage, 0)
 		var scannedIDs []string
 		for _, img := range images {

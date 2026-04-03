@@ -10,15 +10,20 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jguan/aima/internal/proxy"
 )
 
 // FleetEndpoint represents a discovered remote LLM endpoint.
 type FleetEndpoint struct {
-	BaseURL string // e.g., "http://<REDACTED_IP>:6188/v1"
-	Model   string // first model ID
+	BaseURL             string // e.g., "http://<REDACTED_IP>:6188/v1"
+	Model               string // selected model ID
+	ParameterCount      string
+	ContextWindowTokens int
 }
 
 // DiscoverFunc discovers fleet LLM endpoints via mDNS.
@@ -37,6 +42,7 @@ type OpenAIClient struct {
 
 	manageTimeout bool
 	mu            sync.RWMutex
+	cachedBaseURL string
 	cachedModel   string
 	modelCachedAt time.Time
 }
@@ -128,6 +134,9 @@ func (c *OpenAIClient) SetEndpoint(baseURL string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.baseURL = baseURL
+	c.cachedBaseURL = ""
+	c.cachedModel = ""
+	c.modelCachedAt = time.Time{}
 	if c.manageTimeout && c.httpClient != nil {
 		c.httpClient.Timeout = defaultRequestTimeout(baseURL)
 	}
@@ -138,6 +147,7 @@ func (c *OpenAIClient) SetModel(model string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.model = model
+	c.cachedBaseURL = ""
 	c.cachedModel = ""
 	c.modelCachedAt = time.Time{}
 }
@@ -183,16 +193,17 @@ func (c *OpenAIClient) SetRequestTimeout(timeout time.Duration) {
 func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
 	// Snapshot mutable fields under read lock (don't hold during I/O)
 	c.mu.RLock()
-	baseURL := c.baseURL
 	apiKey := c.apiKey
 	userAgent := c.userAgent
 	extraParams := c.extraParams
 	c.mu.RUnlock()
 
-	model, err := c.resolveModel(ctx)
+	target, err := c.resolveTarget(ctx)
 	if err != nil {
 		return nil, err
 	}
+	baseURL := target.BaseURL
+	model := target.Model
 
 	wireMessages := make([]chatMessage, len(messages))
 	for i, m := range messages {
@@ -284,10 +295,7 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 	if httpResp.StatusCode != http.StatusOK {
 		// Invalidate cached model on 404/503 so the next call re-resolves
 		if httpResp.StatusCode == http.StatusNotFound || httpResp.StatusCode == http.StatusServiceUnavailable {
-			c.mu.Lock()
-			c.cachedModel = ""
-			c.modelCachedAt = time.Time{}
-			c.mu.Unlock()
+			c.invalidateTargetCache()
 		}
 		return nil, fmt.Errorf("chat completions (POST %s, model=%s): HTTP %d: %s", url, model, httpResp.StatusCode, respBody)
 	}
@@ -398,90 +406,124 @@ func (c *OpenAIClient) resolveLocalContextWindow(ctx context.Context, baseURL, m
 	return 0, false
 }
 
+type resolvedTarget struct {
+	BaseURL string
+	Model   string
+}
+
+// RouteCandidate describes a single model candidate considered for agent routing.
+type RouteCandidate struct {
+	BaseURL             string `json:"base_url"`
+	Model               string `json:"model"`
+	ParameterCount      string `json:"parameter_count,omitempty"`
+	ContextWindowTokens int    `json:"context_window_tokens,omitempty"`
+	EndpointIsLoopback  bool   `json:"endpoint_is_loopback"`
+	FromFleet           bool   `json:"from_fleet,omitempty"`
+}
+
+// RouteProbe reports what the configured endpoint advertised during probing.
+type RouteProbe struct {
+	BaseURL            string           `json:"base_url"`
+	EndpointIsLoopback bool             `json:"endpoint_is_loopback"`
+	Available          bool             `json:"available"`
+	Models             []RouteCandidate `json:"models,omitempty"`
+	Error              string           `json:"error,omitempty"`
+}
+
+// RouteStatus captures the current LLM routing decision and supporting evidence.
+type RouteStatus struct {
+	Available                  bool             `json:"available"`
+	ConfiguredEndpoint         string           `json:"configured_endpoint"`
+	ConfiguredEndpointLoopback bool             `json:"configured_endpoint_is_loopback"`
+	ConfiguredModel            string           `json:"configured_model,omitempty"`
+	ConfiguredEndpointProbe    RouteProbe       `json:"configured_endpoint_probe"`
+	FleetCandidates            []RouteCandidate `json:"fleet_candidates,omitempty"`
+	Selected                   *RouteCandidate  `json:"selected,omitempty"`
+	SelectionReason            string           `json:"selection_reason,omitempty"`
+	Error                      string           `json:"error,omitempty"`
+}
+
 func (c *OpenAIClient) resolveModel(ctx context.Context) (string, error) {
-	// Snapshot mutable fields under read lock
+	target, err := c.resolveTarget(ctx)
+	if err != nil {
+		return "", err
+	}
+	return target.Model, nil
+}
+
+func (c *OpenAIClient) resolveTarget(ctx context.Context) (resolvedTarget, error) {
 	c.mu.RLock()
+	baseURL := c.baseURL
 	model := c.model
-	cached := c.cachedModel
+	cachedBaseURL := c.cachedBaseURL
+	cachedModel := c.cachedModel
 	cachedAt := c.modelCachedAt
 	c.mu.RUnlock()
 
-	if cached != "" && time.Since(cachedAt) < modelCacheTTL {
-		return cached, nil
+	if cachedModel != "" && time.Since(cachedAt) < modelCacheTTL {
+		if cachedBaseURL == "" {
+			cachedBaseURL = baseURL
+		}
+		return resolvedTarget{BaseURL: cachedBaseURL, Model: cachedModel}, nil
 	}
 
 	if model != "" {
-		models, err := c.fetchModels(ctx)
+		target, ok, err := c.resolveConfiguredTarget(ctx, baseURL, model)
+		if err == nil && ok {
+			c.cacheTarget(target)
+			return target, nil
+		}
+		if fleetTarget, found := c.discoverFleetTarget(ctx, model); found {
+			c.cacheTarget(fleetTarget)
+			return fleetTarget, nil
+		}
 		if err != nil {
-			return model, nil
+			return resolvedTarget{}, fmt.Errorf("resolve configured model %q at %s: %w", model, baseURL, err)
 		}
-		if matched := matchConfiguredModel(models, model); matched != "" {
-			c.mu.Lock()
-			c.cachedModel = matched
-			c.modelCachedAt = time.Now()
-			c.mu.Unlock()
-			return matched, nil
-		}
-		return model, nil
+		return resolvedTarget{}, fmt.Errorf("configured model %q not available at %s/models", model, baseURL)
 	}
 
-	models, err := c.fetchModels(ctx)
+	target, ok, err := c.bestTargetFromEndpoint(ctx, baseURL)
+	if err == nil && ok {
+		c.cacheTarget(target)
+		return target, nil
+	}
+	if fleetTarget, found := c.discoverFleetTarget(ctx, ""); found {
+		c.cacheTarget(fleetTarget)
+		return fleetTarget, nil
+	}
 	if err != nil {
-		// Local endpoint unreachable — try fleet discovery
-		if ep, fErr := c.discoverFleetEndpoint(ctx); fErr == nil {
-			return ep.Model, nil
-		}
-		return "", fmt.Errorf("fetch models: %w", err)
+		return resolvedTarget{}, fmt.Errorf("fetch models: %w", err)
 	}
-	if len(models) == 0 {
-		// Local has no models — try fleet discovery
-		if ep, fErr := c.discoverFleetEndpoint(ctx); fErr == nil {
-			return ep.Model, nil
-		}
-		c.mu.RLock()
-		baseURL := c.baseURL
-		c.mu.RUnlock()
-		return "", fmt.Errorf("no models available at %s/models", baseURL)
-	}
-
-	// Update cache under write lock
-	c.mu.Lock()
-	c.cachedModel = models[0].ID
-	c.modelCachedAt = time.Now()
-	result := c.cachedModel
-	c.mu.Unlock()
-	return result, nil
+	return resolvedTarget{}, fmt.Errorf("no models available at %s/models", baseURL)
 }
 
-// discoverFleetEndpoint tries to find a remote LLM endpoint via fleet mDNS discovery.
-// On success, hot-swaps baseURL and caches the discovered model.
-func (c *OpenAIClient) discoverFleetEndpoint(ctx context.Context) (*FleetEndpoint, error) {
+func (c *OpenAIClient) discoverFleetTarget(ctx context.Context, requestedModel string) (resolvedTarget, bool) {
 	c.mu.RLock()
 	discoverFn := c.discoverFn
 	apiKey := c.apiKey
 	c.mu.RUnlock()
 
 	if discoverFn == nil {
-		return nil, fmt.Errorf("no discover function configured")
+		return resolvedTarget{}, false
 	}
 
 	slog.Debug("local LLM endpoint has no models, trying fleet discovery")
 	endpoints := discoverFn(ctx, apiKey)
 	if len(endpoints) == 0 {
-		return nil, fmt.Errorf("no fleet endpoints with models found")
+		return resolvedTarget{}, false
 	}
 
-	ep := &endpoints[0]
+	if requestedModel != "" {
+		if matched := matchFleetEndpoint(endpoints, requestedModel); matched != nil {
+			slog.Info("discovered fleet LLM endpoint", "baseURL", matched.BaseURL, "model", matched.Model)
+			return resolvedTarget{BaseURL: matched.BaseURL, Model: matched.Model}, true
+		}
+	}
+
+	ep := endpoints[0]
 	slog.Info("discovered fleet LLM endpoint", "baseURL", ep.BaseURL, "model", ep.Model)
-
-	// Hot-swap to discovered endpoint
-	c.mu.Lock()
-	c.baseURL = ep.BaseURL
-	c.cachedModel = ep.Model
-	c.modelCachedAt = time.Now()
-	c.mu.Unlock()
-
-	return ep, nil
+	return resolvedTarget{BaseURL: ep.BaseURL, Model: ep.Model}, true
 }
 
 // Available checks if the LLM endpoint is reachable.
@@ -489,23 +531,54 @@ func (c *OpenAIClient) Available(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	c.mu.RLock()
-	model := c.model
-	c.mu.RUnlock()
-
-	if model != "" {
-		models, err := c.fetchModels(ctx)
-		if err != nil {
-			return false
-		}
-		return matchConfiguredModel(models, model) != ""
-	}
-
-	_, err := c.resolveModel(ctx)
+	_, err := c.resolveTarget(ctx)
 	return err == nil
 }
 
-func matchConfiguredModel(models []modelData, requested string) string {
+// RouteStatus returns a diagnostic snapshot of the current LLM routing decision.
+// It probes the configured endpoint and fleet fallback candidates without mutating
+// the configured endpoint.
+func (c *OpenAIClient) RouteStatus(ctx context.Context) RouteStatus {
+	c.mu.RLock()
+	baseURL := c.baseURL
+	model := c.model
+	c.mu.RUnlock()
+
+	status := RouteStatus{
+		ConfiguredEndpoint:         baseURL,
+		ConfiguredEndpointLoopback: IsLoopbackEndpoint(baseURL),
+		ConfiguredModel:            model,
+		ConfiguredEndpointProbe: RouteProbe{
+			BaseURL:            baseURL,
+			EndpointIsLoopback: IsLoopbackEndpoint(baseURL),
+		},
+	}
+
+	localModels, localErr := c.fetchAdvertisedModels(ctx, baseURL)
+	if localErr != nil {
+		status.ConfiguredEndpointProbe.Error = localErr.Error()
+	} else {
+		status.ConfiguredEndpointProbe.Available = true
+	}
+	status.ConfiguredEndpointProbe.Models = routeCandidatesFromAdvertised(baseURL, false, localModels)
+
+	fleetCandidates := c.discoverFleetCandidates(ctx)
+	status.FleetCandidates = fleetCandidates
+
+	selected, reason, err := selectRouteStatus(baseURL, model, localModels, localErr, fleetCandidates)
+	if selected != nil {
+		status.Available = true
+		status.Selected = selected
+		status.SelectionReason = reason
+		return status
+	}
+	if err != nil {
+		status.Error = err.Error()
+	}
+	return status
+}
+
+func matchConfiguredAdvertisedModel(models []proxy.AdvertisedModel, requested string) string {
 	requested = strings.TrimSpace(requested)
 	if requested == "" {
 		return ""
@@ -523,9 +596,139 @@ func matchConfiguredModel(models []modelData, requested string) string {
 	return ""
 }
 
-func (c *OpenAIClient) fetchModels(ctx context.Context) ([]modelData, error) {
+func matchFleetEndpoint(endpoints []FleetEndpoint, requested string) *FleetEndpoint {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return nil
+	}
+	for i := range endpoints {
+		if endpoints[i].Model == requested {
+			return &endpoints[i]
+		}
+	}
+	for i := range endpoints {
+		if strings.EqualFold(endpoints[i].Model, requested) {
+			return &endpoints[i]
+		}
+	}
+	return nil
+}
+
+func (c *OpenAIClient) discoverFleetCandidates(ctx context.Context) []RouteCandidate {
 	c.mu.RLock()
-	baseURL := c.baseURL
+	discoverFn := c.discoverFn
+	apiKey := c.apiKey
+	c.mu.RUnlock()
+
+	if discoverFn == nil {
+		return nil
+	}
+	endpoints := discoverFn(ctx, apiKey)
+	candidates := make([]RouteCandidate, 0, len(endpoints))
+	for _, ep := range endpoints {
+		if strings.TrimSpace(ep.BaseURL) == "" || strings.TrimSpace(ep.Model) == "" {
+			continue
+		}
+		candidates = append(candidates, RouteCandidate{
+			BaseURL:             ep.BaseURL,
+			Model:               ep.Model,
+			ParameterCount:      strings.TrimSpace(ep.ParameterCount),
+			ContextWindowTokens: ep.ContextWindowTokens,
+			EndpointIsLoopback:  IsLoopbackEndpoint(ep.BaseURL),
+			FromFleet:           true,
+		})
+	}
+	sortRouteCandidates(candidates)
+	return candidates
+}
+
+func routeCandidatesFromAdvertised(baseURL string, fromFleet bool, models []proxy.AdvertisedModel) []RouteCandidate {
+	candidates := make([]RouteCandidate, 0, len(models))
+	for _, model := range models {
+		if strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		candidates = append(candidates, RouteCandidate{
+			BaseURL:             baseURL,
+			Model:               model.ID,
+			ParameterCount:      strings.TrimSpace(model.ParameterCount),
+			ContextWindowTokens: model.ContextWindowTokens,
+			EndpointIsLoopback:  IsLoopbackEndpoint(baseURL),
+			FromFleet:           fromFleet,
+		})
+	}
+	sortRouteCandidates(candidates)
+	return candidates
+}
+
+func sortRouteCandidates(candidates []RouteCandidate) {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return betterRouteCandidate(candidates[i], candidates[j])
+	})
+}
+
+func betterRouteCandidate(a, b RouteCandidate) bool {
+	return proxy.BetterAdvertisedModel(
+		proxy.AdvertisedModel{
+			ID:                  a.Model,
+			ParameterCount:      a.ParameterCount,
+			ContextWindowTokens: a.ContextWindowTokens,
+			Remote:              !a.EndpointIsLoopback,
+		},
+		proxy.AdvertisedModel{
+			ID:                  b.Model,
+			ParameterCount:      b.ParameterCount,
+			ContextWindowTokens: b.ContextWindowTokens,
+			Remote:              !b.EndpointIsLoopback,
+		},
+	)
+}
+
+func selectRouteStatus(baseURL, configuredModel string, localModels []proxy.AdvertisedModel, localErr error, fleetCandidates []RouteCandidate) (*RouteCandidate, string, error) {
+	if strings.TrimSpace(configuredModel) != "" {
+		if discoveryUnsupported(localErr) || (localErr == nil && len(localModels) == 0) {
+			return &RouteCandidate{
+				BaseURL:            baseURL,
+				Model:              configuredModel,
+				EndpointIsLoopback: IsLoopbackEndpoint(baseURL),
+			}, "configured_model_endpoint_unverified", nil
+		}
+		for _, model := range localModels {
+			if matched := matchConfiguredAdvertisedModel([]proxy.AdvertisedModel{model}, configuredModel); matched != "" {
+				candidate := routeCandidatesFromAdvertised(baseURL, false, []proxy.AdvertisedModel{model})[0]
+				return &candidate, "configured_model_endpoint", nil
+			}
+		}
+		for _, candidate := range fleetCandidates {
+			if strings.EqualFold(candidate.Model, configuredModel) {
+				cp := candidate
+				return &cp, "configured_model_fleet", nil
+			}
+		}
+		if localErr != nil {
+			return nil, "", fmt.Errorf("resolve configured model %q at %s: %w", configuredModel, baseURL, localErr)
+		}
+		return nil, "", fmt.Errorf("configured model %q not available at %s/models", configuredModel, baseURL)
+	}
+
+	if len(localModels) > 0 {
+		candidates := routeCandidatesFromAdvertised(baseURL, false, localModels)
+		if len(candidates) > 0 {
+			return &candidates[0], "best_local_model", nil
+		}
+	}
+	if len(fleetCandidates) > 0 {
+		cp := fleetCandidates[0]
+		return &cp, "fleet_fallback", nil
+	}
+	if localErr != nil {
+		return nil, "", fmt.Errorf("fetch models: %w", localErr)
+	}
+	return nil, "", fmt.Errorf("no models available at %s/models", baseURL)
+}
+
+func (c *OpenAIClient) fetchModelsAt(ctx context.Context, baseURL string) ([]modelData, error) {
+	c.mu.RLock()
 	apiKey := c.apiKey
 	userAgent := c.userAgent
 	c.mu.RUnlock()
@@ -560,6 +763,144 @@ func (c *OpenAIClient) fetchModels(ctx context.Context) ([]modelData, error) {
 		return nil, fmt.Errorf("decode models: %w", err)
 	}
 	return modelsResp.Data, nil
+}
+
+func (c *OpenAIClient) resolveConfiguredTarget(ctx context.Context, baseURL, requestedModel string) (resolvedTarget, bool, error) {
+	models, err := c.fetchAdvertisedModels(ctx, baseURL)
+	if err != nil {
+		if discoveryUnsupported(err) {
+			return resolvedTarget{BaseURL: baseURL, Model: requestedModel}, true, nil
+		}
+		return resolvedTarget{}, false, err
+	}
+	if len(models) == 0 {
+		return resolvedTarget{BaseURL: baseURL, Model: requestedModel}, true, nil
+	}
+	if matched := matchConfiguredAdvertisedModel(models, requestedModel); matched != "" {
+		return resolvedTarget{BaseURL: baseURL, Model: matched}, true, nil
+	}
+	return resolvedTarget{}, false, nil
+}
+
+func (c *OpenAIClient) bestTargetFromEndpoint(ctx context.Context, baseURL string) (resolvedTarget, bool, error) {
+	models, err := c.fetchAdvertisedModels(ctx, baseURL)
+	if err != nil {
+		return resolvedTarget{}, false, err
+	}
+	best, ok := proxy.BestAdvertisedModel(models)
+	if !ok || strings.TrimSpace(best.ID) == "" {
+		return resolvedTarget{}, false, nil
+	}
+	return resolvedTarget{BaseURL: baseURL, Model: best.ID}, true, nil
+}
+
+func (c *OpenAIClient) fetchAdvertisedModels(ctx context.Context, baseURL string) ([]proxy.AdvertisedModel, error) {
+	models, err := c.fetchStatusModels(ctx, baseURL)
+	if err == nil && len(models) > 0 {
+		return models, nil
+	}
+
+	fallback, fallbackErr := c.fetchModelsAt(ctx, baseURL)
+	if fallbackErr != nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fallbackErr
+	}
+	ads := make([]proxy.AdvertisedModel, 0, len(fallback))
+	for _, model := range fallback {
+		if strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		ads = append(ads, proxy.AdvertisedModel{ID: model.ID})
+	}
+	proxy.SortAdvertisedModels(ads)
+	return ads, nil
+}
+
+func (c *OpenAIClient) fetchStatusModels(ctx context.Context, baseURL string) ([]proxy.AdvertisedModel, error) {
+	c.mu.RLock()
+	apiKey := c.apiKey
+	userAgent := c.userAgent
+	c.mu.RUnlock()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURLFromBaseURL(baseURL), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create status request: %w", err)
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+		return nil, fmt.Errorf("status endpoint: HTTP %d: %s", resp.StatusCode, body)
+	}
+
+	var payload struct {
+		Models []struct {
+			ModelName           string `json:"model_name"`
+			Ready               *bool  `json:"ready"`
+			Remote              bool   `json:"remote"`
+			ParameterCount      string `json:"parameter_count"`
+			ContextWindowTokens int    `json:"context_window_tokens"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 256*1024)).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode status: %w", err)
+	}
+
+	models := make([]proxy.AdvertisedModel, 0, len(payload.Models))
+	for _, model := range payload.Models {
+		if model.Ready != nil && !*model.Ready {
+			continue
+		}
+		if strings.TrimSpace(model.ModelName) == "" {
+			continue
+		}
+		models = append(models, proxy.AdvertisedModel{
+			ID:                  model.ModelName,
+			ParameterCount:      model.ParameterCount,
+			ContextWindowTokens: model.ContextWindowTokens,
+			Remote:              model.Remote,
+		})
+	}
+	proxy.SortAdvertisedModels(models)
+	return models, nil
+}
+
+func (c *OpenAIClient) cacheTarget(target resolvedTarget) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cachedBaseURL = target.BaseURL
+	c.cachedModel = target.Model
+	c.modelCachedAt = time.Now()
+}
+
+func (c *OpenAIClient) invalidateTargetCache() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cachedBaseURL = ""
+	c.cachedModel = ""
+	c.modelCachedAt = time.Time{}
+}
+
+func discoveryUnsupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "HTTP 404") ||
+		strings.Contains(msg, "HTTP 405") ||
+		strings.Contains(msg, "HTTP 501")
 }
 
 // --- JSON wire types ---

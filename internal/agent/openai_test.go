@@ -144,7 +144,7 @@ func TestOpenAIClient_ModelAutoDiscover(t *testing.T) {
 			json.NewEncoder(w).Encode(modelsResponse{
 				Data: []modelData{
 					{ID: "qwen3-8b"},
-					{ID: "glm-4"},
+					{ID: "qwen3.5-35b-a3b"},
 				},
 			})
 		case "/v1/chat/completions":
@@ -169,8 +169,8 @@ func TestOpenAIClient_ModelAutoDiscover(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ChatCompletion: %v", err)
 	}
-	if requestedModel != "qwen3-8b" {
-		t.Errorf("model = %q, want qwen3-8b (first from /models)", requestedModel)
+	if requestedModel != "qwen3.5-35b-a3b" {
+		t.Errorf("model = %q, want qwen3.5-35b-a3b (strongest available)", requestedModel)
 	}
 }
 
@@ -346,6 +346,198 @@ func TestOpenAIClient_FleetDiscovery_Unreachable(t *testing.T) {
 	}
 	if model != "remote-model" {
 		t.Errorf("model = %q, want remote-model", model)
+	}
+}
+
+func TestOpenAIClient_FleetFallbackDoesNotRewriteConfiguredEndpoint(t *testing.T) {
+	localReady := false
+	localCalls := 0
+	remoteCalls := 0
+
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			models := []map[string]any{}
+			if localReady {
+				models = append(models, map[string]any{
+					"model_name":            "local-qwen3.5-35b-a3b",
+					"ready":                 true,
+					"remote":                false,
+					"parameter_count":       "35B",
+					"context_window_tokens": 16384,
+				})
+			}
+			json.NewEncoder(w).Encode(map[string]any{"status": "ok", "models": models})
+		case "/v1/models":
+			if !localReady {
+				json.NewEncoder(w).Encode(modelsResponse{Data: []modelData{}})
+				return
+			}
+			json.NewEncoder(w).Encode(modelsResponse{Data: []modelData{{ID: "local-qwen3.5-35b-a3b"}}})
+		case "/v1/chat/completions":
+			localCalls++
+			json.NewEncoder(w).Encode(chatResponse{
+				Choices: []chatChoice{{Message: chatMessage{Role: "assistant", Content: "local"}}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer local.Close()
+
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		remoteCalls++
+		json.NewEncoder(w).Encode(chatResponse{
+			Choices: []chatChoice{{Message: chatMessage{Role: "assistant", Content: "remote"}}},
+		})
+	}))
+	defer remote.Close()
+
+	client := NewOpenAIClient(local.URL+"/v1", WithDiscoverFunc(func(ctx context.Context, apiKey string) []FleetEndpoint {
+		return []FleetEndpoint{{BaseURL: remote.URL + "/v1", Model: "remote-model"}}
+	}))
+
+	resp, err := client.ChatCompletion(context.Background(), []Message{{Role: "user", Content: "test"}}, nil)
+	if err != nil {
+		t.Fatalf("first ChatCompletion: %v", err)
+	}
+	if resp.Content != "remote" {
+		t.Fatalf("first response = %q, want remote", resp.Content)
+	}
+	if client.Endpoint() != local.URL+"/v1" {
+		t.Fatalf("Endpoint() = %q, want configured local endpoint", client.Endpoint())
+	}
+
+	client.invalidateTargetCache()
+	localReady = true
+
+	resp, err = client.ChatCompletion(context.Background(), []Message{{Role: "user", Content: "test again"}}, nil)
+	if err != nil {
+		t.Fatalf("second ChatCompletion: %v", err)
+	}
+	if resp.Content != "local" {
+		t.Fatalf("second response = %q, want local", resp.Content)
+	}
+	if localCalls != 1 {
+		t.Fatalf("local chat calls = %d, want 1", localCalls)
+	}
+	if remoteCalls != 1 {
+		t.Fatalf("remote chat calls = %d, want 1", remoteCalls)
+	}
+}
+
+func TestOpenAIClient_RouteStatus_SelectsBestLocalModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok",
+			"models": []map[string]any{
+				{
+					"model_name":            "qwen3-8b",
+					"ready":                 true,
+					"parameter_count":       "8B",
+					"context_window_tokens": 8192,
+				},
+				{
+					"model_name":            "qwen3.5-35b-a3b",
+					"ready":                 true,
+					"parameter_count":       "35B",
+					"context_window_tokens": 16384,
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL + "/v1")
+	status := client.RouteStatus(context.Background())
+	if !status.Available {
+		t.Fatal("RouteStatus().Available = false, want true")
+	}
+	if status.SelectionReason != "best_local_model" {
+		t.Fatalf("SelectionReason = %q, want best_local_model", status.SelectionReason)
+	}
+	if status.Selected == nil || status.Selected.Model != "qwen3.5-35b-a3b" {
+		t.Fatalf("Selected = %+v, want qwen3.5-35b-a3b", status.Selected)
+	}
+	if len(status.ConfiguredEndpointProbe.Models) != 2 {
+		t.Fatalf("probe models = %d, want 2", len(status.ConfiguredEndpointProbe.Models))
+	}
+	if status.ConfiguredEndpointProbe.Models[0].Model != "qwen3.5-35b-a3b" {
+		t.Fatalf("first probe model = %q, want qwen3.5-35b-a3b", status.ConfiguredEndpointProbe.Models[0].Model)
+	}
+}
+
+func TestOpenAIClient_RouteStatus_UsesFleetFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok",
+			"models": []map[string]any{},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL+"/v1", WithDiscoverFunc(func(ctx context.Context, apiKey string) []FleetEndpoint {
+		return []FleetEndpoint{
+			{BaseURL: "http://10.0.0.2:6188/v1", Model: "qwen3-8b", ParameterCount: "8B", ContextWindowTokens: 8192},
+			{BaseURL: "http://10.0.0.3:6188/v1", Model: "qwen3.5-35b-a3b", ParameterCount: "35B", ContextWindowTokens: 16384},
+		}
+	}))
+
+	status := client.RouteStatus(context.Background())
+	if !status.Available {
+		t.Fatal("RouteStatus().Available = false, want true")
+	}
+	if status.SelectionReason != "fleet_fallback" {
+		t.Fatalf("SelectionReason = %q, want fleet_fallback", status.SelectionReason)
+	}
+	if status.Selected == nil || status.Selected.Model != "qwen3.5-35b-a3b" {
+		t.Fatalf("Selected = %+v, want qwen3.5-35b-a3b", status.Selected)
+	}
+	if len(status.FleetCandidates) != 2 {
+		t.Fatalf("fleet candidates = %d, want 2", len(status.FleetCandidates))
+	}
+	if status.FleetCandidates[0].Model != "qwen3.5-35b-a3b" {
+		t.Fatalf("first fleet candidate = %q, want qwen3.5-35b-a3b", status.FleetCandidates[0].Model)
+	}
+}
+
+func TestOpenAIClient_RouteStatus_ConfiguredModelWithoutDiscovery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" {
+			json.NewEncoder(w).Encode(chatResponse{
+				Choices: []chatChoice{{Message: chatMessage{Role: "assistant", Content: "ok"}}},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL+"/v1", WithModel("kimi-k2"))
+	status := client.RouteStatus(context.Background())
+	if !status.Available {
+		t.Fatal("RouteStatus().Available = false, want true")
+	}
+	if status.SelectionReason != "configured_model_endpoint_unverified" {
+		t.Fatalf("SelectionReason = %q, want configured_model_endpoint_unverified", status.SelectionReason)
+	}
+	if status.Selected == nil || status.Selected.Model != "kimi-k2" {
+		t.Fatalf("Selected = %+v, want kimi-k2", status.Selected)
+	}
+	if status.ConfiguredEndpointProbe.Error == "" {
+		t.Fatal("configured endpoint probe error = empty, want discovery failure detail")
 	}
 }
 

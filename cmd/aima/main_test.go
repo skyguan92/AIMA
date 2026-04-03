@@ -18,6 +18,7 @@ import (
 	state "github.com/jguan/aima/internal"
 	"github.com/jguan/aima/internal/agent"
 	benchpkg "github.com/jguan/aima/internal/benchmark"
+	"github.com/jguan/aima/internal/engine"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
 	aimaRuntime "github.com/jguan/aima/internal/runtime"
@@ -216,6 +217,38 @@ func TestDefaultEngineAssetPrefersCatalogDefault(t *testing.T) {
 	}
 	if got.Metadata.Name != "llamacpp-universal" {
 		t.Fatalf("defaultEngineAsset = %q, want llamacpp-universal", got.Metadata.Name)
+	}
+}
+
+func TestDedupeScannedEnginesPrefersCatalogImageForSameTypeAndTag(t *testing.T) {
+	hw := knowledge.HardwareInfo{
+		GPUArch:  "Blackwell",
+		Platform: "linux/arm64",
+	}
+	cat := &knowledge.Catalog{
+		EngineAssets: []knowledge.EngineAsset{
+			{
+				Metadata: knowledge.EngineMetadata{Name: "qwen-tts-fastapi", Type: "qwen-tts-fastapi"},
+				Image:    knowledge.EngineImage{Name: "qujing-qwen3-tts-real", Tag: "latest", Platforms: []string{"linux/arm64"}},
+				Hardware: knowledge.EngineHardware{GPUArch: "*"},
+			},
+		},
+	}
+
+	got := dedupeScannedEngines([]*engine.EngineImage{
+		{ID: "legacy", Type: "qwen-tts-fastapi", Image: "qujing-qwen3-tts", Tag: "latest", RuntimeType: "container", Available: true, DockerOnly: true},
+		{ID: "preferred", Type: "qwen-tts-fastapi", Image: "qujing-qwen3-tts-real", Tag: "latest", RuntimeType: "container", Available: true, DockerOnly: true},
+		{ID: "other-tag", Type: "qwen-tts-fastapi", Image: "qujing-qwen3-tts-real", Tag: "backup", RuntimeType: "container", Available: true, DockerOnly: true},
+	}, preferredContainerImagesByTypeTag(cat, hw))
+
+	if len(got) != 2 {
+		t.Fatalf("dedupeScannedEngines() len = %d, want 2", len(got))
+	}
+	if got[0].Image != "qujing-qwen3-tts-real" || got[0].Tag != "latest" {
+		t.Fatalf("first deduped engine = %s:%s, want qujing-qwen3-tts-real:latest", got[0].Image, got[0].Tag)
+	}
+	if got[1].Tag != "backup" {
+		t.Fatalf("second engine tag = %q, want backup", got[1].Tag)
 	}
 }
 
@@ -1080,6 +1113,62 @@ func TestAgentAvailable(t *testing.T) {
 			t.Fatal("expected reachable endpoint to be available")
 		}
 	})
+}
+
+func TestBuildAgentStatusPayloadIncludesRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok","models":[{"model_name":"qwen3-8b","ready":true,"parameter_count":"8B","context_window_tokens":8192},{"model_name":"qwen3.5-35b-a3b","ready":true,"parameter_count":"35B","context_window_tokens":16384}]}`))
+		case "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"qwen3-8b"},{"id":"qwen3.5-35b-a3b"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := agent.NewOpenAIClient(server.URL + "/v1")
+	data, err := buildAgentStatusPayload(context.Background(), client, "enabled", 2)
+	if err != nil {
+		t.Fatalf("buildAgentStatusPayload: %v", err)
+	}
+
+	var payload struct {
+		AgentAvailable bool   `json:"agent_available"`
+		ToolMode       string `json:"agent_tool_mode"`
+		ActiveRuns     int    `json:"active_exploration_runs"`
+		LLMRoute       struct {
+			Available       bool   `json:"available"`
+			SelectionReason string `json:"selection_reason"`
+			Selected        struct {
+				Model string `json:"model"`
+			} `json:"selected"`
+		} `json:"llm_route"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if !payload.AgentAvailable {
+		t.Fatal("agent_available = false, want true")
+	}
+	if payload.ToolMode != "enabled" {
+		t.Fatalf("agent_tool_mode = %q, want enabled", payload.ToolMode)
+	}
+	if payload.ActiveRuns != 2 {
+		t.Fatalf("active_exploration_runs = %d, want 2", payload.ActiveRuns)
+	}
+	if !payload.LLMRoute.Available {
+		t.Fatal("llm_route.available = false, want true")
+	}
+	if payload.LLMRoute.SelectionReason != "best_local_model" {
+		t.Fatalf("selection_reason = %q, want best_local_model", payload.LLMRoute.SelectionReason)
+	}
+	if payload.LLMRoute.Selected.Model != "qwen3.5-35b-a3b" {
+		t.Fatalf("selected model = %q, want qwen3.5-35b-a3b", payload.LLMRoute.Selected.Model)
+	}
 }
 
 func TestQueryGoldenOverrides(t *testing.T) {

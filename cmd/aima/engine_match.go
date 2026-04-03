@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jguan/aima/internal/engine"
 	"github.com/jguan/aima/internal/knowledge"
 
 	state "github.com/jguan/aima/internal"
@@ -145,4 +146,83 @@ func defaultEngineAsset(cat *knowledge.Catalog, hw knowledge.HardwareInfo) *know
 		}
 	}
 	return nil
+}
+
+func preferredContainerImagesByTypeTag(cat *knowledge.Catalog, hw knowledge.HardwareInfo) map[string]map[string]bool {
+	preferred := make(map[string]map[string]bool)
+	if cat == nil {
+		return preferred
+	}
+	for i := range cat.EngineAssets {
+		ea := &cat.EngineAssets[i]
+		if ea.Image.Name == "" || !engineCompatibleWithHost(ea, hw) {
+			continue
+		}
+		key := scannedEngineDisplayKey("container", ea.Metadata.Type, ea.Image.Tag)
+		if preferred[key] == nil {
+			preferred[key] = make(map[string]bool)
+		}
+		preferred[key][strings.ToLower(ea.Image.Name)] = true
+	}
+	return preferred
+}
+
+func dedupeScannedEngines(images []*engine.EngineImage, preferred map[string]map[string]bool) []*engine.EngineImage {
+	if len(images) < 2 {
+		return images
+	}
+
+	out := make([]*engine.EngineImage, 0, len(images))
+	seen := make(map[string]int)
+	for _, img := range images {
+		if img == nil {
+			continue
+		}
+		key := scannedEngineDisplayKey(img.RuntimeType, img.Type, img.Tag)
+		if key == "" {
+			out = append(out, img)
+			continue
+		}
+		if idx, ok := seen[key]; ok {
+			out[idx] = preferScannedEngine(out[idx], img, preferred[key])
+			continue
+		}
+		seen[key] = len(out)
+		out = append(out, img)
+	}
+	return out
+}
+
+func scannedEngineDisplayKey(runtimeType, engineType, tag string) string {
+	runtimeType = strings.TrimSpace(runtimeType)
+	engineType = strings.TrimSpace(engineType)
+	tag = strings.TrimSpace(tag)
+	if runtimeType != "container" || engineType == "" || tag == "" {
+		return ""
+	}
+	return runtimeType + "|" + strings.ToLower(engineType) + "|" + strings.ToLower(tag)
+}
+
+func preferScannedEngine(existing, candidate *engine.EngineImage, preferredImages map[string]bool) *engine.EngineImage {
+	if existing == nil {
+		return candidate
+	}
+	if candidate == nil {
+		return existing
+	}
+
+	existingPreferred := preferredImages[strings.ToLower(existing.Image)]
+	candidatePreferred := preferredImages[strings.ToLower(candidate.Image)]
+	switch {
+	case candidatePreferred && !existingPreferred:
+		return candidate
+	case existingPreferred && !candidatePreferred:
+		return existing
+	case existing.DockerOnly && !candidate.DockerOnly:
+		return candidate
+	case candidate.DockerOnly && !existing.DockerOnly:
+		return existing
+	default:
+		return existing
+	}
 }

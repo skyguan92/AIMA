@@ -12,11 +12,11 @@ func registerAgentTools(s *Server, deps *ToolDeps) {
 		Name:        "support.askforhelp",
 		Description: "Connect this AIMA instance to the support service (https://aimaserver.com/platform) as a device, and optionally create a remote help task from a natural-language description.",
 		InputSchema: schema(
-			`"description":{"type":"string","description":"Optional natural-language request to create a support task immediately"},`+
-				`"endpoint":{"type":"string","description":"Optional override for support.endpoint; persisted when provided"},`+
-				`"invite_code":{"type":"string","description":"Optional invite code for first-time registration; persisted when provided"},`+
-				`"worker_code":{"type":"string","description":"Optional worker enrollment code for first-time registration; persisted when provided"},`+
-				`"recovery_code":{"type":"string","description":"Optional saved recovery code used when refreshing an older registration"},`+
+			`"description":{"type":"string","description":"Optional natural-language request to create a support task immediately"},` +
+				`"endpoint":{"type":"string","description":"Optional override for support.endpoint; persisted when provided"},` +
+				`"invite_code":{"type":"string","description":"Optional invite code for first-time registration; persisted when provided"},` +
+				`"worker_code":{"type":"string","description":"Optional worker enrollment code for first-time registration; persisted when provided"},` +
+				`"recovery_code":{"type":"string","description":"Optional saved recovery code used when refreshing an older registration"},` +
 				`"referral_code":{"type":"string","description":"Optional referral code for self-service registration"}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SupportAskForHelp == nil {
@@ -87,7 +87,7 @@ func registerAgentTools(s *Server, deps *ToolDeps) {
 	// agent.status
 	s.RegisterTool(&Tool{
 		Name:        "agent.status",
-		Description: "Check agent subsystem availability: whether L3a (Go Agent) is configured and healthy. Use to diagnose agent-related issues.",
+		Description: "Check agent subsystem availability and routing: whether L3a (Go Agent) is healthy, which endpoint/model is selected, and what fallback candidates exist.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.AgentStatus == nil {
