@@ -243,6 +243,7 @@ func (s *Server) handler() http.Handler {
 		// generic passthrough fallback when no extra route set is mounted.
 		for _, path := range []string{
 			"/v1/audio/speech",
+			"/v1/tts",
 			"/v1/audio/transcriptions",
 			"/v1/images/generations",
 		} {

@@ -131,6 +131,38 @@ func detectGPU(ctx context.Context, runner CommandRunner) *GPUInfo {
 	return nil
 }
 
+// aggregateCards builds a GPUMetrics from per-card data.
+// Memory fields are summed; utilization is averaged; temperature is max; power is summed.
+func aggregateCards(cards []GPUCardMetrics) *GPUMetrics {
+	if len(cards) == 0 {
+		return nil
+	}
+	if len(cards) == 1 {
+		c := cards[0]
+		return &GPUMetrics{
+			UtilizationPercent: c.UtilizationPercent,
+			MemoryUsedMiB:      c.MemoryUsedMiB,
+			MemoryTotalMiB:     c.MemoryTotalMiB,
+			TemperatureCelsius: c.TemperatureCelsius,
+			PowerDrawWatts:     c.PowerDrawWatts,
+		}
+	}
+	m := &GPUMetrics{Cards: cards}
+	var utilSum int
+	for _, c := range cards {
+		m.MemoryUsedMiB += c.MemoryUsedMiB
+		m.MemoryTotalMiB += c.MemoryTotalMiB
+		m.PowerDrawWatts += c.PowerDrawWatts
+		utilSum += c.UtilizationPercent
+		if c.TemperatureCelsius > m.TemperatureCelsius {
+			m.TemperatureCelsius = c.TemperatureCelsius
+		}
+	}
+	m.UtilizationPercent = utilSum / len(cards)
+	m.PowerDrawWatts = math.Round(m.PowerDrawWatts*100) / 100
+	return m
+}
+
 func collectGPUMetrics(ctx context.Context, runner CommandRunner) *GPUMetrics {
 	// Hygon DCU: sysfs-based metrics, must run before AMD probe.
 	if m := collectHygonDCUMetrics(ctx, runner); m != nil {
@@ -229,42 +261,36 @@ func parseNvidiaGPUMetrics(output string) *GPUMetrics {
 		return nil
 	}
 
-	fields := splitCSV(lines[0])
-	if len(fields) < 5 {
-		return nil
+	var cards []GPUCardMetrics
+	for i, line := range lines {
+		fields := splitCSV(line)
+		if len(fields) < 5 {
+			continue
+		}
+		if isNA(fields[0]) && isNA(fields[1]) && isNA(fields[2]) {
+			continue
+		}
+		var c GPUCardMetrics
+		c.Index = i
+		if !isNA(fields[0]) {
+			c.UtilizationPercent, _ = strconv.Atoi(fields[0])
+		}
+		if !isNA(fields[1]) {
+			c.MemoryUsedMiB, _ = strconv.Atoi(fields[1])
+		}
+		if !isNA(fields[2]) {
+			c.MemoryTotalMiB, _ = strconv.Atoi(fields[2])
+		}
+		if !isNA(fields[3]) {
+			c.TemperatureCelsius, _ = strconv.ParseFloat(fields[3], 64)
+		}
+		if !isNA(fields[4]) {
+			pw, _ := strconv.ParseFloat(fields[4], 64)
+			c.PowerDrawWatts = roundTo(pw, 2)
+		}
+		cards = append(cards, c)
 	}
-
-	// If all critical fields are N/A, metrics are useless
-	if isNA(fields[0]) && isNA(fields[1]) && isNA(fields[2]) {
-		return nil
-	}
-
-	var util, memUsed, memTotal int
-	if !isNA(fields[0]) {
-		util, _ = strconv.Atoi(fields[0])
-	}
-	if !isNA(fields[1]) {
-		memUsed, _ = strconv.Atoi(fields[1])
-	}
-	if !isNA(fields[2]) {
-		memTotal, _ = strconv.Atoi(fields[2])
-	}
-
-	var temp, power float64
-	if !isNA(fields[3]) {
-		temp, _ = strconv.ParseFloat(fields[3], 64)
-	}
-	if !isNA(fields[4]) {
-		power, _ = strconv.ParseFloat(fields[4], 64)
-	}
-
-	return &GPUMetrics{
-		UtilizationPercent: util,
-		MemoryUsedMiB:      memUsed,
-		MemoryTotalMiB:     memTotal,
-		TemperatureCelsius: temp,
-		PowerDrawWatts:     roundTo(power, 2),
-	}
+	return aggregateCards(cards)
 }
 
 func computeCapToArch(cc string) string {
@@ -348,13 +374,21 @@ func enrichAMDGPU(ctx context.Context, runner CommandRunner, gpu *GPUInfo) {
 		}
 	}
 	if gpu.DriverVersion == "" {
-		// Try modinfo first; amdgpu built into kernel often has no version field,
-		// so fall back to kernel version (uname -r) since amdgpu ships with the kernel.
-		if out, err := runner.Run(ctx, "modinfo", "-F", "version", "amdgpu"); err == nil {
+		// Prefer sysfs (works even when amdgpu is built into the kernel).
+		if out, err := runner.Run(ctx, "cat", "/sys/module/amdgpu/version"); err == nil {
 			if ver := strings.TrimSpace(string(out)); ver != "" {
 				gpu.DriverVersion = ver
 			}
 		}
+		// Fallback: modinfo (loadable module).
+		if gpu.DriverVersion == "" {
+			if out, err := runner.Run(ctx, "modinfo", "-F", "version", "amdgpu"); err == nil {
+				if ver := strings.TrimSpace(string(out)); ver != "" {
+					gpu.DriverVersion = ver
+				}
+			}
+		}
+		// Last resort: kernel version (amdgpu ships with the kernel).
 		if gpu.DriverVersion == "" {
 			if out, err := runner.Run(ctx, "uname", "-r"); err == nil {
 				if ver := strings.TrimSpace(string(out)); ver != "" {
@@ -363,6 +397,28 @@ func enrichAMDGPU(ctx context.Context, runner CommandRunner, gpu *GPUInfo) {
 			}
 		}
 	}
+	// ComputeID: rocm-smi may lack "GFX Version" on some ROCm versions.
+	// Fall back to rocminfo which reliably reports "Name: gfx1100".
+	if gpu.ComputeID == "" {
+		if out, err := runner.Run(ctx, "rocminfo"); err == nil {
+			gpu.ComputeID = parseRocminfoGFX(string(out))
+		}
+	}
+}
+
+// parseRocminfoGFX extracts the first gfx compute ID (e.g. "gfx1100") from rocminfo output.
+func parseRocminfoGFX(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Name:") {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
+		if strings.HasPrefix(name, "gfx") {
+			return name
+		}
+	}
+	return ""
 }
 
 // enrichHuaweiNPU supplements GPUInfo with driver and CANN SDK version from system files.
@@ -505,6 +561,9 @@ func parseAMDGPUMetrics(output string) *GPUMetrics {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+
+	var cards []GPUCardMetrics
+	idx := 0
 	for _, key := range keys {
 		val := raw[key]
 		if !strings.HasPrefix(key, "card") {
@@ -519,18 +578,20 @@ func parseAMDGPUMetrics(output string) *GPUMetrics {
 		memUsed := bytesToMiB(jsonInt(data, "VRAM Total Used Memory (B)"))
 		memTotal := bytesToMiB(jsonInt(data, "VRAM Total Memory (B)"))
 		if memTotal == 0 && util == 0 {
-			return nil
+			continue
 		}
 
-		return &GPUMetrics{
+		cards = append(cards, GPUCardMetrics{
+			Index:              idx,
 			UtilizationPercent: util,
 			MemoryUsedMiB:      memUsed,
 			MemoryTotalMiB:     memTotal,
 			TemperatureCelsius: jsonFloat(data, "Temperature (Sensor edge) (C)"),
 			PowerDrawWatts:     roundTo(jsonFloat(data, "Average Graphics Package Power (W)", "Current Socket Graphics Package Power (W)"), 2),
-		}
+		})
+		idx++
 	}
-	return nil
+	return aggregateCards(cards)
 }
 
 func amdGPUToArch(name string) string {
@@ -622,21 +683,24 @@ func parseIntelGPUMetrics(output string) *GPUMetrics {
 		return nil
 	}
 
-	dev := devices[0]
-	util := int(jsonFloat(dev, "gpu_utilization"))
-	memUsed := bytesToMiB(jsonInt(dev, "memory_used_byte"))
-	memTotal := bytesToMiB(jsonInt(dev, "memory_physical_size_byte"))
-	if memTotal == 0 && util == 0 {
-		return nil
+	var cards []GPUCardMetrics
+	for i, dev := range devices {
+		util := int(jsonFloat(dev, "gpu_utilization"))
+		memUsed := bytesToMiB(jsonInt(dev, "memory_used_byte"))
+		memTotal := bytesToMiB(jsonInt(dev, "memory_physical_size_byte"))
+		if memTotal == 0 && util == 0 {
+			continue
+		}
+		cards = append(cards, GPUCardMetrics{
+			Index:              i,
+			UtilizationPercent: util,
+			MemoryUsedMiB:      memUsed,
+			MemoryTotalMiB:     memTotal,
+			TemperatureCelsius: jsonFloat(dev, "gpu_temperature"),
+			PowerDrawWatts:     roundTo(jsonFloat(dev, "power"), 2),
+		})
 	}
-
-	return &GPUMetrics{
-		UtilizationPercent: util,
-		MemoryUsedMiB:      memUsed,
-		MemoryTotalMiB:     memTotal,
-		TemperatureCelsius: jsonFloat(dev, "gpu_temperature"),
-		PowerDrawWatts:     roundTo(jsonFloat(dev, "power"), 2),
-	}
+	return aggregateCards(cards)
 }
 
 func intelGPUToArch(name string) string {
@@ -789,19 +853,25 @@ func parseHuaweiNPUMetrics(output string) *GPUMetrics {
 	// Try JSON first
 	var raw huaweiNPUJSON
 	if err := json.Unmarshal([]byte(output), &raw); err == nil && len(raw.NPU) > 0 {
-		npu := raw.NPU[0]
-		util := int(jsonFloat(npu, "Aicore Usage(%)"))
-		memUsed := int(jsonFloat(npu, "HBM Usage(MB)"))
-		memTotal := int(jsonFloat(npu, "HBM Capacity(MB)"))
-		if memTotal == 0 && util == 0 {
-			return nil
+		var cards []GPUCardMetrics
+		for i, npu := range raw.NPU {
+			util := int(jsonFloat(npu, "Aicore Usage(%)"))
+			memUsed := int(jsonFloat(npu, "HBM Usage(MB)"))
+			memTotal := int(jsonFloat(npu, "HBM Capacity(MB)"))
+			if memTotal == 0 && util == 0 {
+				continue
+			}
+			cards = append(cards, GPUCardMetrics{
+				Index:              i,
+				UtilizationPercent: util,
+				MemoryUsedMiB:      memUsed,
+				MemoryTotalMiB:     memTotal,
+				TemperatureCelsius: jsonFloat(npu, "Temperature(C)"),
+				PowerDrawWatts:     roundTo(jsonFloat(npu, "Power(W)"), 2),
+			})
 		}
-		return &GPUMetrics{
-			UtilizationPercent: util,
-			MemoryUsedMiB:      memUsed,
-			MemoryTotalMiB:     memTotal,
-			TemperatureCelsius: jsonFloat(npu, "Temperature(C)"),
-			PowerDrawWatts:     roundTo(jsonFloat(npu, "Power(W)"), 2),
+		if m := aggregateCards(cards); m != nil {
+			return m
 		}
 	}
 

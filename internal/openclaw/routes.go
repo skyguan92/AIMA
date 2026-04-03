@@ -18,16 +18,21 @@ import (
 func RegisterRoutes(deps *Deps) func(*http.ServeMux) {
 	return func(mux *http.ServeMux) {
 		mux.HandleFunc("/v1/audio/speech", deps.handleTTS)
+		mux.HandleFunc("/v1/tts", deps.handleTTS)
 		mux.HandleFunc("/v1/audio/transcriptions", deps.handleASR)
 		mux.HandleFunc("/v1/images/generations", deps.handleImageGen)
 	}
 }
 
 // handleTTS proxies TTS requests to the backend serving the requested model.
-// Expects JSON body: {"model":"<model-name>", "input":"...", "voice":"..."}
+// Expects JSON body including "model" and one of "input" or "text".
 //
-// The request body is forwarded as-is, including response_format. TTS backends
-// are expected to handle the requested format (wav, mp3, opus, flac, aac, pcm).
+// The request body is forwarded with light normalization:
+//   - /v1/audio/speech prefers "input"
+//   - /v1/tts prefers "text"
+//
+// Additional fields such as response_format, speed, reference_audio, and
+// reference_text are preserved for backends that support them.
 func (d *Deps) handleTTS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -42,8 +47,8 @@ func (d *Deps) handleTTS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
+	body, raw, err := normalizeTTSRequestBody(r.URL.Path, body)
+	if err != nil {
 		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
 		return
 	}
@@ -66,6 +71,34 @@ func (d *Deps) handleTTS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	d.reverseProxy(w, r, backend.Address, body)
+}
+
+func normalizeTTSRequestBody(path string, body []byte) ([]byte, map[string]any, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, nil, err
+	}
+
+	switch path {
+	case "/v1/audio/speech":
+		if input, _ := raw["input"].(string); strings.TrimSpace(input) == "" {
+			if text, _ := raw["text"].(string); strings.TrimSpace(text) != "" {
+				raw["input"] = text
+			}
+		}
+	case "/v1/tts":
+		if text, _ := raw["text"].(string); strings.TrimSpace(text) == "" {
+			if input, _ := raw["input"].(string); strings.TrimSpace(input) != "" {
+				raw["text"] = input
+			}
+		}
+	}
+
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, raw, nil
 }
 
 // handleASR proxies ASR (transcription) requests to the backend.
@@ -403,8 +436,8 @@ func (d *Deps) reverseProxy(w http.ResponseWriter, r *http.Request, targetAddr s
 }
 
 func (d *Deps) handleLiteTTS(w http.ResponseWriter, r *http.Request, backend *Backend, raw map[string]any) {
-	text, _ := raw["input"].(string)
-	if strings.TrimSpace(text) == "" {
+	text := extractTTSText(raw)
+	if text == "" {
 		http.Error(w, `{"error":"missing or invalid input field"}`, http.StatusBadRequest)
 		return
 	}
@@ -426,6 +459,16 @@ func (d *Deps) handleLiteTTS(w http.ResponseWriter, r *http.Request, backend *Ba
 	}
 
 	d.forwardRequest(w, r, backend.Address, "/tts/api/v1/generate", "application/json", body)
+}
+
+func extractTTSText(raw map[string]any) string {
+	if text, _ := raw["text"].(string); strings.TrimSpace(text) != "" {
+		return text
+	}
+	if text, _ := raw["input"].(string); strings.TrimSpace(text) != "" {
+		return text
+	}
+	return ""
 }
 
 func (d *Deps) forwardRequest(w http.ResponseWriter, r *http.Request, targetAddr, targetPath, contentType string, body []byte) {

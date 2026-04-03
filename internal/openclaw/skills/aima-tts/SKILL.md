@@ -33,6 +33,7 @@ Generate speech audio from text using the TTS model currently managed by AIMA/Op
 ```bash
 {baseDir}/scripts/speak.sh "今天天气真好" --filename weather.wav
 {baseDir}/scripts/speak.sh "Hello AIMA" --filename greeting.wav --voice default
+{baseDir}/scripts/speak.sh "请用参考音色说这句话" --api tts --reference-audio /tmp/ref.wav --reference-text "参考文案"
 ```
 
 ## Output
@@ -44,5 +45,7 @@ Generate speech audio from text using the TTS model currently managed by AIMA/Op
 
 - Model: auto-detected from `~/.openclaw/openclaw.json` (override with `AIMA_TTS_MODEL`)
 - Voice: `default` (single voice)
-- Output format: WAV
+- API: `speech` (`/v1/audio/speech`) or `tts` (`/v1/tts`)
+- Output format: configurable with `--response-format`
+- Optional reference fields: `--reference-audio`, `--reference-text`
 - Runs on AIMA proxy at `http://127.0.0.1:6188/v1`

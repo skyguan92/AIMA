@@ -85,6 +85,9 @@ integrations:
       - path: /v1/audio/speech
         models: [qwen3-tts-0.6b]
         note: "TTS synthesis"
+      - path: /v1/tts
+        models: [qwen3-tts-0.6b]
+        note: "Extended TTS JSON endpoint"
       - path: /v1/audio/transcriptions
         models: [qwen3-asr-1.7b]
         note: "ASR transcription"

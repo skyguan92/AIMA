@@ -588,6 +588,51 @@ func TestAudioSpeech_RoutesToBackend(t *testing.T) {
 	}
 }
 
+func TestTTSJSON_RoutesToBackend(t *testing.T) {
+	var (
+		receivedPath string
+		receivedBody string
+	)
+	backend := newTestBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		data, _ := io.ReadAll(r.Body)
+		receivedBody = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"audio_base64":"UklGRg==","format":"wav"}`))
+	})
+	defer backend.Close()
+
+	s := NewServer()
+	addr := strings.TrimPrefix(backend.URL, "http://")
+	s.RegisterBackend("qwen3-tts-0.6b", &Backend{
+		ModelName:  "qwen3-tts-0.6b",
+		EngineType: "qwen-tts-fastapi-cuda",
+		Address:    addr,
+		BasePath:   "",
+		Ready:      true,
+	})
+
+	handler := s.handler()
+	body := `{"model":"qwen3-tts-0.6b","text":"hello","reference_audio":"file:///tmp/ref.wav","reference_text":"你好"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /v1/tts status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if receivedPath != "/v1/tts" {
+		t.Fatalf("backend received path %q, want %q", receivedPath, "/v1/tts")
+	}
+	if !strings.Contains(receivedBody, `"reference_audio":"file:///tmp/ref.wav"`) {
+		t.Fatalf("backend body missing reference_audio, got %q", receivedBody)
+	}
+	if !strings.Contains(receivedBody, `"reference_text":"你好"`) {
+		t.Fatalf("backend body missing reference_text, got %q", receivedBody)
+	}
+}
+
 func TestAudioTranscriptions_MultipartRoutesToBackend(t *testing.T) {
 	var (
 		receivedPath        string

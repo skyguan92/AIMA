@@ -56,15 +56,24 @@ func detectCPU(ctx context.Context, runner CommandRunner) CPUInfo {
 		}
 	}
 
-	if cores > 0 {
+	// /proc/cpuinfo reports per-socket values for "cpu cores" and "siblings".
+	// On multi-socket systems we need the system-wide total.
+	// runtime.NumCPU() returns the total logical CPUs across all sockets.
+	totalLogical := runtime.NumCPU()
+	if threads > 0 && totalLogical > threads {
+		// Multi-socket: scale per-socket values by socket count.
+		sockets := totalLogical / threads
+		if sockets < 1 {
+			sockets = 1
+		}
+		info.Cores = cores * sockets
+		info.Threads = threads * sockets
+	} else if cores > 0 {
 		info.Cores = cores
-	} else {
-		info.Cores = runtime.NumCPU()
-	}
-	if threads > 0 {
 		info.Threads = threads
 	} else {
-		info.Threads = runtime.NumCPU()
+		info.Cores = totalLogical
+		info.Threads = totalLogical
 	}
 
 	// ARM fallback: /proc/cpuinfo lacks model name and frequency

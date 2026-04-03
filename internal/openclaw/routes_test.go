@@ -86,6 +86,165 @@ func TestHandleTTSLiteTTSRewrite(t *testing.T) {
 	}
 }
 
+func TestHandleTTSLiteTTSRewriteCustomPath(t *testing.T) {
+	var (
+		gotPath string
+		gotBody map[string]any
+	)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if err := json.Unmarshal(data, &gotBody); err != nil {
+			t.Fatalf("Unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write([]byte("RIFF"))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"litetts-mnn": {
+				ModelName:  "litetts-mnn",
+				EngineType: "litetts",
+				Address:    strings.TrimPrefix(backend.URL, "http://"),
+				Ready:      true,
+			},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(`{"model":"litetts-mnn","text":"hello","voice":"default","response_format":"wav"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if gotPath != "/tts/api/v1/generate" {
+		t.Fatalf("backend path = %q, want %q", gotPath, "/tts/api/v1/generate")
+	}
+	if gotBody["text"] != "hello" {
+		t.Fatalf("payload text = %#v, want %q", gotBody["text"], "hello")
+	}
+	if gotBody["speaker"] != "AIBC006_lite" {
+		t.Fatalf("payload speaker = %#v, want %q", gotBody["speaker"], "AIBC006_lite")
+	}
+}
+
+func TestHandleTTSProxyNormalizesSpeechTextAlias(t *testing.T) {
+	var (
+		gotPath string
+		gotBody map[string]any
+	)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if err := json.Unmarshal(data, &gotBody); err != nil {
+			t.Fatalf("Unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write([]byte("RIFF"))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"qwen3-tts-0.6b": {
+				ModelName:  "qwen3-tts-0.6b",
+				EngineType: "qwen-tts-fastapi-cuda",
+				Address:    strings.TrimPrefix(backend.URL, "http://"),
+				Ready:      true,
+			},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"model":"qwen3-tts-0.6b","text":"hello","voice":"default"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if gotPath != "/v1/audio/speech" {
+		t.Fatalf("backend path = %q, want %q", gotPath, "/v1/audio/speech")
+	}
+	if gotBody["input"] != "hello" {
+		t.Fatalf("payload input = %#v, want %q", gotBody["input"], "hello")
+	}
+}
+
+func TestHandleTTSProxyCustomPathPassesReferenceFields(t *testing.T) {
+	var (
+		gotPath string
+		gotBody map[string]any
+	)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if err := json.Unmarshal(data, &gotBody); err != nil {
+			t.Fatalf("Unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"audio_base64":"UklGRg==","format":"wav"}`))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"qwen3-tts-0.6b": {
+				ModelName:  "qwen3-tts-0.6b",
+				EngineType: "qwen-tts-fastapi-cuda",
+				Address:    strings.TrimPrefix(backend.URL, "http://"),
+				Ready:      true,
+			},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(`{"model":"qwen3-tts-0.6b","input":"hello","voice":"default","reference_audio":"file:///tmp/ref.wav","reference_text":"你好"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/v1/tts" {
+		t.Fatalf("backend path = %q, want %q", gotPath, "/v1/tts")
+	}
+	if gotBody["text"] != "hello" {
+		t.Fatalf("payload text = %#v, want %q", gotBody["text"], "hello")
+	}
+	if gotBody["reference_audio"] != "file:///tmp/ref.wav" {
+		t.Fatalf("payload reference_audio = %#v, want %q", gotBody["reference_audio"], "file:///tmp/ref.wav")
+	}
+	if gotBody["reference_text"] != "你好" {
+		t.Fatalf("payload reference_text = %#v, want %q", gotBody["reference_text"], "你好")
+	}
+}
+
 func TestHandleASRMooERRewrite(t *testing.T) {
 	orig := mooerRecognize
 	defer func() { mooerRecognize = orig }()

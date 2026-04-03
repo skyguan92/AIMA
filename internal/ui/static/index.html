@@ -2439,8 +2439,37 @@ body {
               <div style="font-size:11px;color:var(--text-dim);margin-top:2px" x-show="hw.gpu.temp">
                 <span x-text="hw.gpu.temp + '\u00B0C'"></span>
                 <span x-show="hw.gpu.power" x-text="' / ' + hw.gpu.power + 'W'"></span>
-                <span x-show="hw.gpu.computeId" x-text="' · ' + hw.gpu.computeId"></span>
+                <span x-show="hw.gpu.computeId" x-text="' \u00B7 ' + hw.gpu.computeId"></span>
               </div>
+              <!-- Expand/collapse per-card details -->
+              <template x-if="hw.gpu.cards && hw.gpu.cards.length > 1">
+                <div>
+                  <div class="gpu-expand-toggle" @click="gpuExpanded = !gpuExpanded" style="cursor:pointer;font-size:11px;color:var(--accent);margin-top:4px;user-select:none">
+                    <span x-text="gpuExpanded ? '\u25BC' : '\u25B6'"></span>
+                    <span x-text="gpuExpanded ? 'Collapse' : ('Show ' + hw.gpu.cards.length + ' cards')"></span>
+                  </div>
+                  <div x-show="gpuExpanded" x-transition.duration.150ms style="margin-top:4px">
+                    <template x-for="card in hw.gpu.cards" :key="card.index">
+                      <div class="gpu-card-row" style="margin-bottom:6px;padding:4px 6px;border-radius:4px;background:var(--panel-bg);font-size:11px">
+                        <div style="display:flex;justify-content:space-between;color:var(--text-dim)">
+                          <span x-text="'GPU ' + card.index"></span>
+                          <span x-text="card.util + '%'"></span>
+                        </div>
+                        <div class="gauge-bar" style="height:3px;margin:2px 0">
+                          <div class="gauge-fill" :class="card.util > 90 ? 'crit' : card.util > 70 ? 'warn' : ''" :style="'width:' + card.util + '%'"></div>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;color:var(--text-dim)">
+                          <span x-text="'VRAM ' + card.memUsed + '/' + card.memTotal"></span>
+                          <span x-text="card.temp ? (card.temp + '\u00B0C / ' + card.power + 'W') : ''"></span>
+                        </div>
+                        <div class="gauge-bar" style="height:3px;margin:2px 0">
+                          <div class="gauge-fill" :class="card.memPct > 90 ? 'crit' : card.memPct > 70 ? 'warn' : ''" :style="'width:' + card.memPct + '%'"></div>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
             </div>
           </template>
           <template x-if="!hw.gpu">
@@ -3011,6 +3040,30 @@ body {
                   <span x-show="hw.gpu.power" x-text="' / ' + hw.gpu.power + 'W'"></span>
                   <span x-show="hw.gpu.computeId" x-text="' \u00B7 ' + hw.gpu.computeId"></span>
                 </div>
+                <template x-if="hw.gpu.cards && hw.gpu.cards.length > 1">
+                  <div>
+                    <div @click="gpuExpanded = !gpuExpanded" style="cursor:pointer;font-size:11px;color:var(--accent);margin-top:4px;user-select:none">
+                      <span x-text="gpuExpanded ? '\u25BC' : '\u25B6'"></span>
+                      <span x-text="gpuExpanded ? 'Collapse' : ('Show ' + hw.gpu.cards.length + ' cards')"></span>
+                    </div>
+                    <div x-show="gpuExpanded" x-transition.duration.150ms style="margin-top:4px">
+                      <template x-for="card in hw.gpu.cards" :key="card.index">
+                        <div style="margin-bottom:6px;padding:4px 6px;border-radius:4px;background:var(--panel-bg);font-size:11px">
+                          <div style="display:flex;justify-content:space-between;color:var(--text-dim)">
+                            <span x-text="'GPU ' + card.index"></span>
+                            <span x-text="card.util + '%'"></span>
+                          </div>
+                          <div class="gauge-bar" style="height:3px;margin:2px 0"><div class="gauge-fill" :class="card.util > 90 ? 'crit' : card.util > 70 ? 'warn' : ''" :style="'width:' + card.util + '%'"></div></div>
+                          <div style="display:flex;justify-content:space-between;color:var(--text-dim)">
+                            <span x-text="'VRAM ' + card.memUsed + '/' + card.memTotal"></span>
+                            <span x-text="card.temp ? (card.temp + '\u00B0C / ' + card.power + 'W') : ''"></span>
+                          </div>
+                          <div class="gauge-bar" style="height:3px;margin:2px 0"><div class="gauge-fill" :class="card.memPct > 90 ? 'crit' : card.memPct > 70 ? 'warn' : ''" :style="'width:' + card.memPct + '%'"></div></div>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
               </div>
             </template>
             <template x-if="!hw.gpu">
@@ -4181,6 +4234,7 @@ function aimaApp() {
       cpu: { pct: 0, model: '', label: 'CPU', coreInfo: '' },
       mem: { pct: 0, used: '0', total: '0' }
     },
+    gpuExpanded: false,
     hostname: '',
     selfIp: '',
     engines: [],
@@ -4623,11 +4677,24 @@ function aimaApp() {
         const g = hw.gpu;
         const gm = (met && met.gpu) || {};
         const count = g.count || 1;
-        const perCardVram = gm.memory_total_mib || g.vram_mib || 0;
-        const memUsed = gm.memory_used_mib || 0;
-        const memPct = perCardVram > 0 ? Math.round(memUsed / perCardVram * 100) : 0;
+        // Metrics now report aggregated totals across all cards
+        const totalVram = gm.memory_total_mib || (g.vram_mib * count) || 0;
+        const totalUsed = gm.memory_used_mib || 0;
+        const memPct = totalVram > 0 ? Math.round(totalUsed / totalVram * 100) : 0;
+        const perCardVram = g.vram_mib || (count > 0 ? Math.round(totalVram / count) : 0);
         const countLabel = count > 1 ? (count + '\u00D7') : '';
         const vramSummary = count > 1 ? ('(' + this.fmtMiB(perCardVram) + ' \u00D7 ' + count + ')') : '';
+        // Build per-card array from metrics.gpu.cards
+        const rawCards = (gm.cards || []);
+        const cards = rawCards.map((c, i) => ({
+          index: c.index != null ? c.index : i,
+          util: c.utilization_percent || 0,
+          memUsed: this.fmtMiB(c.memory_used_mib || 0),
+          memTotal: this.fmtMiB(c.memory_total_mib || 0),
+          memPct: c.memory_total_mib > 0 ? Math.round((c.memory_used_mib || 0) / c.memory_total_mib * 100) : 0,
+          temp: c.temperature_celsius || 0,
+          power: c.power_draw_watts || 0
+        }));
         this.hw.gpu = {
           name: g.name || 'GPU',
           count: count,
@@ -4635,11 +4702,12 @@ function aimaApp() {
           vramSummary: vramSummary,
           computeId: g.compute_id || '',
           util: gm.utilization_percent || 0,
-          memTotal: this.fmtMiB(perCardVram),
-          memUsed: this.fmtMiB(memUsed),
+          memTotal: this.fmtMiB(totalVram),
+          memUsed: this.fmtMiB(totalUsed),
           memPct: memPct,
           temp: gm.temperature_celsius || g.temperature_celsius || 0,
-          power: gm.power_draw_watts || g.power_draw_watts || 0
+          power: gm.power_draw_watts || g.power_draw_watts || 0,
+          cards: cards
         };
       } else {
         this.hw.gpu = null;
