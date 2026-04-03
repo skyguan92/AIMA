@@ -32,7 +32,6 @@ startup:
     REFERENCE_AUDIO: "/tmp/ref_zh.wav"
   init_commands:
     - "rm -rf /model && ln -s /models /model"
-    - "pip install -q edge-tts && edge-tts --voice zh-CN-XiaoxiaoNeural --text \"$REFERENCE_TEXT\" --write-media /tmp/ref_zh.mp3 && ffmpeg -y -i /tmp/ref_zh.mp3 -ar 24000 -ac 1 -f wav /tmp/ref_zh.wav || true"
   default_args:
     port: 8002
     # GB10 上这条 CUDA 路线需要 transformers 自动分配设备；固定 cuda:0 会在

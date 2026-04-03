@@ -280,6 +280,22 @@ func TestSyncWritesTTSProviderSchema(t *testing.T) {
 	if got := openaiTTS["model"]; got != "qwen3-tts-0.6b" {
 		t.Fatalf("messages.tts.providers.openai.model = %v, want qwen3-tts-0.6b", got)
 	}
+	plugins := lookupMap(cfg, "plugins")
+	if plugins == nil {
+		t.Fatal("plugins missing after TTS sync")
+	}
+	allow := stringArgs(plugins["allow"])
+	if len(allow) != 1 || allow[0] != "aima-local-tts" {
+		t.Fatalf("plugins.allow = %v, want [aima-local-tts]", allow)
+	}
+
+	managed, err := ReadManagedState(configPath)
+	if err != nil {
+		t.Fatalf("ReadManagedState failed: %v", err)
+	}
+	if got := managed.PluginAllow; len(got) != 1 || got[0] != "aima-local-tts" {
+		t.Fatalf("managed plugin allow = %v, want [aima-local-tts]", got)
+	}
 }
 
 func TestSyncWritesLocalMediaProviderForASR(t *testing.T) {
@@ -985,6 +1001,33 @@ func TestDeployPluginsWritesAIMAPlugins(t *testing.T) {
 	}
 	if !strings.Contains(string(audioEntryData), `path must stay within the OpenClaw workspace`) {
 		t.Fatal("expected audio plugin to restrict transcription paths to the OpenClaw workspace")
+	}
+
+	ttsEntryPath := filepath.Join(targetDir, "aima-local-tts", "index.js")
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-local-tts", "openclaw.plugin.json")); err != nil {
+		t.Fatalf("expected TTS plugin manifest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "aima-local-tts", "package.json")); err != nil {
+		t.Fatalf("expected TTS plugin package.json: %v", err)
+	}
+	if _, err := os.Stat(ttsEntryPath); err != nil {
+		t.Fatalf("expected TTS plugin entrypoint: %v", err)
+	}
+	ttsEntryData, err := os.ReadFile(ttsEntryPath)
+	if err != nil {
+		t.Fatalf("ReadFile(TTS plugin entrypoint): %v", err)
+	}
+	if !strings.Contains(string(ttsEntryData), `name: "audio_synthesize"`) {
+		t.Fatal("expected TTS plugin to register audio_synthesize tool")
+	}
+	if !strings.Contains(string(ttsEntryData), `/tts`) {
+		t.Fatal("expected TTS plugin to call the AIMA JSON TTS route")
+	}
+	if !strings.Contains(string(ttsEntryData), `/audio/transcriptions`) {
+		t.Fatal("expected TTS plugin to reuse the local ASR route for reference transcription")
+	}
+	if !strings.Contains(string(ttsEntryData), `output path must stay within the OpenClaw workspace`) {
+		t.Fatal("expected TTS plugin to restrict output paths to the OpenClaw workspace")
 	}
 
 	if _, err := os.Stat(filepath.Join(targetDir, "aima-local-image", "openclaw.plugin.json")); err != nil {

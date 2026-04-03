@@ -233,6 +233,10 @@ func TestBuildRunArgs_UsesKnowledgeHealthcheck(t *testing.T) {
 
 	assertContains(t, argStr, "--health-cmd", "docker health command")
 	assertContains(t, argStr, "http://localhost:8188/health", "health command should target primary port")
+	assertContains(t, argStr, "command -v curl", "health command should prefer curl when available")
+	assertContains(t, argStr, "command -v python3", "health command should try python3 when curl is unavailable")
+	assertContains(t, argStr, "command -v python", "health command should fall back to python when python3 is unavailable")
+	assertContains(t, argStr, "urllib.request.urlopen('http://127.0.0.1:8188/health'", "health command should probe the health endpoint from Python")
 	assertContains(t, argStr, "--health-start-period 120s", "health start period should honor YAML timeout")
 	assertNotContains(t, argStr, "--no-healthcheck", "knowledge healthcheck should override image defaults")
 }

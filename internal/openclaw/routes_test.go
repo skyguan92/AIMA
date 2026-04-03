@@ -245,6 +245,50 @@ func TestHandleTTSProxyCustomPathPassesReferenceFields(t *testing.T) {
 	}
 }
 
+func TestHandleTTSProxyAcceptsReferenceAudioBeyondLegacyBodyLimit(t *testing.T) {
+	var gotBody map[string]any
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if err := json.Unmarshal(data, &gotBody); err != nil {
+			t.Fatalf("Unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"audio_base64":"UklGRg==","format":"wav"}`))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"qwen3-tts-0.6b": {
+				ModelName:  "qwen3-tts-0.6b",
+				EngineType: "qwen-tts-fastapi-cuda",
+				Address:    strings.TrimPrefix(backend.URL, "http://"),
+				Ready:      true,
+			},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	referenceAudio := "data:audio/wav;base64," + strings.Repeat("A", (1<<20)+128)
+	req := httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(`{"model":"qwen3-tts-0.6b","text":"hello","reference_audio":"`+referenceAudio+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotBody["reference_audio"] != referenceAudio {
+		t.Fatalf("payload reference_audio length = %d, want %d", len(gotBody["reference_audio"].(string)), len(referenceAudio))
+	}
+}
+
 func TestHandleASRMooERRewrite(t *testing.T) {
 	orig := mooerRecognize
 	defer func() { mooerRecognize = orig }()

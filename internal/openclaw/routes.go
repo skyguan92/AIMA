@@ -13,6 +13,8 @@ import (
 	"strings"
 )
 
+const maxTTSRequestBody = 16 << 20
+
 // RegisterRoutes returns a function that registers OpenClaw-specific proxy routes.
 // Pattern follows internal/fleet/handler.go.
 func RegisterRoutes(deps *Deps) func(*http.ServeMux) {
@@ -40,7 +42,7 @@ func (d *Deps) handleTTS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read body to extract model name, then reset for proxying
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MB limit
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxTTSRequestBody)) // Allows base64 reference audio clips.
 	r.Body.Close()
 	if err != nil {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)

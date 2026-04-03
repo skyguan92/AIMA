@@ -545,7 +545,10 @@ func dockerHealthArgs(req *DeployRequest) []string {
 	if req.HealthCheck.TimeoutS > startPeriodS {
 		startPeriodS = req.HealthCheck.TimeoutS
 	}
-	cmd := fmt.Sprintf("curl -fsS --max-time %d http://localhost:%d%s >/dev/null || exit 1", probeTimeoutS, port, path)
+	cmd := fmt.Sprintf(
+		`if command -v curl >/dev/null 2>&1; then curl -fsS --max-time %[1]d http://localhost:%[2]d%[3]s >/dev/null; elif command -v python3 >/dev/null 2>&1; then python3 -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%[2]d%[3]s', timeout=%[1]d).getcode() == 200 else 1)"; elif command -v python >/dev/null 2>&1; then python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%[2]d%[3]s', timeout=%[1]d).getcode() == 200 else 1)"; else exit 1; fi || exit 1`,
+		probeTimeoutS, port, path,
+	)
 	return []string{
 		"--health-cmd", cmd,
 		"--health-interval", "10s",

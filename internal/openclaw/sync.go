@@ -22,6 +22,7 @@ var deployedSkillRoots = []string{
 var deployedPluginRoots = []string{
 	"aima-local-audio",
 	"aima-local-image",
+	"aima-local-tts",
 }
 
 // SyncResult holds the categorized models ready for OpenClaw config generation.
@@ -223,12 +224,15 @@ func desiredPluginRoots(result *SyncResult) []string {
 	if result == nil {
 		return nil
 	}
-	roots := make([]string, 0, 2)
+	roots := make([]string, 0, 3)
 	if len(result.ASRModels) > 0 {
 		roots = append(roots, "aima-local-audio")
 	}
 	if len(result.ImageGenModels) > 0 {
 		roots = append(roots, "aima-local-image")
+	}
+	if result.TTSModel != nil {
+		roots = append(roots, "aima-local-tts")
 	}
 	return roots
 }
