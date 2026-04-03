@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -41,13 +42,29 @@ func (r *DockerRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	name := knowledge.SanitizePodName(req.Name + "-" + req.Engine)
 
 	// Idempotent redeploy: remove existing container if any
-	_ = exec.CommandContext(ctx, "docker", "rm", "-f", name).Run()
+	r.removeContainer(ctx, name)
 
 	args := r.buildRunArgs(name, req)
 	slog.Info("docker deploy", "name", name, "args", strings.Join(args, " "))
 
 	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if shouldRetryDockerWithLegacyNVIDIAGPU(args, out) {
+		slog.Warn("docker CDI GPU path failed, retrying with --gpus all", "name", name)
+		r.removeContainer(ctx, name)
+		fallbackArgs := dockerArgsWithLegacyNVIDIAGPU(args)
+		slog.Info("docker deploy retry", "name", name, "args", strings.Join(fallbackArgs, " "))
+		retryOut, retryErr := exec.CommandContext(ctx, "docker", fallbackArgs...).CombinedOutput()
+		if retryErr == nil {
+			return nil
+		}
+		r.removeContainer(ctx, name)
+		return fmt.Errorf("docker run %s: %w\n%s", name, retryErr, string(retryOut))
+	}
 	if err != nil {
+		r.removeContainer(ctx, name)
 		return fmt.Errorf("docker run %s: %w\n%s", name, err, string(out))
 	}
 	return nil
@@ -61,8 +78,8 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 		args = append(args, "--label", k+"="+v)
 	}
 	// Store port in label for status lookup
-	if req.Port > 0 {
-		args = append(args, "--label", "aima.dev/port="+strconv.Itoa(req.Port))
+	if port := primaryPortForRequest(req); port > 0 {
+		args = append(args, "--label", "aima.dev/port="+strconv.Itoa(port))
 	}
 
 	// --runtime (e.g. ascend)
@@ -86,20 +103,32 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 	}
 
 	// Port publish (skip when using host network)
-	if req.Port > 0 && (req.Container == nil || req.Container.NetworkMode != "host") {
-		portStr := strconv.Itoa(req.Port)
+	if port := primaryPortForRequest(req); port > 0 && (req.Container == nil || req.Container.NetworkMode != "host") {
+		portStr := strconv.Itoa(port)
 		args = append(args, "--publish", portStr+":"+portStr)
+	}
+
+	// AIMA owns readiness via knowledge YAML. Never inherit image-baked
+	// health checks blindly; override them when YAML provides one, otherwise
+	// disable them to avoid stale ports or incorrect image defaults.
+	args = append(args, dockerHealthArgs(req)...)
+
+	modelHostPath := req.ModelPath
+	containerModelPath := "/models"
+	if isContainerModelFilePath(modelHostPath) {
+		containerModelPath = "/models/" + filepath.Base(modelHostPath)
+		modelHostPath = filepath.Dir(modelHostPath)
 	}
 
 	// Environment variables: merge Container.Env (base) + req.Env (override)
 	env := make(map[string]string)
 	if req.Container != nil {
 		for k, v := range req.Container.Env {
-			env[k] = v
+			env[k] = expandRuntimeTemplate(v, containerModelPath, req.Name)
 		}
 	}
 	for k, v := range req.Env {
-		env[k] = v
+		env[k] = expandRuntimeTemplate(v, containerModelPath, req.Name)
 	}
 	for k, v := range env {
 		args = append(args, "--env", k+"="+v)
@@ -136,7 +165,7 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 
 	// Model volume
 	if req.ModelPath != "" {
-		args = append(args, "--volume", req.ModelPath+":/models:ro")
+		args = append(args, "--volume", modelHostPath+":/models:ro")
 	}
 
 	// Container volumes from hardware profile
@@ -162,27 +191,17 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 	// Build command with template substitution
 	command := make([]string, len(req.Command))
 	for i, c := range req.Command {
-		c = strings.ReplaceAll(c, "{{.ModelPath}}", "/models")
+		c = strings.ReplaceAll(c, "{{.ModelPath}}", containerModelPath)
 		c = strings.ReplaceAll(c, "{{.ModelName}}", req.Name)
 		command[i] = c
 	}
-
-	// Append --port if not already present in the startup command
-	hasPort := false
-	for _, c := range command {
-		if strings.Contains(c, "--port") {
-			hasPort = true
-			break
-		}
-	}
-	if !hasPort && req.Port > 0 {
-		command = append(command, "--port", strconv.Itoa(req.Port))
-	}
+	portBindings := portBindingsForRequest(req)
+	command = knowledge.AppendPortBindings(command, portBindings)
 
 	// Append config values as CLI flags, with template substitution
-	for _, f := range configToFlags(req.Config) {
+	for _, f := range configToFlags(req.Config, req.Command, req.ModelPath, knowledge.PortConfigKeys(req.PortSpecs)) {
 		f = strings.ReplaceAll(f, "{{.ModelName}}", req.Name)
-		f = strings.ReplaceAll(f, "{{.ModelPath}}", "/models")
+		f = strings.ReplaceAll(f, "{{.ModelPath}}", containerModelPath)
 		command = append(command, f)
 	}
 
@@ -195,7 +214,7 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 
 	if len(req.InitCommands) > 0 {
 		initChain := strings.Join(req.InitCommands, " && ")
-		mainCmd := strings.Join(command, " ")
+		mainCmd := shellJoin(command)
 		shellCmd := initChain + " && exec " + mainCmd
 
 		args = append(args, "--entrypoint", "bash", image, "-c", shellCmd)
@@ -207,6 +226,31 @@ func (r *DockerRuntime) buildRunArgs(name string, req *DeployRequest) []string {
 	}
 
 	return args
+}
+
+// shellJoin joins args into a shell-safe command string.
+// Args containing shell metacharacters are single-quoted.
+func shellJoin(args []string) string {
+	var b strings.Builder
+	for i, arg := range args {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		if arg == "" || strings.ContainsAny(arg, " \t\n\"'\\|&;(){}$`!#~<>?*[]") {
+			b.WriteByte('\'')
+			b.WriteString(strings.ReplaceAll(arg, "'", "'\\''"))
+			b.WriteByte('\'')
+		} else {
+			b.WriteString(arg)
+		}
+	}
+	return b.String()
+}
+
+func expandRuntimeTemplate(value, modelPath, modelName string) string {
+	value = strings.ReplaceAll(value, "{{.ModelPath}}", modelPath)
+	value = strings.ReplaceAll(value, "{{.ModelName}}", modelName)
+	return value
 }
 
 func (r *DockerRuntime) Delete(ctx context.Context, name string) error {
@@ -236,7 +280,11 @@ func (r *DockerRuntime) Status(ctx context.Context, name string) (*DeploymentSta
 
 	// Enrich with log-based startup progress
 	if !ds.Ready {
-		r.enrichDockerProgress(ctx, ds)
+		if errMsg := r.enrichDockerProgress(ctx, ds); errMsg != "" {
+			ds.Phase = "failed"
+			ds.Ready = false
+			ds.Message = errMsg
+		}
 	}
 
 	return ds, nil
@@ -280,17 +328,21 @@ func (r *DockerRuntime) List(ctx context.Context) ([]*DeploymentStatus, error) {
 		}
 
 		ds := &DeploymentStatus{
-			Name:      ps.Names,
-			Phase:     phase,
-			Ready:     ready,
-			Address:   addr,
-			Labels:    labels,
-			StartTime: ps.CreatedAt,
-			Runtime:   "docker",
+			Name:    ps.Names,
+			Phase:   phase,
+			Ready:   ready,
+			Address: addr,
+			Labels:  labels,
+			Runtime: "docker",
 		}
+		setDeploymentStartFromString(ds, ps.CreatedAt)
 
 		if !ready {
-			r.enrichDockerProgress(ctx, ds)
+			if errMsg := r.enrichDockerProgress(ctx, ds); errMsg != "" {
+				ds.Phase = "failed"
+				ds.Ready = false
+				ds.Message = errMsg
+			}
 		}
 
 		statuses = append(statuses, ds)
@@ -369,14 +421,14 @@ func (r *DockerRuntime) inspectToStatus(di dockerInspect) *DeploymentStatus {
 	name := strings.TrimPrefix(di.Name, "/")
 
 	ds := &DeploymentStatus{
-		Name:      name,
-		Phase:     phase,
-		Ready:     ready,
-		Address:   addr,
-		Labels:    labels,
-		StartTime: di.State.StartedAt,
-		Runtime:   "docker",
+		Name:    name,
+		Phase:   phase,
+		Ready:   ready,
+		Address: addr,
+		Labels:  labels,
+		Runtime: "docker",
 	}
+	setDeploymentStartFromString(ds, di.State.StartedAt)
 
 	if di.State.Status == "exited" && di.State.ExitCode != 0 {
 		ec := di.State.ExitCode
@@ -387,7 +439,7 @@ func (r *DockerRuntime) inspectToStatus(di dockerInspect) *DeploymentStatus {
 }
 
 // enrichDockerProgress reads container logs and matches engine patterns.
-func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *DeploymentStatus) {
+func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *DeploymentStatus) string {
 	engineName := ""
 	if ds.Labels != nil {
 		engineName = ds.Labels["aima.dev/engine"]
@@ -405,7 +457,7 @@ func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *Deployment
 
 	logs, err := r.Logs(ctx, ds.Name, tailLines)
 	if err != nil || logs == "" {
-		return
+		return ""
 	}
 
 	if ds.Phase == "failed" {
@@ -413,11 +465,12 @@ func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *Deployment
 	}
 
 	if asset == nil || asset.Startup.LogPatterns == nil {
-		return
+		return ""
 	}
 
 	if errMsg := DetectStartupError(logs, asset.Startup.LogPatterns); errMsg != "" {
 		ds.StartupMessage = errMsg
+		return errMsg
 	}
 
 	if ds.Phase == "starting" || (ds.Phase == "running" && !ds.Ready) {
@@ -432,6 +485,7 @@ func (r *DockerRuntime) enrichDockerProgress(ctx context.Context, ds *Deployment
 			ds.StartupMessage = formatPhaseName("initializing")
 		}
 	}
+	return ""
 }
 
 // dockerStatusToPhase maps `docker ps` Status string to phase.
@@ -465,6 +519,76 @@ func dockerStatusToPhase(status string) string {
 func cdiAvailable() bool {
 	_, err := os.Stat("/etc/cdi/nvidia.yaml")
 	return err == nil
+}
+
+func (r *DockerRuntime) removeContainer(ctx context.Context, name string) {
+	_ = exec.CommandContext(ctx, "docker", "rm", "-f", name).Run()
+}
+
+func dockerHealthArgs(req *DeployRequest) []string {
+	if req == nil || req.HealthCheck == nil || strings.TrimSpace(req.HealthCheck.Path) == "" {
+		return []string{"--no-healthcheck"}
+	}
+	port := primaryPortForRequest(req)
+	if port <= 0 {
+		return []string{"--no-healthcheck"}
+	}
+	path := req.HealthCheck.Path
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	probeTimeoutS := 5
+	if req.HealthCheck.TimeoutS > probeTimeoutS && req.HealthCheck.TimeoutS < 30 {
+		probeTimeoutS = req.HealthCheck.TimeoutS
+	}
+	startPeriodS := 60
+	if req.HealthCheck.TimeoutS > startPeriodS {
+		startPeriodS = req.HealthCheck.TimeoutS
+	}
+	cmd := fmt.Sprintf(
+		`if command -v curl >/dev/null 2>&1; then curl -fsS --max-time %[1]d http://localhost:%[2]d%[3]s >/dev/null; elif command -v python3 >/dev/null 2>&1; then python3 -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%[2]d%[3]s', timeout=%[1]d).getcode() == 200 else 1)"; elif command -v python >/dev/null 2>&1; then python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%[2]d%[3]s', timeout=%[1]d).getcode() == 200 else 1)"; else exit 1; fi || exit 1`,
+		probeTimeoutS, port, path,
+	)
+	return []string{
+		"--health-cmd", cmd,
+		"--health-interval", "10s",
+		"--health-timeout", fmt.Sprintf("%ds", probeTimeoutS),
+		"--health-start-period", fmt.Sprintf("%ds", startPeriodS),
+		"--health-retries", "3",
+	}
+}
+
+func shouldRetryDockerWithLegacyNVIDIAGPU(args []string, output []byte) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--device" && args[i+1] == "nvidia.com/gpu=all" {
+			text := strings.ToLower(string(output))
+			return strings.Contains(text, `device driver "cdi"`) ||
+				strings.Contains(text, "nvidia.com/gpu=all")
+		}
+	}
+	return false
+}
+
+func dockerArgsWithLegacyNVIDIAGPU(args []string) []string {
+	rewritten := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if i < len(args)-1 && args[i] == "--device" && args[i+1] == "nvidia.com/gpu=all" {
+			rewritten = append(rewritten, "--gpus", "all")
+			i++
+			continue
+		}
+		rewritten = append(rewritten, args[i])
+	}
+	return rewritten
+}
+
+func isContainerModelFilePath(modelPath string) bool {
+	switch strings.ToLower(filepath.Ext(modelPath)) {
+	case ".gguf", ".ggml", ".bin":
+		return true
+	default:
+		return false
+	}
 }
 
 // httpHealthy checks whether the engine's HTTP health endpoint returns 200.

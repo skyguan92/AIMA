@@ -496,6 +496,239 @@ func TestDownloadServerError(t *testing.T) {
 	}
 }
 
+func TestDownloadHuggingFaceFallsBackToHTTPWhenCLIUnavailableToRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+
+	content := []byte("model-weights")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/models/test/model/tree/main":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `[{"type":"file","path":"weights.bin","size":%d}]`, len(content))
+		case "/test/model/resolve/main/weights.bin":
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			w.Write(content)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cliDir := t.TempDir()
+	cliPath := filepath.Join(cliDir, "huggingface-cli")
+	if err := os.WriteFile(cliPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake cli: %v", err)
+	}
+
+	t.Setenv("PATH", cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HF_ENDPOINT", server.URL)
+
+	destPath := filepath.Join(t.TempDir(), "model")
+	if err := downloadHuggingFace(context.Background(), "test/model", destPath, DownloadPlan{}); err != nil {
+		t.Fatalf("downloadHuggingFace fallback: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(destPath, "weights.bin"))
+	if err != nil {
+		t.Fatalf("read downloaded file: %v", err)
+	}
+	if string(data) != string(content) {
+		t.Fatalf("downloaded content = %q, want %q", data, content)
+	}
+}
+
+func TestPathLooksUsableGGUFFile(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "Qwen3-4B-Q4_K_M.gguf")
+	if err := os.WriteFile(filePath, []byte("gguf"), 0o644); err != nil {
+		t.Fatalf("write gguf: %v", err)
+	}
+	if !PathLooksUsable(filePath, "gguf") {
+		t.Fatal("expected GGUF file path to be reusable")
+	}
+}
+
+func TestPathLooksUsableSafetensorsRequiresAllIndexedShards(t *testing.T) {
+	dir := t.TempDir()
+	index := map[string]any{
+		"weight_map": map[string]string{
+			"model.layers.0.weight": "model-00001-of-00002.safetensors",
+			"model.layers.1.weight": "model-00002-of-00002.safetensors",
+		},
+	}
+	indexBytes, _ := json.Marshal(index)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors.index.json"), indexBytes, 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model-00001-of-00002.safetensors"), []byte("one"), 0o644); err != nil {
+		t.Fatalf("write shard: %v", err)
+	}
+	if PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected incomplete indexed safetensors model to be rejected")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model-00002-of-00002.safetensors"), []byte("two"), 0o644); err != nil {
+		t.Fatalf("write shard: %v", err)
+	}
+	if !PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected complete indexed safetensors model to be reusable")
+	}
+}
+
+func TestPathLooksUsableSafetensorsRequiresTokenizerAssets(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors"), []byte("weights"), 0o644); err != nil {
+		t.Fatalf("write safetensors: %v", err)
+	}
+	if PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected safetensors directory without tokenizer assets to be rejected")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if !PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected tokenizer.json to satisfy safetensors reuse requirements")
+	}
+}
+
+func TestPathLooksUsableSafetensorsRejectsBrokenShardSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "missing.safetensors"), filepath.Join(dir, "model-00001-of-00001.safetensors")); err != nil {
+		t.Fatalf("symlink shard: %v", err)
+	}
+	if PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected broken shard symlink to be rejected")
+	}
+}
+
+func TestPathLooksUsableAcceptsCompleteDiffusersPipeline(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "z-image")
+	writeDiffusersFixture(t, dir, true)
+	if !PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected complete diffusers pipeline directory to be reusable")
+	}
+}
+
+func TestPathLooksUsableRejectsIncompleteDiffusersPipeline(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "z-image")
+	writeDiffusersFixture(t, dir, false)
+	if PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected incomplete diffusers pipeline directory to be rejected")
+	}
+}
+
+func TestPathLooksUsableRejectsDiffusersPipelineMissingTokenizerAssets(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "z-image")
+	writeDiffusersFixture(t, dir, true)
+	if err := os.Remove(filepath.Join(dir, "tokenizer", "tokenizer.json")); err != nil {
+		t.Fatalf("remove tokenizer: %v", err)
+	}
+	if PathLooksUsable(dir, "safetensors") {
+		t.Fatal("expected diffusers pipeline without tokenizer assets to be rejected")
+	}
+}
+
+func TestPathLooksUsableONNXDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model_quant.onnx"), []byte("onnx"), 0o644); err != nil {
+		t.Fatalf("write onnx: %v", err)
+	}
+	if !PathLooksUsable(dir, "onnx") {
+		t.Fatal("expected ONNX directory to be treated as usable")
+	}
+}
+
+func TestPathLooksUsableMNNDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "decoder.mnn"), []byte("mnn"), 0o644); err != nil {
+		t.Fatalf("write mnn: %v", err)
+	}
+	if !PathLooksUsable(dir, "mnn") {
+		t.Fatal("expected MNN directory to be treated as usable")
+	}
+}
+
+func TestPathLooksCompatibleRejectsQuantizationMismatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen3","torch_dtype":"bfloat16"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model-00001-of-00001.safetensors"), []byte("weights"), 0o644); err != nil {
+		t.Fatalf("write safetensors: %v", err)
+	}
+	if PathLooksCompatible(dir, "safetensors", "gptq") {
+		t.Fatal("expected bf16 local path to be incompatible with gptq expectation")
+	}
+	if !PathLooksCompatible(dir, "safetensors", "") {
+		t.Fatal("expected empty quantization hint to accept usable local path")
+	}
+}
+
+func TestPathLooksCompatibleAcceptsGGUFQuantization(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "Qwen3-4B-Q4_K_M.gguf")
+	if err := os.WriteFile(filePath, []byte("gguf"), 0o644); err != nil {
+		t.Fatalf("write gguf: %v", err)
+	}
+	if !PathLooksCompatible(filePath, "gguf", "int4") {
+		t.Fatal("expected q4 GGUF file to match int4 requirement")
+	}
+}
+
+func TestPathLooksCompatibleRequiresExplicitSafetensorsQuantizationMetadata(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"qwen3"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"version":"1.0"}`), 0o644); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors"), []byte("weights"), 0o644); err != nil {
+		t.Fatalf("write safetensors: %v", err)
+	}
+	if PathLooksCompatible(dir, "safetensors", "gptq") {
+		t.Fatal("expected generic safetensors directory without quantization metadata to be incompatible with gptq")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "quantize_config.json"), []byte(`{"bits":4,"quant_method":"gptq"}`), 0o644); err != nil {
+		t.Fatalf("write quantize config: %v", err)
+	}
+	if !PathLooksCompatible(dir, "safetensors", "gptq") {
+		t.Fatal("expected quantize_config.json to satisfy gptq compatibility")
+	}
+}
+
+func TestSelectRepoFilesPrefersMinimalGGUFQuantization(t *testing.T) {
+	files := []hfRepoFile{
+		{Type: "file", Path: "README.md", Size: 10},
+		{Type: "file", Path: "Qwen3-4B-Q4_K_M.gguf", Size: 100},
+		{Type: "file", Path: "Qwen3-4B-Q5_0.gguf", Size: 200},
+	}
+	selected, err := selectRepoFiles(files, DownloadPlan{Format: "gguf", Quantization: "int4"})
+	if err != nil {
+		t.Fatalf("selectRepoFiles: %v", err)
+	}
+	if len(selected) != 1 || selected[0].Path != "Qwen3-4B-Q4_K_M.gguf" {
+		t.Fatalf("selected = %+v, want Q4_K_M only", selected)
+	}
+}
+
 // --- Import tests ---
 
 func TestImportHuggingFaceModel(t *testing.T) {
@@ -529,6 +762,50 @@ func TestImportHuggingFaceModel(t *testing.T) {
 	destModelDir := filepath.Join(destDir, "my-model")
 	if _, err := os.Stat(filepath.Join(destModelDir, "config.json")); os.IsNotExist(err) {
 		t.Error("config.json not copied to dest dir")
+	}
+}
+
+func TestImportDiffusersPipeline(t *testing.T) {
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+	modelDir := filepath.Join(srcDir, "z-image")
+	writeDiffusersFixture(t, modelDir, true)
+
+	info, err := Import(context.Background(), modelDir, destDir)
+	if err != nil {
+		t.Fatalf("import diffusers pipeline: %v", err)
+	}
+	if info.Name != "z-image" {
+		t.Errorf("expected name z-image, got %s", info.Name)
+	}
+	if info.Type != "image_gen" {
+		t.Errorf("expected type image_gen, got %s", info.Type)
+	}
+	if info.Format != "safetensors" {
+		t.Errorf("expected format safetensors, got %s", info.Format)
+	}
+}
+
+func TestScanDiffusersPipelineFromYAMLPattern(t *testing.T) {
+	dir := t.TempDir()
+	modelDir := filepath.Join(dir, "z-image")
+	writeDiffusersFixture(t, modelDir, true)
+
+	models, err := Scan(context.Background(), ScanOptions{Paths: []string{dir}, MinModelSizeBytes: 1})
+	if err != nil {
+		t.Fatalf("scan diffusers pipeline: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	if models[0].Path != modelDir {
+		t.Fatalf("expected path %s, got %s", modelDir, models[0].Path)
+	}
+	if models[0].Type != "image_gen" {
+		t.Errorf("expected type image_gen, got %s", models[0].Type)
+	}
+	if models[0].ModelClass != "diffusion" {
+		t.Errorf("expected model class diffusion, got %s", models[0].ModelClass)
 	}
 }
 
@@ -566,6 +843,49 @@ func TestImportAlreadyInScanDir(t *testing.T) {
 	}
 	if info.Format != "safetensors" {
 		t.Errorf("expected format safetensors, got %s", info.Format)
+	}
+}
+
+func writeDiffusersFixture(t *testing.T, dir string, complete bool) {
+	t.Helper()
+	mustMkdirAll := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	mustWrite := func(path string, data []byte) {
+		t.Helper()
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	mustMkdirAll(filepath.Join(dir, "text_encoder"))
+	mustMkdirAll(filepath.Join(dir, "transformer"))
+	mustMkdirAll(filepath.Join(dir, "vae"))
+	mustMkdirAll(filepath.Join(dir, "tokenizer"))
+
+	mustWrite(filepath.Join(dir, "model_index.json"), []byte(`{
+  "_class_name":"ZImagePipeline",
+  "tokenizer":["transformers","AutoTokenizer"],
+  "text_encoder":["transformers","CLIPTextModel"],
+  "transformer":["diffusers","Transformer2DModel"],
+  "vae":["diffusers","AutoencoderKL"]
+}`))
+	mustWrite(filepath.Join(dir, "tokenizer", "tokenizer.json"), []byte(`{"version":"1.0"}`))
+	mustWrite(filepath.Join(dir, "text_encoder", "config.json"), []byte(`{"model_type":"qwen2"}`))
+	mustWrite(filepath.Join(dir, "transformer", "config.json"), []byte(`{"model_type":"transformer"}`))
+	mustWrite(filepath.Join(dir, "vae", "config.json"), []byte(`{"model_type":"autoencoder"}`))
+	mustWrite(filepath.Join(dir, "text_encoder", "model.safetensors.index.json"), []byte(`{"weight_map":{"encoder":"model-00001-of-00002.safetensors","decoder":"model-00002-of-00002.safetensors"}}`))
+	mustWrite(filepath.Join(dir, "transformer", "diffusion_pytorch_model.safetensors.index.json"), []byte(`{"weight_map":{"block.0":"diffusion_pytorch_model-00001-of-00002.safetensors","block.1":"diffusion_pytorch_model-00002-of-00002.safetensors"}}`))
+	mustWrite(filepath.Join(dir, "text_encoder", "model-00001-of-00002.safetensors"), []byte("encoder"))
+	mustWrite(filepath.Join(dir, "transformer", "diffusion_pytorch_model-00001-of-00002.safetensors"), []byte("block0"))
+	mustWrite(filepath.Join(dir, "vae", "diffusion_pytorch_model.safetensors"), []byte("vae"))
+
+	if complete {
+		mustWrite(filepath.Join(dir, "text_encoder", "model-00002-of-00002.safetensors"), []byte("decoder"))
+		mustWrite(filepath.Join(dir, "transformer", "diffusion_pytorch_model-00002-of-00002.safetensors"), []byte("block1"))
 	}
 }
 

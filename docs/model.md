@@ -24,10 +24,10 @@
 |------|---------------|------|
 | `model.scan` | `model.scan` | 扫描本地模型 |
 | `model.list` | `model.list` | 列出所有模型 |
-| `model.get` | `model.info` | 获取模型详情 |
+| `model.info` | `model.info` | 获取模型详情 |
 | `model.pull` | `model.pull` | 下载模型 (递归+分页+完整性校验+路径遍历防护) |
 | `model.import` | `model.import` | 导入模型 |
-| `model.delete` | `model.remove` | 删除模型 |
+| `model.remove` | `model.remove` | 删除模型 |
 
 ---
 
@@ -195,11 +195,14 @@ ALTER TABLE models ADD COLUMN quant_src TEXT DEFAULT '';
 
 ## 相关文件
 
-- `internal/model/scanner.go` - 模型扫描器实现
+- `internal/model/scanner.go` - 扫描入口、默认路径和目录遍历
+- `internal/model/detect.go` / `internal/model/gguf.go` / `internal/model/params.go` - 模型元数据识别
+- `internal/model/importer.go` - 本地模型导入
+- `internal/model/downloader.go` - 模型下载器 (HuggingFace/ModelScope)
 - `internal/sqlite.go` - 数据库操作
 - `internal/cli/model.go` - CLI 命令处理
-- `internal/mcp/tools.go` - MCP 工具定义
-- `internal/model/downloader.go` - 模型下载器 (HuggingFace/ModelScope)
+- `internal/mcp/tools_model.go` - Model MCP 工具定义
+- `internal/mcp/tools.go` - `RegisterAllTools()` 注册入口
 
 ---
 
@@ -218,4 +221,4 @@ ALTER TABLE models ADD COLUMN quant_src TEXT DEFAULT '';
 
 ---
 
-*最后更新：2026-03-04 (HF 递归+分页下载, 路径遍历防护, 完整性校验)*
+*最后更新：2026-04-01 (修正 MCP 工具名，并补齐分文件实现引用)*

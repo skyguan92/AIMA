@@ -242,14 +242,14 @@ func (inst *Installer) Init(ctx context.Context, components []knowledge.StackCom
 
 // DownloadItem describes a file that needs to be downloaded.
 type DownloadItem struct {
-	Name       string   `json:"name"`                   // component name
-	FileName   string   `json:"file_name"`              // e.g. "k3s" or "hami-chart.tgz"
-	FilePath   string   `json:"file_path"`              // full local path in dist/
-	URL        string   `json:"url"`                    // primary download URL
-	MirrorURLs []string `json:"mirror_urls,omitempty"`  // fallback URLs tried before primary (e.g. ghproxy mirrors)
-	SHA256     string   `json:"sha256,omitempty"`       // expected SHA-256 hex digest (optional)
-	Executable bool     `json:"executable,omitempty"`   // chmod +x after download
-	Optional   bool     `json:"optional,omitempty"`     // if true, download failure won't abort init (e.g. airgap tars)
+	Name       string   `json:"name"`                  // component name
+	FileName   string   `json:"file_name"`             // e.g. "k3s" or "hami-chart.tgz"
+	FilePath   string   `json:"file_path"`             // full local path in dist/
+	URL        string   `json:"url"`                   // primary download URL
+	MirrorURLs []string `json:"mirror_urls,omitempty"` // fallback URLs tried before primary (e.g. ghproxy mirrors)
+	SHA256     string   `json:"sha256,omitempty"`      // expected SHA-256 hex digest (optional)
+	Executable bool     `json:"executable,omitempty"`  // chmod +x after download
+	Optional   bool     `json:"optional,omitempty"`    // if true, download failure won't abort init (e.g. airgap tars)
 }
 
 // Preflight checks which components need files downloaded.
@@ -614,26 +614,12 @@ func (inst *Installer) installBinary(ctx context.Context, comp knowledge.StackCo
 	// Build install command args from stack YAML
 	args := collectArgs(comp, hwProfile)
 
-	// Set environment variables for child process, then restore on return.
+	// Build environment for child process without mutating the current process env.
 	env := collectEnv(comp, hwProfile)
-	saved := make(map[string]*string, len(env))
+	cmdEnv := os.Environ()
 	for k, v := range env {
-		if old, ok := os.LookupEnv(k); ok {
-			saved[k] = &old
-		} else {
-			saved[k] = nil
-		}
-		os.Setenv(k, v)
+		cmdEnv = append(cmdEnv, k+"="+v)
 	}
-	defer func() {
-		for k := range env {
-			if old := saved[k]; old != nil {
-				os.Setenv(k, *old)
-			} else {
-				os.Unsetenv(k)
-			}
-		}
-	}()
 
 	// Resolve binary: local dist/ first, then PATH, then os.Executable() (self)
 	binary := comp.Source.Binary
@@ -667,7 +653,7 @@ func (inst *Installer) installBinary(ctx context.Context, comp knowledge.StackCo
 		}
 		// Non-Linux fallback: start in background, verify step will poll for readiness
 		cmd := exec.CommandContext(ctx, binary, cmdArgs...)
-		cmd.Env = os.Environ()
+		cmd.Env = cmdEnv
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("start %s: %w", comp.Source.Binary, err)
 		}
@@ -675,7 +661,9 @@ func (inst *Installer) installBinary(ctx context.Context, comp knowledge.StackCo
 		return nil
 	}
 
-	out, err := inst.runner.Run(ctx, binary, cmdArgs...)
+	cmd := exec.CommandContext(ctx, binary, cmdArgs...)
+	cmd.Env = cmdEnv
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("run %s: %s: %w", comp.Source.Binary, string(out), err)
 	}
@@ -708,11 +696,18 @@ func (inst *Installer) installDaemonSystemd(ctx context.Context, comp knowledge.
 
 	// Write env file: K3S uses /etc/rancher/k3s/, other daemons use /etc/aima/
 	envDir := "/etc/aima"
+	envDirMode := os.FileMode(0o755)
 	if name == "k3s" {
 		envDir = "/etc/rancher/k3s"
+		envDirMode = 0o750
 	}
-	if err := os.MkdirAll(envDir, 0o755); err != nil {
+	if err := os.MkdirAll(envDir, envDirMode); err != nil {
 		return fmt.Errorf("create env dir %s: %w", envDir, err)
+	}
+	// Apply the mode even when the directory already exists so upgrades repair
+	// older installs that made /etc/aima unreadable to non-root CLI users.
+	if err := os.Chmod(envDir, envDirMode); err != nil {
+		return fmt.Errorf("set env dir permissions %s: %w", envDir, err)
 	}
 	var envLines []string
 	for k, v := range env {
@@ -867,13 +862,16 @@ func extractBinaries(archivePath string, paths []string, destDir string) error {
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
-	extracted := 0
+	var extracted []string
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			for _, f := range extracted {
+				os.Remove(f)
+			}
 			return fmt.Errorf("read tar: %w", err)
 		}
 		if hdr.Typeflag != tar.TypeReg {
@@ -888,21 +886,27 @@ func extractBinaries(archivePath string, paths []string, destDir string) error {
 
 		out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 		if err != nil {
+			for _, f := range extracted {
+				os.Remove(f)
+			}
 			return fmt.Errorf("create %s: %w", destPath, err)
 		}
 		if _, err := io.Copy(out, tr); err != nil {
 			out.Close()
+			for _, f := range extracted {
+				os.Remove(f)
+			}
 			return fmt.Errorf("write %s: %w", destPath, err)
 		}
 		out.Close()
+		extracted = append(extracted, destPath)
 		slog.Info("extracted binary", "path", destPath)
-		extracted++
 	}
 
-	if extracted == 0 {
+	if len(extracted) == 0 {
 		return fmt.Errorf("no matching binaries found in archive (wanted %d)", len(paths))
 	}
-	slog.Info("extracted binaries from archive", "count", extracted, "archive", filepath.Base(archivePath))
+	slog.Info("extracted binaries from archive", "count", len(extracted), "archive", filepath.Base(archivePath))
 	return nil
 }
 

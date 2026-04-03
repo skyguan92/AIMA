@@ -1,6 +1,6 @@
 # AIMA P0 Feature Design — 三项核心功能详细设计
 
-> 基于 develop 分支代码审计 (2026-03-06, 80 MCP tools)
+> 基于 develop 分支代码审计 (2026-03-06, 94 MCP tools)
 > 目标: 让优化模型的 L0→L2c 配置链和 Agent 自治巡检真正闭环运转
 > **状态: ✅ 全部实现并验证 (2026-03-06)** — 7/8 设备通过真机验证 (hygon 不可达)
 
@@ -732,7 +732,7 @@ func (p *Patrol) reactToAlerts(ctx context.Context, alerts []Alert) {
         case alert.Type == "gpu_temp" && alert.Severity == "warning":
             p.handleOverheat(ctx, alert)
         // gpu_idle 和 vram_opportunity 是 info 级别, 只记录不自动行动
-        // 这些信息供 Agent (L3a/L3b) 在主动模式下决策参考
+        // 这些信息供 Agent (L3a) 在主动模式下决策参考
         }
     }
 }

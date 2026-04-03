@@ -1,0 +1,28 @@
+kind: model_asset
+metadata:
+  name: litetts-mnn
+  type: tts
+  family: litetts
+  parameter_count: "~50M"
+storage:
+  formats: [mnn]
+  default_path_pattern: "{{.DataDir}}/models/{{.Name}}"
+  sources:
+    - type: local_path
+      path: "/opt/mt-ai/tts/litetts_serving_models/v0.4d_mnn"
+variants:
+  # --- CPU-only (ARM64, MNN runtime) ---
+  # LiteTTS v0.4d, Mobile Neural Network format
+  # Encoder (~55MB) + Decoder (~52MB) = ~107MB total
+  # CPU inference via MNN runtime, no GPU needed
+  # Part of AIBook TTS pipeline: text → G2P → LiteTTS → HiFiGAN vocoder
+  - name: litetts-mnn-cpu-arm64
+    hardware:
+      gpu_arch: "*"
+    engine: litetts
+    format: mnn
+    default_config:
+      port: 32110
+    expected_performance:
+      vram_mib: 0
+      notes: "LiteTTS v0.4d MNN. CPU-only ARM64, ~107MB model. Measured 2026-03-27 on AIBook M1000 SoC: RTF 0.25-0.30 (3-4x realtime). Short 4字=0.36s, medium 28字=1.40s, long 94字=5.72s. 22050Hz mono 16-bit WAV output. All env vars (TARGET_DEVICE=cpu etc) are in engine YAML litetts.yaml. HTTP API: POST /tts/api/v1/generate {text, speaker:'AIBC006_lite', version:'v2.0'}. gRPC: 32108/32109."

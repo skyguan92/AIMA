@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,14 +23,25 @@ import (
 // DefaultPort is the default listen port for the AIMA proxy server.
 const DefaultPort = 6188
 
+// LabelServedModel stores the upstream model identifier expected by the backend.
+// The proxy keeps routing by AIMA's canonical model name, but rewrites forwarded
+// requests to this model when the engine expects a different served name.
+const LabelServedModel = "aima.dev/served-model"
+
+// LabelParameterCount stores the model parameter count used for agent ranking.
+const LabelParameterCount = "aima.dev/parameter_count"
+
 // Backend represents a running inference engine.
 type Backend struct {
-	ModelName  string `json:"model_name"`
-	EngineType string `json:"engine_type"`
-	Address    string `json:"address"`
-	BasePath   string `json:"base_path"`
-	Ready      bool   `json:"ready"`
-	Remote     bool   `json:"remote"` // true = discovered via mDNS, not a local deployment
+	ModelName           string `json:"model_name"`
+	UpstreamModel       string `json:"upstream_model,omitempty"`
+	EngineType          string `json:"engine_type"`
+	Address             string `json:"address"`
+	BasePath            string `json:"base_path"`
+	Ready               bool   `json:"ready"`
+	Remote              bool   `json:"remote"` // true = discovered via mDNS, not a local deployment
+	ParameterCount      string `json:"parameter_count,omitempty"`
+	ContextWindowTokens int    `json:"context_window_tokens,omitempty"`
 }
 
 func cloneBackend(b *Backend) *Backend {
@@ -38,14 +52,26 @@ func cloneBackend(b *Backend) *Backend {
 	return &cp
 }
 
+func backendUpstreamModel(b *Backend) string {
+	if b == nil {
+		return ""
+	}
+	if model := strings.TrimSpace(b.UpstreamModel); model != "" {
+		return model
+	}
+	return strings.TrimSpace(b.ModelName)
+}
+
 // Server is the HTTP inference proxy.
 type Server struct {
-	addr        string
-	apiKey      string
-	routes      map[string]*Backend
-	mu          sync.RWMutex
-	server      *http.Server
-	extraRoutes func(*http.ServeMux)
+	addr            string
+	apiKey          string
+	routes          map[string]*Backend
+	mu              sync.RWMutex
+	server          *http.Server
+	extraRoutes     func(*http.ServeMux)
+	requestRewriter func(path, contentType, model, engineType string, body []byte) []byte
+	onReady         func(addr string)
 }
 
 // Option configures Server.
@@ -61,6 +87,10 @@ func WithAPIKey(key string) Option {
 
 func WithExtraRoutes(fn func(*http.ServeMux)) Option {
 	return func(s *Server) { s.extraRoutes = fn }
+}
+
+func WithRequestRewriter(fn func(path, contentType, model, engineType string, body []byte) []byte) Option {
+	return func(s *Server) { s.requestRewriter = fn }
 }
 
 // SetAddr configures the listen address. Must be called before Start.
@@ -89,6 +119,23 @@ func (s *Server) SetExtraRoutes(fn func(*http.ServeMux)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.extraRoutes = fn
+}
+
+// SetRequestRewriter installs a request body rewrite hook for inference requests.
+// The hook may return the original body unchanged.
+func (s *Server) SetRequestRewriter(fn func(path, contentType, model, engineType string, body []byte) []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requestRewriter = fn
+}
+
+// SetOnReady registers a callback invoked once the server is listening.
+// The callback receives the resolved listen address (e.g. "127.0.0.1:6188").
+// Must be called before Start.
+func (s *Server) SetOnReady(fn func(addr string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onReady = fn
 }
 
 func NewServer(opts ...Option) *Server {
@@ -145,6 +192,14 @@ func (s *Server) Start(ctx context.Context) error {
 	defer ln.Close()
 	slog.Info("proxy server starting", "addr", ln.Addr().String())
 
+	// Notify that the server is ready to accept connections.
+	s.mu.RLock()
+	onReady := s.onReady
+	s.mu.RUnlock()
+	if onReady != nil {
+		go onReady(ln.Addr().String())
+	}
+
 	// Watch for context cancellation
 	go func() {
 		<-ctx.Done()
@@ -176,9 +231,25 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/v1/models", s.handleModels)
-	mux.HandleFunc("/v1/chat/completions", s.handleInference)
-	mux.HandleFunc("/v1/completions", s.handleInference)
-	mux.HandleFunc("/v1/embeddings", s.handleInference)
+	for _, path := range []string{
+		"/v1/chat/completions",
+		"/v1/completions",
+		"/v1/embeddings",
+	} {
+		mux.HandleFunc(path, s.handleInference)
+	}
+	if s.extraRoutes == nil {
+		// OpenClaw installs protocol-aware handlers for these paths. Only use the
+		// generic passthrough fallback when no extra route set is mounted.
+		for _, path := range []string{
+			"/v1/audio/speech",
+			"/v1/tts",
+			"/v1/audio/transcriptions",
+			"/v1/images/generations",
+		} {
+			mux.HandleFunc(path, s.handleInference)
+		}
+	}
 
 	if s.extraRoutes != nil {
 		s.extraRoutes(mux)
@@ -266,12 +337,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	backends := s.ListBackends()
 	models := make([]map[string]any, 0, len(backends))
-	for _, b := range backends {
+	for _, b := range rankedBackends(backends, false) {
 		models = append(models, map[string]any{
-			"model_name":  b.ModelName,
-			"engine_type": b.EngineType,
-			"ready":       b.Ready,
-			"remote":      b.Remote,
+			"model_name":            b.ModelName,
+			"engine_type":           b.EngineType,
+			"ready":                 b.Ready,
+			"remote":                b.Remote,
+			"parameter_count":       b.ParameterCount,
+			"context_window_tokens": b.ContextWindowTokens,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -284,10 +357,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	backends := s.ListBackends()
 	data := make([]map[string]string, 0, len(backends))
-	for _, b := range backends {
-		if !b.Ready || b.Address == "" {
-			continue
-		}
+	for _, b := range rankedBackends(backends, true) {
 		data = append(data, map[string]string{
 			"id":       b.ModelName,
 			"object":   "model",
@@ -301,6 +371,33 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func rankedBackends(backends map[string]*Backend, readyOnly bool) []*Backend {
+	items := make([]*Backend, 0, len(backends))
+	for _, b := range backends {
+		if readyOnly && (!b.Ready || b.Address == "") {
+			continue
+		}
+		items = append(items, b)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return BetterAdvertisedModel(
+			AdvertisedModel{
+				ID:                  items[i].ModelName,
+				ParameterCount:      items[i].ParameterCount,
+				ContextWindowTokens: items[i].ContextWindowTokens,
+				Remote:              items[i].Remote,
+			},
+			AdvertisedModel{
+				ID:                  items[j].ModelName,
+				ParameterCount:      items[j].ParameterCount,
+				ContextWindowTokens: items[j].ContextWindowTokens,
+				Remote:              items[j].Remote,
+			},
+		)
+	})
+	return items
+}
+
 func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
@@ -312,21 +409,19 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	var req struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		WriteJSONError(w, http.StatusBadRequest, "invalid_request", "invalid JSON in request body")
+	model, err := extractModelFromRequest(r.Header.Get("Content-Type"), body)
+	if err != nil {
+		WriteJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 
-	backend := s.resolveBackend(req.Model)
+	backend := s.resolveBackend(model)
 	if backend == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]string{
-				"message": fmt.Sprintf("model %q not found; available models: %s", req.Model, s.availableModels()),
+				"message": fmt.Sprintf("model %q not found; available models: %s", model, s.availableModels()),
 				"type":    "model_not_found",
 			},
 		})
@@ -337,11 +432,21 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]string{
-				"message": fmt.Sprintf("model %q is not ready", req.Model),
+				"message": fmt.Sprintf("model %q is not ready", model),
 				"type":    "service_unavailable",
 			},
 		})
 		return
+	}
+
+	s.mu.RLock()
+	requestRewriter := s.requestRewriter
+	s.mu.RUnlock()
+	if requestRewriter != nil {
+		body = requestRewriter(r.URL.Path, r.Header.Get("Content-Type"), model, backend.EngineType, body)
+	}
+	if upstreamModel := backendUpstreamModel(backend); upstreamModel != "" && model != upstreamModel {
+		body = rewriteModelInBody(r.Header.Get("Content-Type"), body, upstreamModel)
 	}
 
 	// Determine the target path: basePath + suffix from original request
@@ -380,10 +485,92 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
 	slog.Info("proxy request",
 		"method", r.Method,
 		"path", r.URL.Path,
-		"model", req.Model,
+		"model", model,
 		"backend", backend.Address,
 		"latency", time.Since(start),
 	)
+}
+
+func extractModelFromRequest(contentType string, body []byte) (string, error) {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return "", fmt.Errorf("invalid content type")
+	}
+
+	switch mediaType {
+	case "", "application/json":
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			return "", fmt.Errorf("invalid JSON in request body")
+		}
+		return req.Model, nil
+	case "application/x-www-form-urlencoded":
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			return "", fmt.Errorf("invalid form body")
+		}
+		return values.Get("model"), nil
+	case "multipart/form-data":
+		boundary := params["boundary"]
+		if boundary == "" {
+			return "", fmt.Errorf("multipart request missing boundary")
+		}
+		reader := multipart.NewReader(bytes.NewReader(body), boundary)
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return "", fmt.Errorf("invalid multipart form body")
+			}
+			if part.FormName() != "model" {
+				part.Close()
+				continue
+			}
+			data, err := io.ReadAll(io.LimitReader(part, 4096))
+			part.Close()
+			if err != nil {
+				return "", fmt.Errorf("failed to read model form field")
+			}
+			return strings.TrimSpace(string(data)), nil
+		}
+		return "", fmt.Errorf("missing model field in request body")
+	default:
+		return "", fmt.Errorf("unsupported content type %q", mediaType)
+	}
+}
+
+func rewriteModelInBody(contentType string, body []byte, model string) []byte {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil && strings.TrimSpace(contentType) != "" {
+		return body
+	}
+
+	switch mediaType {
+	case "", "application/json":
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			return body
+		}
+		req["model"] = model
+		out, err := json.Marshal(req)
+		if err != nil {
+			return body
+		}
+		return out
+	case "application/x-www-form-urlencoded":
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			return body
+		}
+		values.Set("model", model)
+		return []byte(values.Encode())
+	default:
+		return body
+	}
 }
 
 // resolveBackend finds the backend for a model name.

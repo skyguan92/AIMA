@@ -2,14 +2,14 @@
 
 [English](README.md)
 
-**AI Inference Managed by AI** — 一个 Go 单二进制，自动检测硬件、从 YAML 知识库解析最优配置、通过 K3S 部署推理引擎，并暴露 56 个 MCP 工具供 AI Agent 操控一切。
+**AI Inference Managed by AI** — 一个 Go 单二进制，自动检测硬件、从 YAML 知识库解析最优配置、通过 K3S 部署推理引擎，并暴露 94 个 MCP 工具供 AI Agent 操控一切。
 
 ## 特性
 
 - **零配置硬件检测** — 自动发现 GPU（NVIDIA、AMD、华为昇腾、海光 DCU、Apple Silicon）、CPU 和内存
 - **知识驱动部署** — YAML 目录包含硬件画像、引擎、模型和分区策略；无引擎特定代码分支
 - **多运行时** — K3S（Pod）集群容器 + Docker（单机容器） + Native（exec）裸机推理
-- **56 个 MCP 工具** — AI Agent 可通过程序化接口完整控制硬件、模型、引擎、部署、集群等
+- **94 个 MCP 工具** — AI Agent 可通过程序化接口完整控制硬件、模型、引擎、部署、集群等
 - **集群管理** — 基于 mDNS 的局域网自动发现；跨异构设备远程工具执行
 - **离线优先** — 所有核心功能零网络依赖；网络仅作增强
 - **单二进制，零 CGO** — 可交叉编译到 Windows、macOS、Linux（amd64/arm64），无 C 依赖
@@ -18,13 +18,32 @@
 
 ### 下载
 
-从 [Releases](https://github.com/jguan/aima/releases) 页面下载预编译二进制，或从源码构建：
+从 [Releases](https://github.com/Approaching-AI/AIMA/releases) 页面下载预编译二进制，或从源码构建：
 
 ```bash
-git clone https://github.com/jguan/aima.git
+git clone https://github.com/Approaching-AI/AIMA.git
 cd aima
 make build
 ```
+
+对于已经发布好的产品版本，可以收敛成一行安装：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Approaching-AI/AIMA/master/install.sh | sh
+```
+
+Windows PowerShell 可用：
+
+```powershell
+irm https://raw.githubusercontent.com/Approaching-AI/AIMA/master/install.ps1 | iex
+```
+
+说明：
+- 安装器会解析最新“可安装”的 `vX.Y.Z` 产品 release，而不是 GitHub 的 `latest` release，因为像 `bundle/stack/2026-02-26` 这种 bundle tag 不是主二进制发布。
+- 如果最新 tag 还没有上传主二进制资产，安装器会给出告警，并退回到最新可安装 release。
+- Fork 仓库可通过 `AIMA_REPO=<owner>/<repo>` 覆盖下载源。
+- 指定版本可用 `AIMA_VERSION=v0.2.0`。
+- Windows 安装器当前面向 `windows/amd64`，默认安装到 `%LOCALAPPDATA%\\Programs\\AIMA`。
 
 ### 服务器部署（Linux）
 
@@ -123,7 +142,6 @@ AIMA 采用分层智能架构（L0-L3）：
 - **L1** — 人工 CLI 覆盖
 - **L2** — 基准测试历史中的黄金配置
 - **L3a** — Go Agent 循环（工具调用 LLM）
-- **L3b** — ZeroClaw 边车（可选）
 
 系统围绕四个不变量构建：引擎/模型类型无代码分支（YAML 驱动）、不管理容器生命周期（K3S 负责）、MCP 工具作为唯一真相源、离线优先。
 
@@ -132,19 +150,19 @@ AIMA 采用分层智能架构（L0-L3）：
 ## 项目结构
 
 ```
-cmd/aima/          入口
+cmd/aima/          入口与按领域拆分的依赖装配
 internal/
   hal/             硬件检测
   knowledge/       YAML 知识库 + SQLite 解析器
   runtime/         K3S（Pod）+ Docker（容器）+ Native（exec）运行时
-  mcp/             56 个 MCP 工具实现
+  mcp/             MCP 服务端 + 94 个工具注册/实现
   agent/           Go Agent 循环（L3a）
   cli/             Cobra CLI（MCP 工具的薄包装）
   ui/              内嵌 Web UI（Alpine.js SPA）
   proxy/           OpenAI 兼容 HTTP 代理
   fleet/           mDNS 集群发现 + 远程执行
-  state/           SQLite 状态存储（modernc.org/sqlite，零 CGO）
-  model/           模型扫描/下载/导入
+  sqlite.go        SQLite 状态存储（`package state`，modernc.org/sqlite，零 CGO）
+  model/           模型扫描/下载/导入 + 元数据识别
   engine/          引擎镜像管理
   stack/           K3S + HAMi 基础设施安装器
 catalog/
@@ -174,6 +192,26 @@ make all
 #   build/aima-linux-arm64  (linux/arm64)
 #   build/aima-linux-amd64  (linux/amd64)
 ```
+
+### 打包 GitHub Release 资产
+
+```bash
+make release-assets
+# 输出:
+#   build/release/<version>/aima-darwin-arm64
+#   build/release/<version>/aima-linux-amd64
+#   build/release/<version>/aima-linux-arm64
+#   build/release/<version>/aima-windows-amd64.exe
+#   build/release/<version>/checksums.txt
+```
+
+如果本地装了 `gh`，可继续上传到对应的 GitHub release：
+
+```bash
+make publish-release-assets
+```
+
+现在推送 `v0.2.1` 这类带注释的 SemVer tag 时，也会自动触发 `.github/workflows/release.yml`，构建并上传同一套资产。
 
 ### 运行测试
 

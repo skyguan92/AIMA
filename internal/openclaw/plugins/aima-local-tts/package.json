@@ -1,0 +1,12 @@
+{
+  "name": "aima-local-tts",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw plugin that exposes the synced local AIMA TTS model as a workspace-audio synthesis tool.",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

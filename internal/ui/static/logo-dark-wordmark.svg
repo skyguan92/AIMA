@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 140" fill="none">
+  <defs>
+    <filter id="aimaGlow" x="280" y="-8" width="140" height="156" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-color="#1BFF3C" flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset/>
+      <feGaussianBlur stdDeviation="14"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.105882 0 0 0 0 1 0 0 0 0 0.235294 0 0 0 0.75 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="glow"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="glow" result="shape"/>
+    </filter>
+  </defs>
+  <text
+    x="28"
+    y="104"
+    fill="#FFFFFF"
+    font-family="Menlo, Monaco, Consolas, 'Liberation Mono', monospace"
+    font-size="108"
+    font-weight="400"
+    letter-spacing="6">AIMA</text>
+  <rect x="336" y="18" width="46" height="104" rx="4" fill="#1BFF3C" filter="url(#aimaGlow)"/>
+</svg>

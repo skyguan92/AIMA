@@ -1,0 +1,11 @@
+{
+  "id": "aima-local-image",
+  "name": "AIMA Local Image",
+  "description": "Expose the synced local AIMA image-generation model as a native OpenClaw image provider.",
+  "version": "0.2.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

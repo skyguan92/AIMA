@@ -31,6 +31,11 @@ variants:
       unified_memory: true
     engine: vllm-nightly
     format: safetensors
+    compatibility:
+      repair_init_commands:
+        - 'python3 -m pip install --no-cache-dir --upgrade transformers==5.4.0'
+        - 'python3 -m pip install --no-cache-dir --upgrade mistral_common==1.10.0'
+        - 'python3 -c "from pathlib import Path; p=Path(\"/usr/local/lib/python3.12/dist-packages/transformers/modeling_rope_utils.py\"); t=p.read_text(); old=\"        received_keys -= ignore_keys\n\"; new=\"        received_keys -= set(ignore_keys)\n\"; p.write_text(t.replace(old, new, 1) if old in t else t)"'
     default_config:
       gpu_memory_utilization: 0.85
       max_model_len: 262144
@@ -115,6 +120,7 @@ variants:
     engine: llamacpp
     format: gguf
     default_config:
+      quantization: int4
       n_gpu_layers: 999
       ctx_size: 4096
     expected_performance:

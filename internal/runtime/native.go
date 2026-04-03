@@ -1,19 +1,15 @@
 package runtime
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +22,7 @@ import (
 type deploymentMeta struct {
 	Name               string            `json:"name"`
 	PID                int               `json:"pid"`
+	ProcessGroupID     int               `json:"process_group_id,omitempty"`
 	Port               int               `json:"port"`
 	Engine             string            `json:"engine"`
 	Labels             map[string]string `json:"labels"`
@@ -38,19 +35,22 @@ type deploymentMeta struct {
 
 // nativeProcess tracks a running inference engine process started in THIS CLI session.
 type nativeProcess struct {
-	name      string
-	cmd       *exec.Cmd
-	cancel    context.CancelFunc
-	done      chan struct{}
-	logFile   *os.File
-	logPath   string
-	port      int
-	labels    map[string]string
-	startTime time.Time
-	ready        bool
-	exited       bool
-	exitSuccess  bool // true if process exited with code 0
-	mu           sync.Mutex
+	name           string
+	cmd            *exec.Cmd // nil when launched via schtasks on Windows
+	pid            int       // Process ID; set even when cmd is nil
+	processGroupID int
+	cancel         context.CancelFunc
+	done           chan struct{}
+	logFile        *os.File
+	logPath        string
+	port           int
+	labels         map[string]string
+	startTime      time.Time
+	startupTimeout time.Duration
+	ready          bool
+	exited         bool
+	exitSuccess    bool // true if process exited with code 0
+	mu             sync.Mutex
 }
 
 // BinaryResolveFunc resolves a native engine binary, downloading if needed.
@@ -109,9 +109,10 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	}
 	// Check persisted metadata: if a deployment with this name is still alive, reject
 	if meta, err := r.loadMeta(req.Name); err == nil {
-		if portAlive(meta.Port) {
+		status := r.metaToStatus(meta)
+		if status.Phase == "running" || status.Phase == "starting" {
 			r.mu.Unlock()
-			return fmt.Errorf("deployment %q already running (PID %d, port %d)", req.Name, meta.PID, meta.Port)
+			return fmt.Errorf("deployment %q already %s (PID %d, port %d)", req.Name, status.Phase, meta.PID, meta.Port)
 		}
 		// Stale metadata — clean up
 		r.removeMeta(req.Name)
@@ -131,6 +132,12 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 		clearPlaceholder()
 		return fmt.Errorf("deploy %s: empty command", req.Name)
 	}
+	if req.Port > 0 {
+		if conflict := r.portConflict(req.Port, req.Name); conflict != "" {
+			clearPlaceholder()
+			return fmt.Errorf("deploy %s: port %d already in use by %s", req.Name, req.Port, conflict)
+		}
+	}
 
 	// Replace templates with actual values (host path, not /models like containers)
 	command := make([]string, len(req.Command))
@@ -139,21 +146,12 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 		c = strings.ReplaceAll(c, "{{.ModelName}}", req.Name)
 		command[i] = c
 	}
-
-	// Append --port if not already present
-	hasPort := false
-	for _, c := range command {
-		if strings.Contains(c, "--port") {
-			hasPort = true
-			break
-		}
-	}
-	if !hasPort && req.Port > 0 {
-		command = append(command, "--port", strconv.Itoa(req.Port))
-	}
+	portBindings := portBindingsForRequest(req)
+	primaryPort := primaryPortForRequest(req)
+	command = knowledge.AppendPortBindings(command, portBindings)
 
 	// Append other config values as CLI flags, with template substitution
-	for _, f := range configToFlags(req.Config) {
+	for _, f := range configToFlags(req.Config, req.Command, req.ModelPath, knowledge.PortConfigKeys(req.PortSpecs)) {
 		f = strings.ReplaceAll(f, "{{.ModelName}}", req.Name)
 		f = strings.ReplaceAll(f, "{{.ModelPath}}", req.ModelPath)
 		command = append(command, f)
@@ -187,54 +185,80 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 
 	// Create cancellable context for this process
 	procCtx, cancel := context.WithCancel(context.Background())
+	slog.Info("native deploy", "name", req.Name, "command", strings.Join(command, " "), "work_dir", req.WorkDir)
 
-	cmd := exec.CommandContext(procCtx, command[0], command[1:]...)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	// Build environment: start with parent env, add distDir library path, then request env vars.
-	env := os.Environ()
-	if r.distDir != "" {
-		ldVar := "LD_LIBRARY_PATH"
-		if goruntime.GOOS == "darwin" {
-			ldVar = "DYLD_LIBRARY_PATH"
+	var cmd *exec.Cmd
+	var procPID int
+	var procGroupID int
+	var procLogFile *os.File
+
+	if goruntime.GOOS == "windows" {
+		_ = procCtx // schtasks creates its own process context
+		// On Windows, launch via schtasks /it to ensure the process runs in the
+		// interactive desktop session (Session 1). GPU engines (Vulkan/DirectX)
+		// need display session access which is unavailable via SSH (Session 0).
+		logFile.Close() // batch file will manage log output
+		pid, err := r.launchViaSchtasks(req.Name, command, logPath, req.Env, req.WorkDir)
+		if err != nil {
+			cancel()
+			clearPlaceholder()
+			return fmt.Errorf("start %s via schtasks: %w", req.Name, err)
 		}
-		existing := os.Getenv(ldVar)
-		newVal := r.distDir
-		if existing != "" {
-			newVal = r.distDir + ":" + existing
+		procPID = pid
+		procLogFile = nil
+	} else {
+		cmd = exec.CommandContext(procCtx, command[0], command[1:]...)
+		configureDetachedProcess(cmd)
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		// Build environment: start with parent env, add distDir library path, then request env vars.
+		env := os.Environ()
+		if r.distDir != "" {
+			ldVar := "LD_LIBRARY_PATH"
+			if goruntime.GOOS == "darwin" {
+				ldVar = "DYLD_LIBRARY_PATH"
+			}
+			existing := os.Getenv(ldVar)
+			newVal := r.distDir
+			if existing != "" {
+				newVal = r.distDir + ":" + existing
+			}
+			env = append(env, ldVar+"="+newVal)
 		}
-		env = append(env, ldVar+"="+newVal)
-	}
-	for k, v := range req.Env {
-		env = append(env, k+"="+v)
-	}
-	if len(env) > 0 {
-		cmd.Env = env
-	}
-
-	slog.Info("native deploy", "name", req.Name, "command", strings.Join(command, " "))
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		logFile.Close()
-		// Remove placeholder reservation on failure.
-		r.mu.Lock()
-		delete(r.processes, req.Name)
-		r.mu.Unlock()
-		return fmt.Errorf("start %s: %w", req.Name, err)
+		for k, v := range req.Env {
+			env = append(env, k+"="+v)
+		}
+		if len(env) > 0 {
+			cmd.Env = env
+		}
+		if req.WorkDir != "" {
+			cmd.Dir = req.WorkDir
+		}
+		if err := cmd.Start(); err != nil {
+			cancel()
+			logFile.Close()
+			clearPlaceholder()
+			return fmt.Errorf("start %s: %w", req.Name, err)
+		}
+		procPID = cmd.Process.Pid
+		procGroupID = childProcessGroupID(procPID)
+		procLogFile = logFile
 	}
 
 	now := time.Now()
 	proc := &nativeProcess{
-		name:      req.Name,
-		cmd:       cmd,
-		cancel:    cancel,
-		done:      make(chan struct{}),
-		logFile:   logFile,
-		logPath:   logPath,
-		port:      req.Port,
-		labels:    req.Labels,
-		startTime: now,
+		name:           req.Name,
+		cmd:            cmd,
+		pid:            procPID,
+		processGroupID: procGroupID,
+		cancel:         cancel,
+		done:           make(chan struct{}),
+		logFile:        procLogFile,
+		logPath:        logPath,
+		port:           primaryPort,
+		labels:         req.Labels,
+		startTime:      now,
+		startupTimeout: effectiveHealthTimeout(req.HealthCheck),
 	}
 
 	r.mu.Lock()
@@ -243,14 +267,15 @@ func (r *NativeRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 
 	// Persist deployment metadata for cross-invocation discovery
 	meta := &deploymentMeta{
-		Name:      req.Name,
-		PID:       cmd.Process.Pid,
-		Port:      req.Port,
-		Engine:    req.Engine,
-		Labels:    req.Labels,
-		LogPath:   logPath,
-		Command:   command,
-		StartTime: now,
+		Name:           req.Name,
+		PID:            procPID,
+		ProcessGroupID: procGroupID,
+		Port:           primaryPort,
+		Engine:         req.Engine,
+		Labels:         req.Labels,
+		LogPath:        logPath,
+		Command:        command,
+		StartTime:      now,
 	}
 	if req.HealthCheck != nil {
 		meta.HealthCheckPath = req.HealthCheck.Path
@@ -282,19 +307,42 @@ func (r *NativeRuntime) Delete(_ context.Context, name string) error {
 	}
 	r.mu.Unlock()
 
-	if inMemory {
-		proc.cancel()
+	port := 0
+	if proc != nil {
+		port = proc.port
+	}
 
-		if !waitForProcessExit(proc, 5*time.Second) {
-			slog.Warn("process did not exit within timeout; forcing kill", "name", name)
-			if proc.cmd.Process != nil {
-				if err := proc.cmd.Process.Kill(); err != nil {
-					slog.Warn("force kill process", "name", name, "error", err)
+	if inMemory {
+		defer proc.cancel()
+		if proc.cmd != nil {
+			// Standard Go child process. When launched detached on Unix, stop the
+			// whole process group so engine worker children do not survive the root.
+			if proc.processGroupID > 0 {
+				if err := killProcessGroup(proc.processGroupID); err != nil {
+					slog.Warn("kill process group", "name", name, "pgid", proc.processGroupID, "error", err)
+				}
+			} else {
+				proc.cancel()
+			}
+			if !waitForProcessExit(proc, 5*time.Second) {
+				slog.Warn("process did not exit within timeout; forcing kill", "name", name)
+				if proc.cmd.Process != nil {
+					if err := proc.cmd.Process.Kill(); err != nil {
+						slog.Warn("force kill process", "name", name, "error", err)
+					}
+				}
+				if !waitForProcessExit(proc, 2*time.Second) {
+					r.removeMeta(name)
+					return fmt.Errorf("stop deployment %q: process did not exit after force kill", name)
 				}
 			}
-			if !waitForProcessExit(proc, 2*time.Second) {
-				r.removeMeta(name)
-				return fmt.Errorf("stop deployment %q: process did not exit after force kill", name)
+		} else if proc.pid > 0 {
+			// External process (e.g., Windows schtasks): kill by PID
+			if err := killProcessByPID(proc.pid); err != nil {
+				slog.Warn("kill process by PID", "name", name, "pid", proc.pid, "error", err)
+			}
+			if !waitForProcessExit(proc, 5*time.Second) {
+				slog.Warn("process did not exit within timeout after PID kill", "name", name, "pid", proc.pid)
 			}
 		}
 	} else {
@@ -304,18 +352,26 @@ func (r *NativeRuntime) Delete(_ context.Context, name string) error {
 		if err != nil {
 			return fmt.Errorf("deployment %q not found", name)
 		}
+		port = meta.Port
 		if meta.PID > 0 {
 			if processMatchesMeta(meta) {
-				if p, err := os.FindProcess(meta.PID); err == nil {
-					if err := p.Kill(); err != nil {
-						slog.Warn("kill process", "name", name, "pid", meta.PID, "error", err)
+				if meta.ProcessGroupID > 0 {
+					if err := killProcessGroup(meta.ProcessGroupID); err != nil {
+						slog.Warn("kill process group", "name", name, "pgid", meta.ProcessGroupID, "error", err)
 					}
+				} else if err := killProcessByPID(meta.PID); err != nil {
+					slog.Warn("kill process", "name", name, "pid", meta.PID, "error", err)
 				}
 			} else {
 				slog.Warn("stale PID: process does not match deployment metadata, skipping kill",
 					"name", name, "pid", meta.PID)
 			}
 		}
+	}
+
+	if !waitForPortRelease(port, nativePortReleaseTimeout) {
+		r.removeMeta(name)
+		return fmt.Errorf("stop deployment %q: port %d is still in use after process exit", name, port)
 	}
 
 	r.removeMeta(name)
@@ -328,7 +384,7 @@ func (r *NativeRuntime) Status(_ context.Context, name string) (*DeploymentStatu
 	r.mu.RUnlock()
 
 	if ok && proc != nil {
-		return r.procToStatus(proc), nil
+		return r.procStatusWithPersistedOverride(name, proc), nil
 	}
 
 	// Try persisted metadata
@@ -341,16 +397,25 @@ func (r *NativeRuntime) Status(_ context.Context, name string) (*DeploymentStatu
 
 func (r *NativeRuntime) List(_ context.Context) ([]*DeploymentStatus, error) {
 	r.mu.RLock()
-	seen := make(map[string]bool)
-	statuses := make([]*DeploymentStatus, 0)
+	type procEntry struct {
+		name string
+		proc *nativeProcess
+	}
+	entries := make([]procEntry, 0, len(r.processes))
+	seen := make(map[string]bool, len(r.processes))
 	for name, proc := range r.processes {
 		if proc == nil {
 			continue // placeholder from in-progress deploy
 		}
+		entries = append(entries, procEntry{name: name, proc: proc})
 		seen[name] = true
-		statuses = append(statuses, r.procToStatus(proc))
 	}
 	r.mu.RUnlock()
+
+	statuses := make([]*DeploymentStatus, 0, len(entries))
+	for _, entry := range entries {
+		statuses = append(statuses, r.procStatusWithPersistedOverride(entry.name, entry.proc))
+	}
 
 	// Add persisted deployments not in memory (from previous CLI sessions)
 	for _, meta := range r.loadAllMeta() {
@@ -361,6 +426,44 @@ func (r *NativeRuntime) List(_ context.Context) ([]*DeploymentStatus, error) {
 	}
 
 	return statuses, nil
+}
+
+func (r *NativeRuntime) procStatusWithPersistedOverride(name string, proc *nativeProcess) *DeploymentStatus {
+	status := r.procToStatus(proc)
+	meta, err := r.loadMeta(name)
+	if err != nil {
+		return status
+	}
+
+	persisted := r.metaToStatus(meta)
+	proc.mu.Lock()
+	exited := proc.exited
+	proc.mu.Unlock()
+	switch {
+	case persisted.Phase == "failed" && status.Phase != "failed" && !(isStalePortReuseFailure(persisted.Message) && !exited):
+		return persisted
+	case persisted.Ready && !status.Ready:
+		return persisted
+	}
+
+	if status.StartupMessage == "" {
+		status.StartupMessage = persisted.StartupMessage
+	}
+	if status.StartupPhase == "" || persisted.StartupProgress > status.StartupProgress {
+		status.StartupPhase = persisted.StartupPhase
+		status.StartupProgress = persisted.StartupProgress
+	}
+	if status.ErrorLines == "" {
+		status.ErrorLines = persisted.ErrorLines
+	}
+	if status.Message == "" && !(status.Phase != "failed" && isStalePortReuseFailure(persisted.Message)) {
+		status.Message = persisted.Message
+	}
+	return status
+}
+
+func isStalePortReuseFailure(msg string) bool {
+	return msg == "deployment metadata is stale; port is in use by another process"
 }
 
 func (r *NativeRuntime) Logs(_ context.Context, name string, tailLines int) (string, error) {
@@ -381,33 +484,94 @@ func (r *NativeRuntime) Logs(_ context.Context, name string, tailLines int) (str
 }
 
 func (r *NativeRuntime) watchProcess(proc *nativeProcess) {
-	err := proc.cmd.Wait()
-	proc.mu.Lock()
-	proc.exited = true
-	proc.ready = false
-	proc.exitSuccess = err == nil
-	proc.mu.Unlock()
+	if proc.cmd != nil {
+		// Standard Go child process: use Wait() for precise exit detection.
+		err := proc.cmd.Wait()
+		proc.mu.Lock()
+		proc.exited = true
+		proc.ready = false
+		proc.exitSuccess = err == nil
+		proc.mu.Unlock()
+		if err != nil {
+			slog.Warn("process exited with error", "name", proc.name, "error", err)
+		} else {
+			slog.Info("process exited", "name", proc.name)
+		}
+	} else {
+		// External process (e.g., Windows schtasks): monitor by port liveness.
+		// Phase 1: Wait until health check marks ready, or detect early crash.
+		startupTimeout := proc.startupTimeout
+		if startupTimeout <= 0 {
+			startupTimeout = 60 * time.Second
+		}
+		startupDeadline := time.Now().Add(startupTimeout)
+		for time.Now().Before(startupDeadline) {
+			proc.mu.Lock()
+			ready := proc.ready
+			proc.mu.Unlock()
+			if ready {
+				break
+			}
+			// Check if PID vanished (process crashed during startup)
+			if proc.pid > 0 && !pidAlive(proc.pid) {
+				slog.Warn("process died during startup", "name", proc.name, "pid", proc.pid)
+				break
+			}
+			time.Sleep(3 * time.Second)
+		}
+		// Phase 2: Monitor running process by port liveness.
+		proc.mu.Lock()
+		isReady := proc.ready
+		proc.mu.Unlock()
+		if isReady {
+			for {
+				time.Sleep(1 * time.Second)
+				if proc.pid > 0 && !pidAlive(proc.pid) {
+					break
+				}
+				if !externalProcessAlive(proc) {
+					time.Sleep(1 * time.Second)
+					if proc.pid > 0 && !pidAlive(proc.pid) {
+						break
+					}
+					if !externalProcessAlive(proc) {
+						break
+					}
+				}
+			}
+		}
+		proc.mu.Lock()
+		if !proc.exited {
+			proc.exited = true
+			proc.ready = false
+			proc.exitSuccess = false
+		}
+		proc.mu.Unlock()
+		slog.Info("process exited (detected via monitoring)", "name", proc.name, "pid", proc.pid)
+	}
 	if proc.logFile != nil {
 		_ = proc.logFile.Close()
 	}
 	if proc.done != nil {
 		close(proc.done)
 	}
-	if err != nil {
-		slog.Warn("process exited with error", "name", proc.name, "error", err)
-	} else {
-		slog.Info("process exited", "name", proc.name)
-	}
 }
 
 func (r *NativeRuntime) healthCheckAndWarmup(proc *nativeProcess, hc *HealthCheckConfig, warmup *WarmupConfig) {
-	timeout := time.Duration(hc.TimeoutS) * time.Second
-	if timeout == 0 {
-		timeout = 60 * time.Second
-	}
+	timeout := effectiveHealthTimeout(hc)
 	deadline := time.Now().Add(timeout)
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", proc.port, hc.Path)
-	client := &http.Client{Timeout: 3 * time.Second}
+	hcClient := &http.Client{Timeout: 3 * time.Second}
+
+	// Build a warmup client once with appropriate timeout, reused across retries.
+	var warmupClient *http.Client
+	if warmup != nil {
+		wt := time.Duration(warmup.TimeoutS) * time.Second
+		if wt == 0 {
+			wt = 30 * time.Second
+		}
+		warmupClient = &http.Client{Timeout: wt}
+	}
 
 	for time.Now().Before(deadline) {
 		proc.mu.Lock()
@@ -418,14 +582,16 @@ func (r *NativeRuntime) healthCheckAndWarmup(proc *nativeProcess, hc *HealthChec
 			return
 		}
 
-		resp, err := client.Get(url)
+		resp, err := hcClient.Get(url)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				slog.Info("health check passed", "name", proc.name)
-				// Run warmup before marking ready
-				if warmup != nil {
-					r.warmup(proc, warmup)
+				// Run warmup before marking ready. A successful health endpoint alone
+				// is not enough because another process may already own the same port.
+				if warmup != nil && !r.warmup(proc, warmup, warmupClient) {
+					time.Sleep(2 * time.Second)
+					continue
 				}
 				proc.mu.Lock()
 				proc.ready = true
@@ -441,7 +607,8 @@ func (r *NativeRuntime) healthCheckAndWarmup(proc *nativeProcess, hc *HealthChec
 }
 
 // warmup sends a dummy inference request to force model weight loading and CUDA kernel compilation.
-func (r *NativeRuntime) warmup(proc *nativeProcess, cfg *WarmupConfig) {
+// It returns true only when the engine accepts the request successfully.
+func (r *NativeRuntime) warmup(proc *nativeProcess, cfg *WarmupConfig, client *http.Client) bool {
 	prompt := cfg.Prompt
 	if prompt == "" {
 		prompt = "Hello"
@@ -450,27 +617,28 @@ func (r *NativeRuntime) warmup(proc *nativeProcess, cfg *WarmupConfig) {
 	if maxTokens == 0 {
 		maxTokens = 1
 	}
-	timeout := time.Duration(cfg.TimeoutS) * time.Second
-	if timeout == 0 {
-		timeout = 30 * time.Second
+	modelName := proc.name
+	if proc.labels != nil && proc.labels["aima.dev/model"] != "" {
+		modelName = proc.labels["aima.dev/model"]
 	}
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", proc.port)
-	body := fmt.Sprintf(`{"model":"warmup","messages":[{"role":"user","content":%q}],"max_tokens":%d}`, prompt, maxTokens)
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}],"max_tokens":%d}`, modelName, prompt, maxTokens)
 
 	slog.Info("warming up engine", "name", proc.name, "url", url)
-	client := &http.Client{Timeout: timeout}
 	resp, err := client.Post(url, "application/json", strings.NewReader(body))
 	if err != nil {
 		slog.Warn("warmup request failed", "name", proc.name, "error", err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
 		slog.Info("warmup complete", "name", proc.name)
+		return true
 	} else {
 		slog.Warn("warmup returned non-200", "name", proc.name, "status", resp.StatusCode)
+		return false
 	}
 }
 
@@ -481,6 +649,8 @@ func (r *NativeRuntime) procToStatus(proc *nativeProcess) *DeploymentStatus {
 	exitSuccess := proc.exitSuccess
 	proc.mu.Unlock()
 
+	portBound := proc.port > 0 && portAlive(proc.port)
+
 	phase := "running"
 	if exited {
 		if exitSuccess {
@@ -489,21 +659,30 @@ func (r *NativeRuntime) procToStatus(proc *nativeProcess) *DeploymentStatus {
 			phase = "failed"
 		}
 		ready = false
+	} else if !ready {
+		phase = "starting"
 	}
 
 	ds := &DeploymentStatus{
-		Name:      proc.name,
-		Phase:     phase,
-		Ready:     ready,
-		Address:   fmt.Sprintf("127.0.0.1:%d", proc.port),
-		Labels:    proc.labels,
-		StartTime: proc.startTime.Format(time.RFC3339),
-		Runtime:   "native",
+		Name:    proc.name,
+		Phase:   phase,
+		Ready:   ready,
+		Address: fmt.Sprintf("127.0.0.1:%d", proc.port),
+		Labels:  proc.labels,
+		Runtime: "native",
 	}
+	setDeploymentStartFromTime(ds, proc.startTime)
 
 	// Enrich with log-based progress for non-ready deployments
 	if !ready && proc.logPath != "" {
-		r.enrichNativeProgress(ds, proc.logPath, proc.labels)
+		if errMsg := r.enrichNativeProgress(ds, proc.logPath, proc.labels); errMsg != "" && ds.Phase != "stopped" {
+			ds.Phase = "failed"
+			ds.Ready = false
+			ds.Message = errMsg
+		}
+	}
+	if !ds.Ready && ds.Phase != "failed" && ds.Phase != "stopped" {
+		r.ensureNativeStartingStatus(ds, proc.startTime, portBound, proc.labels)
 	}
 
 	return ds
@@ -514,10 +693,14 @@ func (r *NativeRuntime) procToStatus(proc *nativeProcess) *DeploymentStatus {
 // before model weights are loaded, so TCP alive does NOT mean ready to serve.
 func (r *NativeRuntime) metaToStatus(meta *deploymentMeta) *DeploymentStatus {
 	alive := portAlive(meta.Port)
+	processMatches := meta.PID <= 0 || processMatchesMeta(meta)
 
 	phase := "running"
 	ready := false
-	if alive {
+	if !processMatches {
+		phase = "failed"
+		ready = false
+	} else if alive {
 		// Port is alive (TCP), but check HTTP health to confirm engine is truly ready.
 		// Look up engine asset for the health check path.
 		engineName := ""
@@ -531,6 +714,9 @@ func (r *NativeRuntime) metaToStatus(meta *deploymentMeta) *DeploymentStatus {
 		} else {
 			// No health check info available; fall back to TCP alive.
 			ready = true
+		}
+		if !ready {
+			phase = "starting"
 		}
 	} else {
 		timeout := meta.HealthCheckTimeout
@@ -547,18 +733,32 @@ func (r *NativeRuntime) metaToStatus(meta *deploymentMeta) *DeploymentStatus {
 	}
 
 	ds := &DeploymentStatus{
-		Name:      meta.Name,
-		Phase:     phase,
-		Ready:     ready,
-		Address:   fmt.Sprintf("127.0.0.1:%d", meta.Port),
-		Labels:    meta.Labels,
-		StartTime: meta.StartTime.Format(time.RFC3339),
-		Runtime:   "native",
+		Name:    meta.Name,
+		Phase:   phase,
+		Ready:   ready,
+		Address: fmt.Sprintf("127.0.0.1:%d", meta.Port),
+		Labels:  meta.Labels,
+		Runtime: "native",
 	}
+	setDeploymentStartFromTime(ds, meta.StartTime)
 
 	// Enrich with log-based progress for non-ready deployments
 	if !ready && meta.LogPath != "" {
-		r.enrichNativeProgress(ds, meta.LogPath, meta.Labels)
+		if errMsg := r.enrichNativeProgress(ds, meta.LogPath, meta.Labels); errMsg != "" {
+			ds.Phase = "failed"
+			ds.Ready = false
+			ds.Message = errMsg
+		}
+	}
+	if !ds.Ready && ds.Phase != "failed" && ds.Phase != "stopped" {
+		r.ensureNativeStartingStatus(ds, meta.StartTime, alive, meta.Labels)
+	}
+	if ds.Phase == "failed" && ds.Message == "" && meta.PID > 0 && !processMatches {
+		if alive {
+			ds.Message = "deployment metadata is stale; port is in use by another process"
+		} else {
+			ds.Message = "process exited before readiness"
+		}
 	}
 
 	return ds
@@ -611,136 +811,6 @@ func (r *NativeRuntime) loadAllMeta() []*deploymentMeta {
 	return metas
 }
 
-// processMatchesMeta validates that the process at the given PID still matches the
-// deployment metadata. This guards against PID reuse — if the OS recycled the PID
-// for a different process, we must not kill it.
-func processMatchesMeta(meta *deploymentMeta) bool {
-	if meta.PID <= 0 || len(meta.Command) == 0 {
-		return false
-	}
-	// On Linux, read /proc/<pid>/cmdline to verify the process identity.
-	if goruntime.GOOS == "linux" {
-		cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", meta.PID))
-		if err != nil {
-			return false // process doesn't exist
-		}
-		// /proc/PID/cmdline is NUL-separated; extract the first arg (binary name).
-		parts := strings.SplitN(string(cmdline), "\x00", 2)
-		if len(parts) == 0 || parts[0] == "" {
-			return false
-		}
-		procBin := filepath.Base(parts[0])
-		metaBin := filepath.Base(meta.Command[0])
-		return procBin == metaBin
-	}
-	// On non-Linux (macOS, Windows): fall back to port check as best-effort.
-	// If the port the deployment was using is still alive, assume the process is ours.
-	if meta.Port > 0 {
-		return portAlive(meta.Port)
-	}
-	return false
-}
-
-// portAlive checks if a TCP port is responding on localhost.
-func portAlive(port int) bool {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}
-
-// readTail reads the last n lines from a file by seeking from the end,
-// avoiding reading the entire file into memory for large log files.
-// For small files (< 256KB), uses a forward scan for reliability on Windows
-// where stat size may lag behind writes from child processes.
-func readTail(path string, n int) (string, error) {
-	if n <= 0 {
-		n = 100
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("open log: %w", err)
-	}
-	defer f.Close()
-
-	stat, err := f.Stat()
-	if err != nil {
-		return "", fmt.Errorf("stat log: %w", err)
-	}
-	size := stat.Size()
-
-	// For small files or when stat reports size 0 (Windows edge case with
-	// unflushed child process writes), use a simple forward scan.
-	const seekThreshold = 256 * 1024 // 256KB
-	if size < seekThreshold {
-		return readTailForward(f, n)
-	}
-
-	// Large files: seek from end to avoid reading gigabytes of logs.
-	const initialChunk = 64 * 1024 // 64KB
-	chunkSize := int64(initialChunk)
-
-	for {
-		offset := size - chunkSize
-		if offset < 0 {
-			offset = 0
-			chunkSize = size
-		}
-
-		buf := make([]byte, chunkSize)
-		nRead, err := f.ReadAt(buf, offset)
-		if err != nil && err != io.EOF {
-			return "", fmt.Errorf("read log: %w", err)
-		}
-		buf = buf[:nRead]
-
-		// Count newlines from the end
-		lineCount := 0
-		cutPos := len(buf)
-		for i := len(buf) - 1; i >= 0; i-- {
-			if buf[i] == '\n' {
-				lineCount++
-				if lineCount > n {
-					cutPos = i + 1
-					break
-				}
-			}
-		}
-
-		if lineCount > n || offset == 0 {
-			result := strings.TrimRight(string(buf[cutPos:]), "\n\r")
-			return result, nil
-		}
-
-		// Need more data — double chunk size
-		chunkSize *= 2
-		if chunkSize > size {
-			chunkSize = size
-		}
-	}
-}
-
-// readTailForward reads an already-opened file line by line, keeping the last n lines.
-// Used for small files where the seek optimization isn't needed.
-func readTailForward(f *os.File, n int) (string, error) {
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	var lines []string
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil && err != io.EOF {
-		return "", fmt.Errorf("read log: %w", err)
-	}
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return strings.Join(lines, "\n"), nil
-}
-
 // findInDist checks for a binary in the dist directory.
 // On Windows, also tries with .exe suffix.
 func (r *NativeRuntime) findInDist(name string) string {
@@ -755,63 +825,4 @@ func (r *NativeRuntime) findInDist(name string) string {
 		}
 	}
 	return ""
-}
-
-// enrichNativeProgress reads log tail and matches engine patterns to set progress fields.
-func (r *NativeRuntime) enrichNativeProgress(ds *DeploymentStatus, logPath string, labels map[string]string) {
-	engineName := ""
-	if labels != nil {
-		engineName = labels["aima.dev/engine"]
-	}
-	asset := findEngineAsset(r.engineAssets, engineName)
-
-	if asset != nil && len(asset.TimeConstraints.ColdStartS) >= 2 {
-		ds.EstimatedTotalS = asset.TimeConstraints.ColdStartS[1]
-	}
-
-	tailLines := 50
-	if ds.Phase == "failed" {
-		tailLines = 5
-	}
-
-	logs, err := readTail(logPath, tailLines)
-	if err != nil || logs == "" {
-		return
-	}
-
-	if ds.Phase == "failed" {
-		ds.ErrorLines = logs
-	}
-
-	if asset == nil || asset.Startup.LogPatterns == nil {
-		return
-	}
-
-	if errMsg := DetectStartupError(logs, asset.Startup.LogPatterns); errMsg != "" {
-		ds.StartupMessage = errMsg
-	}
-
-	if ds.Phase == "starting" || (ds.Phase == "running" && !ds.Ready) {
-		sp := DetectStartupProgress(logs, asset.Startup.LogPatterns)
-		if sp.Progress > 0 {
-			ds.StartupPhase = sp.Phase
-			ds.StartupProgress = sp.Progress
-			ds.StartupMessage = sp.Message
-		} else {
-			ds.StartupPhase = "initializing"
-			ds.StartupProgress = 5
-			ds.StartupMessage = formatPhaseName("initializing")
-		}
-	}
-}
-
-func waitForProcessExit(proc *nativeProcess, timeout time.Duration) bool {
-	// proc.done is always initialized in Deploy(); this function must not be
-	// called on a process without a done channel.
-	select {
-	case <-proc.done:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
 }

@@ -1,0 +1,71 @@
+kind: engine_asset
+_profile: vllm
+metadata:
+  name: vllm-rocm-rdna3
+  type: vllm
+  version: "0.16.0"
+hardware:
+  gpu_arch: RDNA3
+  vram_min_mib: 4096
+image:
+  # AMD official Navi-specific vLLM ROCm image — gfx1100 (W7900D, RX 7900 XTX)
+  # Validated 2026-04-01 on 8× W7900D 48GB: InternVL3-78B TP=8 = 17.8 tok/s
+  name: rocm/vllm-dev
+  tag: "rocm7.2.1_navi_ubuntu24.04_py3.12_pytorch_2.9_vllm_0.16.0"
+  size_approx_mb: 17400
+  platforms: [linux/amd64]
+  registries:
+    - docker.io/rocm/vllm-dev
+    - docker.m.daocloud.io/rocm/vllm-dev
+patterns:
+  - "^vllm$"
+  - "^vllm-"
+  - "^vllm/"
+  - "-vllm"
+  - "vllm/"
+  - ":vllm"
+  - "vllm-rocm"
+  - "gfx1100"
+startup:
+  env:
+    HSA_OVERRIDE_GFX_VERSION: "11.0.0"
+    HSA_ENABLE_SDMA: "0"
+  default_args:
+    gpu_memory_utilization: 0.90
+    max_model_len: 4096
+    enforce_eager: true
+  docker_args:
+    - "--device /dev/kfd"
+    - "--device /dev/dri"
+    - "--group-add video"
+    - "--ipc host"
+    - "--shm-size 16g"
+  health_check:
+    timeout_s: 600
+amplifier:
+  features:
+    - triton_flash_attention
+    - tensor_parallelism
+  performance_gain: "High throughput on RDNA3 discrete GPU with ROCm 7.2.1, supports TP up to 8 GPUs"
+  notes: |
+    Validated on 8× AMD W7900D 48GB (gfx1100, RDNA3).
+    enforce_eager required — torch.compile/CUDA graphs hang on RDNA3 gfx1100.
+    Base image is vLLM 0.16.0. For newer models (Gemma 4, Qwen3.5), use vLLM 0.19.0:
+      pip install vllm==0.19.0 --extra-index-url https://wheels.vllm.ai/rocm/0.19.0/rocm721/
+      Also requires: transformers>=5.0 (pip install --upgrade transformers)
+    vLLM 0.19.0 adds: Gemma4, Qwen3.5 MoE, and other new architectures.
+    TRITON_ATTN required for models with head_size=512 (e.g. Gemma 4).
+    ROCM_ATTN head_size=512 support pending (vLLM PR #38824).
+    FP8 KV cache supported. FP8 weights NOT supported (requires MI300+ or CUDA SM89+).
+    Supported: Qwen3, Qwen3.5, Gemma 4, InternVL3, Step3.5, Llama, Mistral, DeepSeek, etc.
+    InternVL3-78B TP=8: 17.8 tok/s decode (BF16, 512 tokens).
+    Gemma 4 31B TP=4×DP=2: 26.2 tok/s single, 280 tok/s at C=16 (vLLM 0.19.0).
+time_constraints:
+  cold_start_s: [60, 300]
+  model_switch_s: [60, 300]
+power_constraints:
+  typical_draw_watts: [100, 241]
+runtime:
+  default: "container"
+  platform_recommendations:
+    linux/amd64: "container"

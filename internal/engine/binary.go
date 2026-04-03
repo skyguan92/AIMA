@@ -29,14 +29,23 @@ func NewBinaryManager(distDir string) *BinaryManager {
 
 // BinarySource describes where to download a native binary.
 type BinarySource struct {
-	Binary    string              // e.g. "llama-server"
-	Platforms []string            // e.g. ["linux/amd64", "darwin/arm64"]
-	Download  map[string]string   // platform -> URL
-	Mirror    map[string][]string // platform -> mirror URLs (tried in order)
+	Binary      string              // e.g. "llama-server"
+	Platforms   []string            // e.g. ["linux/amd64", "darwin/arm64"]
+	Download    map[string]string   // platform -> URL
+	Mirror      map[string][]string // platform -> mirror URLs (tried in order)
+	SHA256      map[string]string   // platform -> expected hex digest (optional)
+	InstallType string              // e.g. "preinstalled"
+	ProbePaths  []string            // explicit binary paths for pre-installed engines
 }
 
 // Supports reports whether this source supports the given platform string (e.g. "linux/amd64").
 func (s *BinarySource) Supports(platform string) bool {
+	if s == nil {
+		return false
+	}
+	if s.InstallType == "preinstalled" && len(s.Platforms) == 0 {
+		return true
+	}
 	for _, p := range s.Platforms {
 		if p == platform {
 			return true
@@ -48,65 +57,64 @@ func (s *BinarySource) Supports(platform string) bool {
 // Resolve returns the path to a native engine binary, downloading it if needed.
 // Search order: distDir -> PATH -> download from source.
 func (m *BinaryManager) Resolve(ctx context.Context, source *BinarySource) (string, error) {
+	path, _, err := m.Ensure(ctx, source, nil)
+	return path, err
+}
+
+// Ensure makes a native engine binary available for the current platform.
+// It reuses an existing binary from distDir / probe paths / PATH when possible,
+// and downloads it only when missing.
+func (m *BinaryManager) Ensure(ctx context.Context, source *BinarySource, onProgress func(ProgressEvent)) (string, bool, error) {
 	if source == nil {
-		return "", fmt.Errorf("no binary source configured")
+		return "", false, fmt.Errorf("no binary source configured")
 	}
 
 	platform := goruntime.GOOS + "/" + goruntime.GOARCH
-	if !platformSupported(platform, source.Platforms) {
-		return "", fmt.Errorf("platform %s not supported (available: %v)", platform, source.Platforms)
+	if !source.Supports(platform) {
+		return "", false, fmt.Errorf("platform %s not supported (available: %v)", platform, source.Platforms)
 	}
 
 	name := source.Binary
-	candidates := binaryCandidates(name)
-
-	// 1. Check distDir
-	for _, c := range candidates {
-		p := filepath.Join(m.distDir, c)
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
+	if path, ok := m.findExisting(source); ok {
+		return path, false, nil
 	}
 
-	// 2. Check PATH
-	for _, c := range candidates {
-		if p, err := lookPath(c); err == nil {
-			return p, nil
-		}
+	if source.InstallType == "preinstalled" {
+		return "", false, fmt.Errorf("preinstalled engine binary not found (probe paths: %v)", source.ProbePaths)
 	}
 
-	// 3. Download from source
 	url := source.Download[platform]
 	mirrorURLs := source.Mirror[platform]
 	if url == "" && len(mirrorURLs) == 0 {
-		return "", fmt.Errorf("no download URL for platform %s", platform)
+		return "", false, fmt.Errorf("no download URL for platform %s", platform)
 	}
 
-	if err := m.download(ctx, url, mirrorURLs, m.distDir, name); err != nil {
-		return "", fmt.Errorf("download %s: %w", name, err)
+	expectedSHA256 := source.SHA256[platform]
+	if err := m.download(ctx, url, mirrorURLs, m.distDir, name, expectedSHA256, onProgress); err != nil {
+		return "", true, fmt.Errorf("download %s: %w", name, err)
 	}
 
-	// Binary should now be in distDir
-	for _, c := range candidates {
-		p := filepath.Join(m.distDir, c)
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
+	if path, ok := m.findExisting(source); ok {
+		return path, true, nil
 	}
 
-	return "", fmt.Errorf("binary %s not found in %s after download", name, m.distDir)
+	return "", true, fmt.Errorf("binary %s not found in %s after download", name, m.distDir)
 }
 
 // Download forces download of the binary for the current platform,
 // regardless of whether it already exists in distDir or PATH.
-func (m *BinaryManager) Download(ctx context.Context, source *BinarySource) error {
+// onProgress is called with download progress events (may be nil).
+func (m *BinaryManager) Download(ctx context.Context, source *BinarySource, onProgress func(ProgressEvent)) error {
 	if source == nil {
 		return fmt.Errorf("no binary source configured")
 	}
 
 	platform := goruntime.GOOS + "/" + goruntime.GOARCH
-	if !platformSupported(platform, source.Platforms) {
+	if !source.Supports(platform) {
 		return fmt.Errorf("platform %s not supported (available: %v)", platform, source.Platforms)
+	}
+	if source.InstallType == "preinstalled" {
+		return fmt.Errorf("engine is preinstalled on this host; no downloadable artifact is configured")
 	}
 
 	url := source.Download[platform]
@@ -115,11 +123,41 @@ func (m *BinaryManager) Download(ctx context.Context, source *BinarySource) erro
 		return fmt.Errorf("no download URL for platform %s", platform)
 	}
 
-	return m.download(ctx, url, mirrorURLs, m.distDir, source.Binary)
+	expectedSHA256 := source.SHA256[platform]
+	return m.download(ctx, url, mirrorURLs, m.distDir, source.Binary, expectedSHA256, onProgress)
+}
+
+func (m *BinaryManager) findExisting(source *BinarySource) (string, bool) {
+	if source == nil {
+		return "", false
+	}
+
+	if source.Binary != "" {
+		for _, c := range binaryCandidates(source.Binary) {
+			p := filepath.Join(m.distDir, c)
+			if _, err := os.Stat(p); err == nil {
+				return p, true
+			}
+		}
+	}
+
+	for _, p := range source.ProbePaths {
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+
+	if source.Binary != "" {
+		if p, err := lookPath(source.Binary); err == nil {
+			return p, true
+		}
+	}
+
+	return "", false
 }
 
 // download tries mirror URLs first, then primary. Extracts zip/tar.gz archives.
-func (m *BinaryManager) download(ctx context.Context, url string, mirrorURLs []string, destDir, binaryName string) error {
+func (m *BinaryManager) download(ctx context.Context, url string, mirrorURLs []string, destDir, binaryName, expectedSHA256 string, onProgress func(ProgressEvent)) error {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("create dist dir: %w", err)
 	}
@@ -134,10 +172,19 @@ func (m *BinaryManager) download(ctx context.Context, url string, mirrorURLs []s
 	var lastErr error
 	for _, u := range urls {
 		slog.Info("downloading engine binary", "url", u, "dest", destDir)
-		if err := downloadAndExtract(ctx, u, destDir, binaryName); err != nil {
+		actualSHA256, err := downloadAndExtract(ctx, u, destDir, binaryName, onProgress)
+		if err != nil {
 			slog.Warn("download failed, trying next source", "url", u, "error", err)
 			lastErr = err
 			continue
+		}
+
+		if expectedSHA256 != "" {
+			if actualSHA256 != expectedSHA256 {
+				slog.Warn("sha256 mismatch", "expected", expectedSHA256, "actual", actualSHA256, "url", u)
+			} else {
+				slog.Info("sha256 verified", "sha256", actualSHA256)
+			}
 		}
 
 		// Make binary executable on non-Windows
@@ -157,6 +204,9 @@ func (m *BinaryManager) download(ctx context.Context, url string, mirrorURLs []s
 		}
 
 		slog.Info("engine binary ready", "dir", destDir, "binary", binaryName)
+		if onProgress != nil {
+			onProgress(ProgressEvent{Phase: "complete", Message: "engine binary ready"})
+		}
 		return nil
 	}
 
@@ -164,10 +214,11 @@ func (m *BinaryManager) download(ctx context.Context, url string, mirrorURLs []s
 }
 
 // downloadAndExtract downloads url to a temp file then extracts or renames it.
-func downloadAndExtract(ctx context.Context, url, destDir, binaryName string) error {
+// Returns the SHA256 hex digest of the downloaded content.
+func downloadAndExtract(ctx context.Context, url, destDir, binaryName string, onProgress func(ProgressEvent)) (string, error) {
 	tmpFile, err := os.CreateTemp(destDir, ".download-*")
 	if err != nil {
-		return fmt.Errorf("create temp file in %s: %w", destDir, err)
+		return "", fmt.Errorf("create temp file in %s: %w", destDir, err)
 	}
 	tmpPath := tmpFile.Name()
 	defer func() {
@@ -177,43 +228,63 @@ func downloadAndExtract(ctx context.Context, url, destDir, binaryName string) er
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("create HTTP request for %s: %w", url, err)
+		return "", fmt.Errorf("create HTTP request for %s: %w", url, err)
 	}
 
 	client := &http.Client{Timeout: 30 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("download from %s: %w", url, err)
+		return "", fmt.Errorf("download from %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+		return "", fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
 	h := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tmpFile, h), resp.Body)
+
+	// Wrap body with progress tracking
+	var body io.Reader = resp.Body
+	if onProgress != nil {
+		tracker := newProgressTracker(resp.ContentLength)
+		body = &progressReader{
+			reader: resp.Body,
+			onRead: func(n int) {
+				ev := tracker.update(tracker.downloaded + int64(n))
+				onProgress(ev)
+			},
+		}
+	}
+	written, err := io.Copy(io.MultiWriter(tmpFile, h), body)
 	if err != nil {
-		return fmt.Errorf("write: %w", err)
+		return "", fmt.Errorf("write: %w", err)
 	}
 	tmpFile.Close()
 
-	slog.Info("download complete", "bytes", written, "sha256", fmt.Sprintf("%x", h.Sum(nil))[:16])
+	actualSHA256 := fmt.Sprintf("%x", h.Sum(nil))
+	slog.Info("download complete", "bytes", written, "sha256", actualSHA256[:16])
 
 	// Detect format from URL and extract
 	urlLower := strings.ToLower(url)
 	switch {
 	case strings.HasSuffix(urlLower, ".tar.gz") || strings.HasSuffix(urlLower, ".tgz"):
-		return extractTarGz(tmpPath, destDir)
+		if onProgress != nil {
+			onProgress(ProgressEvent{Phase: "extracting", Message: "extracting archive"})
+		}
+		return actualSHA256, extractTarGz(tmpPath, destDir)
 	case strings.HasSuffix(urlLower, ".zip"):
-		return extractZip(tmpPath, destDir)
+		if onProgress != nil {
+			onProgress(ProgressEvent{Phase: "extracting", Message: "extracting archive"})
+		}
+		return actualSHA256, extractZip(tmpPath, destDir)
 	default:
 		// Plain binary — rename directly
 		binPath := filepath.Join(destDir, binaryName)
 		if goruntime.GOOS == "windows" && !strings.HasSuffix(binPath, ".exe") {
 			binPath += ".exe"
 		}
-		return os.Rename(tmpPath, binPath)
+		return actualSHA256, os.Rename(tmpPath, binPath)
 	}
 }
 

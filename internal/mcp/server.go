@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"sync"
+
+	"github.com/jguan/aima/internal/buildinfo"
 )
 
 // JSON-RPC 2.0 types
@@ -84,8 +86,9 @@ func ErrorResult(text string) *ToolResult {
 
 // Server handles MCP JSON-RPC 2.0 communication.
 type Server struct {
-	tools map[string]*Tool
-	mu    sync.RWMutex
+	tools   map[string]*Tool
+	mu      sync.RWMutex
+	profile Profile
 }
 
 // NewServer creates a new MCP server.
@@ -93,6 +96,14 @@ func NewServer() *Server {
 	return &Server{
 		tools: make(map[string]*Tool),
 	}
+}
+
+// SetProfile sets the tool discovery profile used by MCP tools/list responses.
+// Internal callers still use ListTools and ExecuteTool to access the full registry.
+func (s *Server) SetProfile(p Profile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profile = p
 }
 
 // RegisterTool adds a tool to the server.
@@ -223,7 +234,7 @@ func (s *Server) handleInitialize(id json.RawMessage) ([]byte, error) {
 		},
 		"serverInfo": map[string]any{
 			"name":    "aima",
-			"version": "0.1.0",
+			"version": buildinfo.Version,
 		},
 	}
 	return marshalResponse(jsonrpcResponse{
@@ -247,6 +258,9 @@ func (s *Server) handleToolsList(id json.RawMessage) ([]byte, error) {
 
 	tools := make([]map[string]any, 0, len(s.tools))
 	for _, t := range s.tools {
+		if !ProfileMatches(s.profile, t.Name) {
+			continue
+		}
 		tools = append(tools, map[string]any{
 			"name":        t.Name,
 			"description": t.Description,

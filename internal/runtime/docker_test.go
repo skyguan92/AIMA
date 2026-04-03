@@ -26,7 +26,9 @@ func TestBuildRunArgs_NVIDIA(t *testing.T) {
 	args := r.buildRunArgs("test-model-vllm", req)
 	argStr := joinArgs(args)
 
-	assertContains(t, argStr, "--gpus all", "NVIDIA GPU flag")
+	if !strings.Contains(argStr, "--gpus all") && !strings.Contains(argStr, "--device nvidia.com/gpu=all") {
+		t.Fatalf("NVIDIA GPU flag missing, got: %s", argStr)
+	}
 	assertContains(t, argStr, "--ipc=host", "IPC host")
 	assertContains(t, argStr, "--env NVIDIA_VISIBLE_DEVICES=all", "NVIDIA env")
 	assertContains(t, argStr, "--env VLLM_WORKER_MULTIPROC_METHOD=spawn", "extra env")
@@ -104,6 +106,24 @@ func TestBuildRunArgs_ModelVolume(t *testing.T) {
 	assertContains(t, argStr, "/models/model.gguf", "model path replaced in command")
 }
 
+func TestBuildRunArgs_ModelFileVolume(t *testing.T) {
+	r := &DockerRuntime{}
+	req := &DeployRequest{
+		Name:      "test",
+		Engine:    "llamacpp",
+		Image:     "ghcr.io/ggerganov/llama.cpp:server",
+		Command:   []string{"llama-server", "--model", "{{.ModelPath}}"},
+		ModelPath: "/mnt/data/models/phi3/Qwen3-4B-Q4_K_M.gguf",
+		Port:      8080,
+	}
+
+	args := r.buildRunArgs("test-llamacpp", req)
+	argStr := joinArgs(args)
+
+	assertContains(t, argStr, "--volume /mnt/data/models/phi3:/models:ro", "model file parent volume mount")
+	assertContains(t, argStr, "/models/Qwen3-4B-Q4_K_M.gguf", "container command should point to mounted file")
+}
+
 func TestBuildRunArgs_ConfigFlags(t *testing.T) {
 	r := &DockerRuntime{}
 	req := &DeployRequest{
@@ -169,6 +189,104 @@ func TestBuildRunArgs_ExtraVolumes(t *testing.T) {
 	assertContains(t, argStr, "--volume /opt/data:/data:ro", "extra volume readonly")
 }
 
+func TestBuildRunArgs_ExpandsEnvTemplates(t *testing.T) {
+	r := &DockerRuntime{}
+	req := &DeployRequest{
+		Name:      "z-image",
+		Engine:    "z-image-diffusers",
+		Image:     "qujing-z-image:latest",
+		Command:   []string{"python3", "server.py"},
+		ModelPath: "/data/models/z-image",
+		Env: map[string]string{
+			"MODEL_PATH": "{{.ModelPath}}",
+			"MODEL_NAME": "{{.ModelName}}",
+		},
+	}
+
+	args := r.buildRunArgs("z-image-z-image-diffusers", req)
+	argStr := joinArgs(args)
+
+	assertContains(t, argStr, "--env MODEL_PATH=/models", "model path env should expand to mounted path")
+	assertContains(t, argStr, "--env MODEL_NAME=z-image", "model name env should expand")
+}
+
+func TestBuildRunArgs_UsesKnowledgeHealthcheck(t *testing.T) {
+	r := &DockerRuntime{}
+	req := &DeployRequest{
+		Name:      "z-image",
+		Engine:    "z-image-diffusers",
+		Image:     "qujing-z-image:latest",
+		Command:   []string{"python3", "server.py"},
+		ModelPath: "/data/models/z-image",
+		PortSpecs: []knowledge.StartupPort{
+			{Name: "http", Flag: "--port", ConfigKey: "port", Primary: true},
+		},
+		Config: map[string]any{"port": 8188},
+		HealthCheck: &HealthCheckConfig{
+			Path:     "/health",
+			TimeoutS: 120,
+		},
+	}
+
+	args := r.buildRunArgs("z-image-z-image-diffusers", req)
+	argStr := joinArgs(args)
+
+	assertContains(t, argStr, "--health-cmd", "docker health command")
+	assertContains(t, argStr, "http://localhost:8188/health", "health command should target primary port")
+	assertContains(t, argStr, "command -v curl", "health command should prefer curl when available")
+	assertContains(t, argStr, "command -v python3", "health command should try python3 when curl is unavailable")
+	assertContains(t, argStr, "command -v python", "health command should fall back to python when python3 is unavailable")
+	assertContains(t, argStr, "urllib.request.urlopen('http://127.0.0.1:8188/health'", "health command should probe the health endpoint from Python")
+	assertContains(t, argStr, "--health-start-period 120s", "health start period should honor YAML timeout")
+	assertNotContains(t, argStr, "--no-healthcheck", "knowledge healthcheck should override image defaults")
+}
+
+func TestBuildRunArgs_DisablesImageHealthcheckWithoutKnowledgeHealthcheck(t *testing.T) {
+	r := &DockerRuntime{}
+	req := &DeployRequest{
+		Name:    "tts-model",
+		Engine:  "qwen-tts-fastapi-cuda-blackwell",
+		Image:   "qwen3-tts-cuda-arm64:latest",
+		Command: []string{"python", "main.py"},
+	}
+
+	args := r.buildRunArgs("tts-model-qwen-tts-fastapi-cuda-blackwell", req)
+	argStr := joinArgs(args)
+
+	assertContains(t, argStr, "--no-healthcheck", "runtime should disable image-baked healthchecks when YAML omits one")
+}
+
+func TestBuildRunArgs_CustomPortFlags(t *testing.T) {
+	r := &DockerRuntime{}
+	req := &DeployRequest{
+		Name:      "tts-model",
+		Engine:    "litetts",
+		Image:     "litetts:latest",
+		Command:   []string{"./start_server.sh", "--target_voices", "AIBC006_lite"},
+		ModelPath: "/data/models/litetts",
+		PortSpecs: []knowledge.StartupPort{
+			{Name: "grpc-v1beta1", Flag: "--grpc_port_v1beta1", ConfigKey: "grpc_port_v1beta1"},
+			{Name: "grpc", Flag: "--grpc_port", ConfigKey: "grpc_port"},
+			{Name: "http", Flag: "--http_port", ConfigKey: "port", Primary: true},
+		},
+		Config: map[string]any{
+			"grpc_port_v1beta1": 32108,
+			"grpc_port":         32109,
+			"port":              32110,
+		},
+	}
+
+	args := r.buildRunArgs("tts-model-litetts", req)
+	argStr := joinArgs(args)
+
+	assertContains(t, argStr, "--grpc_port_v1beta1 32108", "custom gRPC v1beta1 port flag")
+	assertContains(t, argStr, "--grpc_port 32109", "custom gRPC port flag")
+	assertContains(t, argStr, "--http_port 32110", "custom HTTP port flag")
+	assertContains(t, argStr, "--publish 32110:32110", "only primary HTTP port is published")
+	assertNotContains(t, argStr, "--publish 32108:32108", "extra ports should stay container-local on bridge network")
+	assertNotContains(t, argStr, "--publish 32109:32109", "extra ports should stay container-local on bridge network")
+}
+
 func TestBuildRunArgs_Ascend(t *testing.T) {
 	r := &DockerRuntime{}
 	req := &DeployRequest{
@@ -230,6 +348,15 @@ func TestBuildRunArgs_ExistingUnchanged(t *testing.T) {
 	assertNotContains(t, argStr, "--init", "no init flag")
 	assertNotContains(t, argStr, "--network", "no network flag")
 	assertNotContains(t, argStr, "--shm-size", "no shm-size flag")
+}
+
+func TestDockerArgsWithLegacyNVIDIAGPU(t *testing.T) {
+	args := []string{"run", "--device", "nvidia.com/gpu=all", "--env", "NVIDIA_VISIBLE_DEVICES=all", "image", "serve"}
+	rewritten := dockerArgsWithLegacyNVIDIAGPU(args)
+	argStr := joinArgs(rewritten)
+
+	assertContains(t, argStr, "--gpus all", "legacy NVIDIA fallback")
+	assertNotContains(t, argStr, "--device nvidia.com/gpu=all", "CDI device should be removed")
 }
 
 func TestDockerInspectToStatus(t *testing.T) {
@@ -368,6 +495,27 @@ func TestDockerStatusToPhase(t *testing.T) {
 			got := dockerStatusToPhase(tt.status)
 			if got != tt.want {
 				t.Errorf("dockerStatusToPhase(%q) = %q, want %q", tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShellJoinQuotesSpecialChars(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"simple", []string{"vllm", "serve", "/models"}, "vllm serve /models"},
+		{"json value", []string{"--chat-template-kwargs", `{"enable_thinking": false}`}, `--chat-template-kwargs '{"enable_thinking": false}'`},
+		{"empty arg", []string{"cmd", ""}, "cmd ''"},
+		{"single quotes in arg", []string{"echo", "it's"}, "echo 'it'\\''s'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellJoin(tt.args)
+			if got != tt.want {
+				t.Errorf("shellJoin(%v) = %q, want %q", tt.args, got, tt.want)
 			}
 		})
 	}

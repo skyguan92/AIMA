@@ -9,23 +9,29 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/jguan/aima/internal/knowledge"
 )
 
 // EngineImage represents a locally available engine (container image or native binary).
 type EngineImage struct {
-	ID          string `json:"id"`
-	Type        string `json:"type"`
-	Image       string `json:"image"`               // container image name (container engines) or empty (native)
-	Tag         string `json:"tag"`                  // container image tag (container engines) or empty (native)
-	SizeBytes   int64  `json:"size_bytes"`
-	Platform    string `json:"platform"`
-	RuntimeType string `json:"runtime_type"`         // "container" or "native"
-	BinaryPath  string `json:"binary_path"`          // path to native binary (native engines only)
-	Available   bool   `json:"available"`
-	DockerOnly  bool   `json:"docker_only,omitempty"` // true if image is in Docker but not K3S containerd
+	ID              string `json:"id"`
+	Type            string `json:"type"`
+	Image           string `json:"image"` // container image name (container engines) or empty (native)
+	Tag             string `json:"tag"`   // container image tag (container engines) or empty (native)
+	SizeBytes       int64  `json:"size_bytes"`
+	Platform        string `json:"platform"`
+	RuntimeType     string `json:"runtime_type"` // "container" or "native"
+	BinaryPath      string `json:"binary_path"`  // path to native binary (native engines only)
+	Available       bool   `json:"available"`
+	DockerOnly      bool   `json:"docker_only,omitempty"`      // true if image is in Docker but not K3S containerd
+	DetectedVersion string `json:"detected_version,omitempty"` // version found by probing
+	VersionMatch    string `json:"version_match,omitempty"`    // "exact", "compatible", "unknown", "mismatch"
 }
 
 // CommandRunner abstracts shell command execution for testability.
@@ -33,16 +39,20 @@ type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 	// Pipe connects stdout of 'from' to stdin of 'to' (e.g. docker save | k3s ctr import).
 	Pipe(ctx context.Context, from, to []string) error
+	// RunStream executes a command and calls onLine for each line of combined stdout+stderr.
+	// Used to capture streaming output from commands like 'docker pull'.
+	RunStream(ctx context.Context, onLine func(line string), name string, args ...string) error
 }
 
 // ScanOptions configures engine scanning (both container and native).
 type ScanOptions struct {
-	AssetPatterns map[string][]string // engine type -> patterns from Engine Asset YAML
-	Runner       CommandRunner
-	DistDir      string // dist directory for native binaries (~/.aima/dist/{os}-{arch}/)
-	Platform     string // current platform (e.g., "windows-amd64")
-	BinaryAssets map[string]string // binary name -> engine type (native engines)
-	AutoImport   bool // when true, auto-import Docker-only images to K3S containerd (heavy; use only during init)
+	AssetPatterns      map[string][]string // engine type -> patterns from Engine Asset YAML
+	Runner             CommandRunner
+	DistDir            string                                  // dist directory for native binaries (~/.aima/dist/{os}-{arch}/)
+	Platform           string                                  // current platform (e.g., "windows-amd64")
+	BinaryAssets       map[string]string                       // binary name -> engine type (native engines)
+	AutoImport         bool                                    // when true, auto-import Docker-only images to K3S containerd (heavy; use only during init)
+	PreinstalledProbes map[string]*knowledge.EngineSourceProbe // engine type -> probe config
 }
 
 // ScanUnified discovers both container images and native binaries.
@@ -111,6 +121,10 @@ func ScanUnified(ctx context.Context, opts ScanOptions) ([]*EngineImage, error) 
 		}
 	}
 
+	// Probe pre-installed engines
+	preinstalled := probePreinstalled(ctx, opts)
+	allEngines = append(allEngines, preinstalled...)
+
 	return allEngines, nil
 }
 
@@ -163,15 +177,15 @@ func ScanNative(ctx context.Context, opts ScanOptions) ([]*EngineImage, error) {
 				}
 				binaryID := binaryHash(name)
 				found = append(found, &EngineImage{
-					ID:         binaryID,
-					Type:       engineType,
-					Image:      "",
-					Tag:        "",
-					SizeBytes:  info.Size(),
-					Platform:   opts.Platform,
+					ID:          binaryID,
+					Type:        engineType,
+					Image:       "",
+					Tag:         "",
+					SizeBytes:   info.Size(),
+					Platform:    opts.Platform,
 					RuntimeType: "native",
-					BinaryPath: path,
-					Available:  true,
+					BinaryPath:  path,
+					Available:   true,
 				})
 				seen[name] = true
 			}
@@ -209,15 +223,15 @@ func ScanNative(ctx context.Context, opts ScanOptions) ([]*EngineImage, error) {
 						}
 						binaryID := binaryHash(name + "-" + dir)
 						found = append(found, &EngineImage{
-							ID:         binaryID,
-							Type:       engineType,
-							Image:      "",
-							Tag:        "",
-							SizeBytes:  info.Size(),
-							Platform:   opts.Platform,
+							ID:          binaryID,
+							Type:        engineType,
+							Image:       "",
+							Tag:         "",
+							SizeBytes:   info.Size(),
+							Platform:    opts.Platform,
 							RuntimeType: "native",
-							BinaryPath: path,
-							Available:  true,
+							BinaryPath:  path,
+							Available:   true,
 						})
 						seen[name] = true
 					}
@@ -227,6 +241,80 @@ func ScanNative(ctx context.Context, opts ScanOptions) ([]*EngineImage, error) {
 	}
 
 	return found, nil
+}
+
+// probePreinstalled discovers pre-installed engines by checking known paths
+// and optionally running version detection commands.
+func probePreinstalled(ctx context.Context, opts ScanOptions) []*EngineImage {
+	if opts.PreinstalledProbes == nil {
+		return nil
+	}
+	var found []*EngineImage
+	for engineType, probe := range opts.PreinstalledProbes {
+		// Search probe.Paths for the binary
+		var binaryPath string
+		for _, p := range probe.Paths {
+			if _, err := os.Stat(p); err == nil {
+				binaryPath = p
+				break
+			}
+		}
+		if binaryPath == "" {
+			continue // not installed on this device
+		}
+
+		// Detect version
+		detectedVersion := probe.FallbackVersion
+		versionMatch := "unknown"
+		if len(probe.VersionCommand) > 0 && opts.Runner != nil {
+			// Execute version command with 5s timeout
+			cmdName, cmdArgs := resolveProbeCommand(binaryPath, probe.VersionCommand)
+			vCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			out, err := opts.Runner.Run(vCtx, cmdName, cmdArgs...)
+			cancel()
+			if err == nil && probe.VersionPattern != "" {
+				re, reErr := regexp.Compile(probe.VersionPattern)
+				if reErr == nil {
+					if matches := re.FindSubmatch(out); len(matches) > 1 {
+						detectedVersion = string(matches[1])
+						versionMatch = "exact" // we found a version
+					}
+				}
+			}
+		}
+
+		info, _ := os.Stat(binaryPath)
+		var size int64
+		if info != nil {
+			size = info.Size()
+		}
+
+		found = append(found, &EngineImage{
+			ID:              binaryHash("preinstalled-" + engineType),
+			Type:            engineType,
+			SizeBytes:       size,
+			Platform:        opts.Platform,
+			RuntimeType:     "native",
+			BinaryPath:      binaryPath,
+			Available:       true,
+			DetectedVersion: detectedVersion,
+			VersionMatch:    versionMatch,
+		})
+	}
+	return found
+}
+
+func resolveProbeCommand(binaryPath string, command []string) (string, []string) {
+	if len(command) == 0 {
+		return "", nil
+	}
+	name := command[0]
+	if strings.HasPrefix(name, "./") {
+		name = filepath.Join(filepath.Dir(binaryPath), strings.TrimPrefix(name, "./"))
+	} else if !strings.ContainsRune(name, os.PathSeparator) && filepath.Base(binaryPath) == name {
+		name = binaryPath
+	}
+	return name, command[1:]
 }
 
 func binaryHash(name string) string {
@@ -500,7 +588,6 @@ func patternScore(pattern string) int {
 		return 1000 + base
 	}
 }
-
 
 func splitImageTag(ref string) (repo, tag string) {
 	// Handle format "repo:tag"

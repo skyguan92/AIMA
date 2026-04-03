@@ -4,9 +4,11 @@ import (
 	"github.com/spf13/cobra"
 
 	state "github.com/jguan/aima/internal"
+	"github.com/jguan/aima/internal/agent"
 	"github.com/jguan/aima/internal/fleet"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
+	"github.com/jguan/aima/internal/openclaw"
 	"github.com/jguan/aima/internal/proxy"
 	"github.com/jguan/aima/internal/support"
 )
@@ -18,9 +20,12 @@ type App struct {
 	Proxy         *proxy.Server
 	MCP           *mcp.Server
 	ToolDeps      *mcp.ToolDeps
+	OpenClaw      *openclaw.Deps
 	FleetRegistry *fleet.Registry
 	FleetClient   *fleet.Client
 	Support       *support.Service
+	LLMClient     *agent.OpenAIClient // Agent's LLM client — used to sync proxy API key.
+	OpenBrowser   bool                // When true, the default (no-subcommand) invocation opens the UI in a browser.
 }
 
 // NewRootCmd creates the root aima command with all subcommands.
@@ -34,6 +39,7 @@ func NewRootCmd(app *App) *cobra.Command {
 	}
 
 	root.AddCommand(
+		newRunCmd(app),
 		newInitCmd(app),
 		newHalCmd(app),
 		newDeployCmd(app),
@@ -49,6 +55,7 @@ func NewRootCmd(app *App) *cobra.Command {
 		newAgentCmd(app),
 		newConfigCmd(app),
 		newServeCmd(app),
+		newMCPCmd(app),
 		newDiscoverCmd(app),
 		newFleetCmd(app),
 		newTUICmd(app),

@@ -740,6 +740,71 @@ func TestInstallDaemonSystemd(t *testing.T) {
 	}
 }
 
+func TestInstallDaemonSystemdSharedDataDirReadable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("systemd tests only run on Linux")
+	}
+
+	runner := &mockRunner{
+		results: map[string]runResult{
+			"systemctl daemon-reload": {output: nil},
+			"systemctl enable":        {output: nil},
+			"systemctl start":         {output: nil},
+		},
+	}
+
+	dir := t.TempDir()
+	inst := NewInstaller(runner, dir).WithDistDir(dir)
+
+	binPath := filepath.Join(dir, "aima")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	sharedDataDir := filepath.Join(dir, "shared-data")
+	comp := knowledge.StackComponent{
+		Metadata: knowledge.StackMetadata{Name: "aima-serve", Version: "0.0.1"},
+		Source:   knowledge.StackSource{Binary: "aima"},
+		Install: knowledge.StackInstall{
+			Method:      "binary",
+			Daemon:      true,
+			Subcommand:  "serve",
+			ServiceType: "simple",
+			Env: map[string]string{
+				"AIMA_DATA_DIR": sharedDataDir,
+			},
+		},
+	}
+
+	if err := inst.installDaemonSystemd(context.Background(), comp, binPath, ""); err != nil {
+		t.Fatalf("installDaemonSystemd: %v", err)
+	}
+
+	info, err := os.Stat("/etc/aima")
+	if err != nil {
+		t.Fatalf("stat /etc/aima: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("/etc/aima mode = %#o, want 0755", got)
+	}
+
+	dataDirData, err := os.ReadFile("/etc/aima/data-dir")
+	if err != nil {
+		t.Fatalf("read shared data-dir pointer: %v", err)
+	}
+	if got := strings.TrimSpace(string(dataDirData)); got != sharedDataDir {
+		t.Fatalf("shared data dir = %q, want %q", got, sharedDataDir)
+	}
+
+	envData, err := os.ReadFile("/etc/aima/aima-serve.env")
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	if !strings.Contains(string(envData), "AIMA_DATA_DIR="+sharedDataDir) {
+		t.Fatalf("env file missing shared data dir, got %q", string(envData))
+	}
+}
+
 func TestInstallDaemonSystemdUnitContent(t *testing.T) {
 	// Test unit file generation without requiring Linux (test the template logic)
 	// We can't run the full installDaemonSystemd on non-Linux, but we can verify

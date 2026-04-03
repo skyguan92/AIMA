@@ -1,0 +1,11 @@
+{
+  "id": "aima-local-tts",
+  "name": "AIMA Local TTS",
+  "description": "Expose the synced local AIMA TTS model as an OpenClaw tool for speech synthesis and reference-audio voice cloning.",
+  "version": "0.2.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -198,7 +198,7 @@ container:
     LD_LIBRARY_PATH: "/lib/x86_64-linux-gnu:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
 ```
 
-**AMD 示例** (`amd-radeon-x86.yaml`):
+**AMD 示例** (`amd-radeon-8060s-x86.yaml`):
 ```yaml
 container:
   devices: ["/dev/kfd", "/dev/dri"]

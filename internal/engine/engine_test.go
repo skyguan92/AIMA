@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
+
+	"github.com/jguan/aima/internal/knowledge"
 )
 
 // mockRunner implements CommandRunner for tests
@@ -36,6 +39,17 @@ func (m *mockRunner) Pipe(ctx context.Context, from, to []string) error {
 	}
 	_, err := m.Run(ctx, to[0], to[1:]...)
 	return err
+}
+
+func (m *mockRunner) RunStream(ctx context.Context, onLine func(line string), name string, args ...string) error {
+	out, err := m.Run(ctx, name, args...)
+	if err != nil {
+		return err
+	}
+	if onLine != nil && len(out) > 0 {
+		onLine(string(out))
+	}
+	return nil
 }
 
 // --- crictl image list format for tests ---
@@ -85,7 +99,7 @@ func TestScanWithCrictl(t *testing.T) {
 
 	results, err := ScanUnified(context.Background(), ScanOptions{
 		AssetPatterns: engineAssets,
-		Runner:       runner,
+		Runner:        runner,
 	})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
@@ -230,6 +244,61 @@ func TestScanTagAwarePatternPriority(t *testing.T) {
 	}
 }
 
+func TestBinaryManagerEnsureReusesExistingDistBinary(t *testing.T) {
+	t.Parallel()
+
+	distDir := t.TempDir()
+	binaryPath := filepath.Join(distDir, "llama-server")
+	if err := os.WriteFile(binaryPath, []byte("bin"), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+
+	mgr := NewBinaryManager(distDir)
+	source := &BinarySource{
+		Binary:    "llama-server",
+		Platforms: []string{goruntime.GOOS + "/" + goruntime.GOARCH},
+	}
+
+	path, downloaded, err := mgr.Ensure(context.Background(), source, nil)
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if downloaded {
+		t.Fatal("Ensure should reuse an existing dist binary")
+	}
+	if path != binaryPath {
+		t.Fatalf("Ensure path = %q, want %q", path, binaryPath)
+	}
+}
+
+func TestBinaryManagerEnsureUsesProbePathsForPreinstalledEngine(t *testing.T) {
+	t.Parallel()
+
+	distDir := t.TempDir()
+	probeDir := t.TempDir()
+	probePath := filepath.Join(probeDir, "vllm")
+	if err := os.WriteFile(probePath, []byte("bin"), 0o755); err != nil {
+		t.Fatalf("write probe binary: %v", err)
+	}
+
+	mgr := NewBinaryManager(distDir)
+	source := &BinarySource{
+		InstallType: "preinstalled",
+		ProbePaths:  []string{probePath},
+	}
+
+	path, downloaded, err := mgr.Ensure(context.Background(), source, nil)
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if downloaded {
+		t.Fatal("Ensure should not download a preinstalled engine")
+	}
+	if path != probePath {
+		t.Fatalf("Ensure path = %q, want %q", path, probePath)
+	}
+}
+
 func TestPatternMatchExactAnchors(t *testing.T) {
 	// ^pattern$ should match exactly
 	patterns := []patternEntry{
@@ -260,7 +329,6 @@ func TestPatternMatchDeterministicPriority(t *testing.T) {
 	}
 }
 
-
 func TestScanFallbackToDocker(t *testing.T) {
 	// Docker image list JSON format (one JSON object per line)
 	dockerImages := []string{
@@ -273,7 +341,7 @@ func TestScanFallbackToDocker(t *testing.T) {
 
 	runner := &mockRunner{
 		responses: map[string]mockResponse{
-			"crictl images -o json":                                                    {err: fmt.Errorf("crictl not found")},
+			"crictl images -o json":                        {err: fmt.Errorf("crictl not found")},
 			"docker images --format {{json .}} --no-trunc": {output: []byte(dockerOutput)},
 		},
 	}
@@ -284,7 +352,7 @@ func TestScanFallbackToDocker(t *testing.T) {
 
 	results, err := ScanUnified(context.Background(), ScanOptions{
 		AssetPatterns: engineAssets,
-		Runner:       runner,
+		Runner:        runner,
 	})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
@@ -305,7 +373,7 @@ func TestScanBothFail(t *testing.T) {
 	// it returns an empty list without error (native scan still runs).
 	runner := &mockRunner{
 		responses: map[string]mockResponse{
-			"crictl images -o json":                         {err: fmt.Errorf("crictl not found")},
+			"crictl images -o json":                        {err: fmt.Errorf("crictl not found")},
 			"docker images --format {{json .}} --no-trunc": {err: fmt.Errorf("docker not found")},
 		},
 	}
@@ -342,7 +410,7 @@ func TestScanNoMatchingImages(t *testing.T) {
 
 	results, err := ScanUnified(context.Background(), ScanOptions{
 		AssetPatterns: map[string][]string{"vllm": {"vllm/vllm-openai"}},
-		Runner:       runner,
+		Runner:        runner,
 	})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
@@ -372,7 +440,7 @@ func TestScanEmptyAssetPatterns(t *testing.T) {
 
 	results, err := ScanUnified(context.Background(), ScanOptions{
 		AssetPatterns: map[string][]string{},
-		Runner:       runner,
+		Runner:        runner,
 	})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
@@ -405,7 +473,7 @@ func TestPullFirstRegistrySucceeds(t *testing.T) {
 func TestPullFirstFailsSecondSucceeds(t *testing.T) {
 	runner := &mockRunner{
 		responses: map[string]mockResponse{
-			"crictl pull docker.io/vllm/vllm-openai:latest":                                       {err: fmt.Errorf("timeout")},
+			"crictl pull docker.io/vllm/vllm-openai:latest":                         {err: fmt.Errorf("timeout")},
 			"crictl pull registry.cn-hangzhou.aliyuncs.com/aima/vllm-openai:latest": {output: []byte("pulled")},
 		},
 	}
@@ -424,7 +492,7 @@ func TestPullFirstFailsSecondSucceeds(t *testing.T) {
 func TestPullAllRegistriesFail(t *testing.T) {
 	runner := &mockRunner{
 		responses: map[string]mockResponse{
-			"crictl pull docker.io/vllm/vllm-openai:latest":                                       {err: fmt.Errorf("timeout")},
+			"crictl pull docker.io/vllm/vllm-openai:latest":                         {err: fmt.Errorf("timeout")},
 			"crictl pull registry.cn-hangzhou.aliyuncs.com/aima/vllm-openai:latest": {err: fmt.Errorf("auth fail")},
 		},
 	}
@@ -542,8 +610,8 @@ func TestImportNonExistentFile(t *testing.T) {
 func TestImportDockerToContainerdPipe(t *testing.T) {
 	runner := &mockRunner{
 		responses: map[string]mockResponse{
-			"docker save vllm/vllm-openai:latest":   {output: []byte("ok")},
-			"k3s ctr -n k8s.io images import -":     {output: []byte("ok")},
+			"docker save vllm/vllm-openai:latest": {output: []byte("ok")},
+			"k3s ctr -n k8s.io images import -":   {output: []byte("ok")},
 		},
 	}
 
@@ -576,7 +644,7 @@ func TestScanContextCancellation(t *testing.T) {
 
 	_, err := ScanUnified(ctx, ScanOptions{
 		AssetPatterns: map[string][]string{"vllm": {"vllm/vllm-openai"}},
-		Runner:       runner,
+		Runner:        runner,
 	})
 	if err == nil {
 		t.Error("expected error from cancelled context")
@@ -608,7 +676,7 @@ func TestScanImageWithRegistry(t *testing.T) {
 
 	results, err := ScanUnified(context.Background(), ScanOptions{
 		AssetPatterns: engineAssets,
-		Runner:       runner,
+		Runner:        runner,
 	})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
@@ -678,8 +746,50 @@ func TestScanCustomFastAPIContainers(t *testing.T) {
 	}
 }
 
+func TestScanPreinstalledProbeUsesDiscoveredBinaryPath(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fake-engine")
+	if err := os.WriteFile(binPath, []byte("stub"), 0o755); err != nil {
+		t.Fatalf("write fake engine: %v", err)
+	}
+
+	runner := &mockRunner{
+		responses: map[string]mockResponse{
+			binPath + " --version": {output: []byte("FakeEngine 1.2.3")},
+		},
+	}
+
+	results, err := ScanUnified(context.Background(), ScanOptions{
+		Runner:   runner,
+		Platform: "linux/arm64",
+		PreinstalledProbes: map[string]*knowledge.EngineSourceProbe{
+			"fake-engine": {
+				Paths:          []string{binPath},
+				VersionCommand: []string{"./fake-engine", "--version"},
+				VersionPattern: `FakeEngine ([\d.]+)`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 preinstalled engine, got %d", len(results))
+	}
+	if got := results[0].BinaryPath; got != binPath {
+		t.Errorf("BinaryPath = %q, want %q", got, binPath)
+	}
+	if got := results[0].DetectedVersion; got != "1.2.3" {
+		t.Errorf("DetectedVersion = %q, want 1.2.3", got)
+	}
+	if got := results[0].VersionMatch; got != "exact" {
+		t.Errorf("VersionMatch = %q, want exact", got)
+	}
+}
+
 func TestPullImageNameConstruction(t *testing.T) {
-	// Verify the image name is constructed properly from registry + image basename
+	// Verify image refs are built correctly for host-only registries, namespace
+	// prefixes, and fully-qualified repository overrides.
 	tests := []struct {
 		image    string
 		registry string
@@ -688,6 +798,8 @@ func TestPullImageNameConstruction(t *testing.T) {
 	}{
 		{"vllm/vllm-openai", "docker.io", "latest", "docker.io/vllm/vllm-openai:latest"},
 		{"vllm/vllm-openai", "registry.cn-hangzhou.aliyuncs.com/aima", "v0.8", "registry.cn-hangzhou.aliyuncs.com/aima/vllm-openai:v0.8"},
+		{"vllm/vllm-openai", "docker.io/vllm/vllm-openai", "v0.8.5", "docker.io/vllm/vllm-openai:v0.8.5"},
+		{"ghcr.io/ggml-org/llama.cpp", "ghcr.io/ggml-org/llama.cpp", "server", "ghcr.io/ggml-org/llama.cpp:server"},
 	}
 
 	for _, tt := range tests {

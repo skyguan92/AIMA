@@ -2,14 +2,14 @@
 
 [中文](README_zh.md)
 
-**AI Inference Managed by AI** — A single Go binary that detects hardware, resolves optimal configs from a YAML knowledge base, deploys inference engines via K3S, and exposes 56 MCP tools for AI Agents to operate everything.
+**AI Inference Managed by AI** — A single Go binary that detects hardware, resolves optimal configs from a YAML knowledge base, deploys inference engines via K3S, and exposes 94 MCP tools for AI Agents to operate everything.
 
 ## Features
 
 - **Zero-config hardware detection** — automatically discovers GPUs (NVIDIA, AMD, Huawei Ascend, Hygon DCU, Apple Silicon), CPU, and RAM
 - **Knowledge-driven deployment** — YAML catalog of hardware profiles, engines, models, and partition strategies; no engine-specific code branches
 - **Multi-runtime** — K3S (Pod) for clusters, Docker for single-node containers, Native (exec) for bare-metal inference
-- **56 MCP tools** — full programmatic control for AI Agents over hardware, models, engines, deployments, fleet, and more
+- **94 MCP tools** — full programmatic control for AI Agents over hardware, models, engines, deployments, fleet, and more
 - **Fleet management** — mDNS-based auto-discovery of LAN peers; remote tool execution across heterogeneous devices
 - **Offline-first** — all core functions work with zero network; network is enhancement, not requirement
 - **Single binary, zero CGO** — cross-compiles to Windows, macOS, Linux (amd64/arm64) with no C dependencies
@@ -18,13 +18,32 @@
 
 ### Download
 
-Grab a pre-built binary from the [Releases](https://github.com/jguan/aima/releases) page, or build from source:
+Grab a pre-built binary from the [Releases](https://github.com/Approaching-AI/AIMA/releases) page, or build from source:
 
 ```bash
-git clone https://github.com/jguan/aima.git
+git clone https://github.com/Approaching-AI/AIMA.git
 cd aima
 make build
 ```
+
+For published product releases, the binary installer can be one line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Approaching-AI/AIMA/master/install.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Approaching-AI/AIMA/master/install.ps1 | iex
+```
+
+Notes:
+- The installer resolves the latest installable `vX.Y.Z` product release instead of GitHub's `latest` release, because bundle tags such as `bundle/stack/2026-02-26` are not product binaries.
+- If tags are ahead of published binaries, the installer warns and stays on the latest installable release until the new assets are uploaded.
+- Override the source repo for forks with `AIMA_REPO=<owner>/<repo>`.
+- Pin a release with `AIMA_VERSION=v0.2.0`.
+- Windows installer currently targets `windows/amd64` and installs to `%LOCALAPPDATA%\\Programs\\AIMA`.
 
 ### Server Setup (Linux)
 
@@ -123,7 +142,6 @@ AIMA follows a layered intelligence architecture (L0-L3):
 - **L1** — Human CLI overrides
 - **L2** — Golden configs from benchmark history
 - **L3a** — Go Agent loop (tool-calling LLM)
-- **L3b** — ZeroClaw sidecar (optional)
 
 The system is built around four invariants: no code branches for engine/model types (YAML-driven), no container lifecycle management (K3S handles it), MCP tools as the single source of truth, and offline-first operation.
 
@@ -132,19 +150,19 @@ See [design/ARCHITECTURE.md](design/ARCHITECTURE.md) for the full architecture d
 ## Project Structure
 
 ```
-cmd/aima/          Entry point
+cmd/aima/          Entry point + dependency wiring split by domain
 internal/
   hal/             Hardware detection
   knowledge/       YAML knowledge base + SQLite resolver
   runtime/         K3S (Pod) + Docker (container) + Native (exec) runtimes
-  mcp/             56 MCP tool implementations
+  mcp/             MCP server + 94 MCP tool registrations/implementations
   agent/           Go Agent loop (L3a)
   cli/             Cobra CLI (thin wrappers over MCP tools)
   ui/              Embedded Web UI (Alpine.js SPA)
   proxy/           OpenAI-compatible HTTP proxy
   fleet/           mDNS fleet discovery + remote execution
-  state/           SQLite state store (modernc.org/sqlite, zero CGO)
-  model/           Model scan/download/import
+  sqlite.go        SQLite state store (`package state`, modernc.org/sqlite, zero CGO)
+  model/           Model scan/download/import + metadata detection
   engine/          Engine image management
   stack/           K3S + HAMi infrastructure installer
 catalog/
@@ -174,6 +192,26 @@ make all
 #   build/aima-linux-arm64  (linux/arm64)
 #   build/aima-linux-amd64  (linux/amd64)
 ```
+
+### Package GitHub release assets
+
+```bash
+make release-assets
+# Output:
+#   build/release/<version>/aima-darwin-arm64
+#   build/release/<version>/aima-linux-amd64
+#   build/release/<version>/aima-linux-arm64
+#   build/release/<version>/aima-windows-amd64.exe
+#   build/release/<version>/checksums.txt
+```
+
+To upload those assets to the matching GitHub release with `gh`:
+
+```bash
+make publish-release-assets
+```
+
+Annotated SemVer tag pushes such as `v0.2.1` also trigger `.github/workflows/release.yml`, which builds the same assets and uploads them automatically.
 
 ### Run tests
 

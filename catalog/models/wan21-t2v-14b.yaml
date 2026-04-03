@@ -1,0 +1,101 @@
+kind: model_asset
+metadata:
+  name: wan21-t2v-14b
+  type: video_gen
+  family: wan
+  parameter_count: "14B"
+storage:
+  formats: [safetensors]
+  default_path_pattern: "{{.DataDir}}/models/{{.Name}}"
+  sources:
+    - type: huggingface
+      repo: Wan-AI/Wan2.1-T2V-14B-Diffusers
+      format: safetensors
+    - type: huggingface
+      repo: Wan-AI/Wan2.1-T2V-14B
+      format: safetensors
+    - type: local_path
+      path: ""
+variants:
+  # --- AMD W7900D RDNA3 (diffusers + PyTorch ROCm, BF16) ---
+  # Wan2.1-T2V-14B: transformer 53GB + UMT5-xxl encoder 11GB + VAE 0.5GB ≈ 65GB
+  # enable_model_cpu_offload mode: loads components on demand to GPU
+  # Validated 2026-04-02: 20 steps 480×832 17 frames = 4m52s diffusion + ~9min overhead = 14min total
+  # Diffusers format required: use Wan-AI/Wan2.1-T2V-14B-Diffusers (NOT the raw checkpoint repo)
+  - name: wan21-t2v-14b-rdna3-diffusers-bf16
+    hardware:
+      gpu_arch: RDNA3
+      vram_min_mib: 40960
+      gpu_count_min: 1
+      unified_memory: false
+    engine: z-image-diffusers
+    format: safetensors
+    source:
+      type: huggingface
+      repo: Wan-AI/Wan2.1-T2V-14B-Diffusers
+    default_config:
+      dtype: bfloat16
+      num_inference_steps: 20
+      num_frames: 17
+      height: 480
+      width: 832
+      guidance_scale: 5.0
+    expected_performance:
+      seconds_per_step: [13.8, 15.0]
+      total_time_s: [800, 900]
+      notes: "Validated 2026-04-02 on W7900D 48GB RDNA3. diffusers WanPipeline, BF16, cpu_offload. 14s/step steady-state (first step 31s JIT). 20 steps = 4m52s diffusion, ~14min total. Tested device_map=balanced on 4 GPUs: 13.97s/step diffusion (same), 800s total (13.3min, only 5% faster). Bottleneck is VAE decode (~8.7min of 13.3min total), not diffusion. Multi-GPU does not parallelize transformer — only splits components across devices."
+
+  # --- AMD W7900D RDNA3 (native Wan2.1 repo + xDiT Ulysses, 4-GPU, BF16) ---
+  # Ulysses sequence parallelism: splits attention across GPUs for real parallel diffusion
+  # 4-GPU = sweet spot: 3.1× diffusion speedup at 78% efficiency (vs 8-GPU 3.9× at 49%)
+  # Requires raw checkpoint (NOT diffusers format): Wan-AI/Wan2.1-T2V-14B
+  # Dependencies: xfuser + yunchang + flash_attn (all in vLLM ROCm container)
+  # VAE decode still ~9min (not parallelized) — dominates total time
+  # Validated 2026-04-02: 4.5s/step steady-state, 20 steps = 94s diffusion, ~11min total
+  - name: wan21-t2v-14b-rdna3-ulysses4-bf16
+    hardware:
+      gpu_arch: RDNA3
+      vram_min_mib: 20480
+      gpu_count_min: 4
+      unified_memory: false
+    engine: z-video-wan-native
+    format: safetensors
+    source:
+      type: huggingface
+      repo: Wan-AI/Wan2.1-T2V-14B
+    default_config:
+      dtype: bfloat16
+      num_inference_steps: 20
+      num_frames: 17
+      height: 480
+      width: 832
+      guidance_scale: 5.0
+      ulysses_size: 4
+      dit_fsdp: true
+      t5_fsdp: true
+    expected_performance:
+      seconds_per_step: [4.3, 5.0]
+      total_time_s: [650, 750]
+      notes: "Validated 2026-04-02 on 4× W7900D 48GB RDNA3. Native Wan2.1 repo + xDiT Ulysses sequence parallelism. BF16, FSDP, flash_attn 2.8.3. 4.5s/step steady-state (first step 8.6s JIT). 20 steps = 94s diffusion. VAE decode ~9min (not parallelized, dominates total). 3.1× diffusion speedup vs single-GPU (14s/step). Also tested 8-GPU Ulysses: 3.6s/step (only 20% faster for 2× GPUs — PCIe all-to-all overhead). 4-GPU recommended: best efficiency, leaves 4 GPUs free."
+
+  # --- GB10 Blackwell (diffusers, BF16, unified memory) ---
+  # 65GB model on 128GB unified → fits comfortably
+  - name: wan21-t2v-14b-blackwell-diffusers-bf16
+    hardware:
+      gpu_arch: Blackwell
+      vram_min_mib: 40960
+      unified_memory: true
+    engine: z-image-diffusers
+    format: safetensors
+    source:
+      type: huggingface
+      repo: Wan-AI/Wan2.1-T2V-14B-Diffusers
+    default_config:
+      dtype: bfloat16
+      num_inference_steps: 20
+      num_frames: 17
+      height: 480
+      width: 832
+      guidance_scale: 5.0
+    expected_performance:
+      notes: "Estimated. Wan2.1-T2V-14B 65GB BF16 on GB10 128GB unified. Should fit entirely in GPU memory for faster inference."

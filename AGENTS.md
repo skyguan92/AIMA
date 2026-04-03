@@ -4,17 +4,20 @@
 
 AIMA (AI-Inference-Managed-by-AI): a Go binary that manages AI inference on edge devices.
 It detects hardware, resolves optimal configs from a YAML knowledge base, generates K3S Pod YAML,
-and exposes 79 MCP tools for AI Agents to operate everything. **This project is 100% developed by Claude Code.**
+and exposes 94 MCP tools for AI Agents to operate everything. **This project is 100% developed by Claude Code.**
 
 Tech: Go (no CGO), K3S, HAMi, SQLite (modernc.org/sqlite), MCP (JSON-RPC 2.0), Cobra CLI, log/slog.
 Design docs: `design/ARCHITECTURE.md` (system architecture), `design/PRD.md`, `design/MRD.md`.
 
-## Git Flow & Version Management
+## Release Flow & Version Management
 
-This project uses **Git Flow** branching model. Current version: **v0.0.x** (pre-release).
+Current development line: **v0.2**. Latest product release: **v0.2.0** (2026-03-25).
+
+This project uses a **develop-based release flow** with a single declared development line.
+The development line is recorded in `internal/buildinfo/series.txt`. Right now that value is `v0.2`.
 
 ```
-master ──●──── tag v0.0.1 ────────────────── tag v0.0.2 ──
+master  ──●──── tag v0.2.0 ───────────────── tag v0.2.1 ──
           \                                  /
 develop ───●──●──●──●──feature──●──●──●──●──●
                    \           /
@@ -23,18 +26,45 @@ develop ───●──●──●──●──feature──●──●�
 
 | Branch | Purpose | Merges to |
 |--------|---------|-----------|
-| `master` | Production releases only. Every commit = a tagged release. | — |
-| `develop` | Integration branch. Daily development lands here. | `master` (via release) |
-| `feat/<name>` | New features. Branch from `develop`. | `develop` (via PR) |
-| `fix/<name>` | Bug fixes for develop. Branch from `develop`. | `develop` (via PR) |
-| `release/<ver>` | Release prep (version bump, final fixes). Branch from `develop`. | `master` + `develop` |
-| `hotfix/<ver>` | Urgent fix for production. Branch from `master`. | `master` + `develop` |
+| `master` | Production releases only. Every product release tag is created here. | — |
+| `develop` | Main integration branch for the current development line (`v0.2`). | `master` (via `release/*`) |
+| `feat/<name>` | New feature branch from `develop`. | `develop` |
+| `fix/<name>` | Bug fix branch from `develop`. | `develop` |
+| `docs/<name>` | Documentation-only branch from `develop`. | `develop` |
+| `release/<ver>` | Release preparation branch for a concrete SemVer release such as `release/v0.2.1`. | `master` + `develop` |
+| `hotfix/<ver>` | Urgent production fix from `master` for a concrete SemVer release. | `master` + `develop` |
 
-### Version Numbering (SemVer)
+### Version Taxonomy
 
-- **0.0.x** — Current phase: foundational features, API not stable
-- **0.1.0** — First feature-complete milestone (all core MCP tools working)
-- **1.0.0** — Production-ready, stable API contract
+- **Product version** — SemVer release tag `vMAJOR.MINOR.PATCH`. Only annotated tags in this exact format count as AIMA releases.
+- **Development line** — the active train for `develop` and feature work, currently `v0.2`.
+- **Development build version** — `<development-line>-dev`, for example `v0.2-dev`. The exact commit is carried separately in build metadata.
+- **MCP protocol version** — protocol compatibility only (for example `2024-11-05`), not the AIMA release number.
+- **DB/import schema version** — internal compatibility counters (`PRAGMA user_version`, `schema_version`), never product release numbers.
+- **Catalog/component version** — upstream dependency versions stored in YAML, not AIMA release numbers.
+- **Asset bundle tag** — must use a separate namespace such as `assets/<date>` or `bundle/<name>/<date>`, never `vX.Y.Z-*`.
+
+### Product Tag Rules
+
+- Use **exactly one** product release tag per release commit.
+- Product release tags must be **annotated**.
+- Only `vX.Y.Z` tags are product releases.
+- Do not create product-like suffix tags such as `v0.1.0-images` or duplicate aliases such as `v0.0.1-metax`.
+- Codenames belong in the GitHub release title/notes, not in the tag name.
+
+### SemVer Rules (Pre-1.0)
+
+- **0.y.z minor** — user-visible capability additions, new MCP tools, new runtime behavior, or intentional CLI/MCP contract changes.
+- **0.y.z patch** — bug fixes, catalog corrections, packaging fixes, and doc updates without intentional capability expansion.
+- **1.0.0** — CLI/MCP contract and core deployment workflow are stable enough to be treated as a compatibility baseline.
+
+### Development Line Rules
+
+- `internal/buildinfo/series.txt` is the single source of truth for the active development line.
+- As long as the team is iterating inside the current line, keep it at `v0.2`.
+- All non-tagged builds from `develop`, `feat/*`, `fix/*`, `docs/*`, and `release/*` report `v0.2-dev`.
+- When starting the next line, update `internal/buildinfo/series.txt` in `develop` first, for example `v0.2` → `v0.3`.
+- Product releases remain exact SemVer tags such as `v0.2.1` or `v0.3.0`.
 
 ### Daily workflow
 
@@ -59,41 +89,48 @@ git branch -d feat/my-feature
 ### Release workflow
 
 ```bash
-# Prepare release
+# Prepare a concrete release from the current development line
 git checkout develop
-git checkout -b release/v0.0.2
+git pull origin develop
+git checkout -b release/v0.2.1
 
-# Version bump, final fixes, then merge to master
+# Final fixes, changelog update, validation
+
+# Merge to master and tag the release
 git checkout master
-git merge --no-ff release/v0.0.2
-git tag -a v0.0.2 -m "Release v0.0.2"
+git merge --no-ff release/v0.2.1
+git tag -a v0.2.1 -m "Release v0.2.1"
 git push origin master --tags
 
-# Back-merge to develop
+# Back-merge release fixes into develop
 git checkout develop
-git merge --no-ff release/v0.0.2
-git branch -d release/v0.0.2
+git merge --no-ff release/v0.2.1
+git push origin develop
 ```
 
 ### Build with version info
 
 ```bash
-VERSION=$(git describe --tags --always)
-COMMIT=$(git rev-parse --short HEAD)
-BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS="-X github.com/jguan/aima/internal/cli.Version=$VERSION \
-         -X github.com/jguan/aima/internal/cli.GitCommit=$COMMIT \
-         -X github.com/jguan/aima/internal/cli.BuildTime=$BUILD_TIME"
-
-go build -ldflags "$LDFLAGS" -o build/aima ./cmd/aima
+make build
+./build/aima version
+make version-audit
+make bundle-tag
 ```
+
+`make build` injects `Version`, `GitCommit`, and `BuildTime` into `internal/buildinfo`.
+Only exact `vX.Y.Z` tags are treated as releases. Non-tagged builds report
+`<development-line>-dev`, and the current line comes from `internal/buildinfo/series.txt`.
+`make version-audit` prints product tags, legacy pseudo-release tags, and known migration targets.
+`make bundle-tag` creates the local replacement bundle tag `bundle/stack/2026-02-26` without pushing it.
 
 ### Rules for AI Agents
 
-- **Never commit directly to master.** Always branch from `develop`.
-- **Never force-push to master or develop.** These are protected branches.
-- **Feature branches merge to develop only.** Only release/hotfix branches touch master.
-- **Tag every master merge** with the version number.
+- **Never force-push to `master`.**
+- **Branch new work from `develop`, not from `master`.**
+- **Keep `internal/buildinfo/series.txt` at `v0.2` until the team explicitly starts the next line.**
+- **Only `vX.Y.Z` annotated tags are product releases.**
+- **Do not invent new product-like suffix tags for assets, images, or vendor-specific bundles.**
+- **Release through `release/<ver>` and tag on `master`.**
 
 ## The Prime Directive: Less Code
 
@@ -108,7 +145,7 @@ mature external tools (K3S, HAMi, containerd, SQLite) together with YAML knowled
 
 ## Architecture Invariants (Never Violate)
 
-Read `design/ARCHITECTURE.md` §14 for full list. The critical ones:
+Read `design/ARCHITECTURE.md` §5 for full list. The critical ones:
 
 1. **INV-1/2: No code branches for engine/model types.** Engine behavior = YAML. Model metadata = YAML.
    Adding a new engine or model = writing YAML, zero Go code.
@@ -120,7 +157,7 @@ Read `design/ARCHITECTURE.md` §14 for full list. The critical ones:
 ## Project Structure
 
 ```
-cmd/aima/main.go              # Entry point
+cmd/aima/                     # Entry point + dependency wiring split across domain files
 internal/
   hal/                        # Hardware detection (nvidia-smi, /proc)
   k3s/                        # K3S client (kubectl wrapper)
@@ -129,14 +166,13 @@ internal/
                               #   + query engine (query.go) + vector similarity (similarity.go)
                               #   + Pod YAML generator (dynamic GPU resource names)
   runtime/                    # Multi-Runtime: K3S (Pod) + Docker (container) + Native (exec + warmup)
-  state/                      # SQLite (modernc.org/sqlite, zero CGO) — v2: 16 tables
-  model/                      # Model scan/download/import
+  sqlite.go                   # SQLite state store package (modernc.org/sqlite, zero CGO) — v2: 16 tables
+  model/                      # Model scan/download/import + metadata detection
   engine/                     # Engine image scan/pull/import + native binary manager
   stack/                      # Tiered stack installer (Docker/CTK/K3S/HAMi, archive/binary/helm, airgap)
   benchmark/                  # Live benchmark runner (SSE streaming, concurrency, percentile stats)
-  mcp/                        # MCP server + 61 tool implementations
+  mcp/                        # MCP server + RegisterAllTools + tools_*.go implementations
   agent/                      # Go Agent loop (L3a) + Dispatcher
-  zeroclaw/                   # ZeroClaw lifecycle manager (optional L3b sidecar)
   cli/                        # Cobra commands (thin wrappers over MCP tools)
   ui/                         # Embedded Web UI (go:embed, Alpine.js SPA on :6188/ui/)
 catalog/                      # Knowledge assets (go:embed, compiled in)
@@ -153,7 +189,8 @@ catalog/                      # Knowledge assets (go:embed, compiled in)
 ## Key Commands
 
 ```bash
-go build ./cmd/aima               # Build
+make build                         # Versioned build (uses current development line / release tag)
+go build ./cmd/aima               # Quick local build without release metadata guarantees
 go test ./...                      # Test all
 go test -race ./...                # Test with race detector
 go vet ./...                       # Static analysis
@@ -212,11 +249,8 @@ if engineType == "vllm" {
 Every feature must handle absence of its dependencies:
 
 ```go
-// L3b unavailable -> fall back to L3a -> fall back to L2 -> fall back to L0
+// L3a unavailable -> fall back to L2 -> fall back to L0
 func (d *Dispatcher) Ask(ctx context.Context, query string) (string, error) {
-    if d.zeroclaw.Available() && d.isComplex(query) {
-        return d.zeroclaw.Ask(ctx, query)
-    }
     if d.goAgent.Available() {
         return d.goAgent.Ask(ctx, query)
     }
@@ -256,7 +290,7 @@ func (d *Dispatcher) Ask(ctx context.Context, query string) (string, error) {
 | Configuration | A tested Hardware x Engine x Model x Config instance with derivation chain |
 | BenchmarkResult | Multi-dimensional performance data for a Configuration under specific load |
 | PerfVector | 6-dimensional normalized performance vector for similarity search |
-| L0/L1/L2/L3a/L3b | Progressive intelligence levels: defaults -> human CLI -> knowledge -> Go Agent -> ZeroClaw |
+| L0/L1/L2/L3a | Progressive intelligence levels: defaults -> human CLI -> knowledge -> Go Agent |
 | ConfigResolver | Merges L0-L3 configs, higher layer overrides lower |
 | Store | Knowledge query engine wrapping *sql.DB (Search/Compare/Gaps/Similar/Lineage/Aggregate) |
 | MCP Tool | JSON-RPC function exposed to Agents (deploy.apply, model.scan, etc) |

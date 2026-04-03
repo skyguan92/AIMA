@@ -52,45 +52,6 @@ func (m *mockTools) ListTools() []ToolDefinition {
 	return m.tools
 }
 
-// mockZeroClaw implements ZeroClawClient.
-type mockZeroClaw struct {
-	available  bool
-	sessionsOK bool
-	response   string
-	sessions   map[string]string
-	plan       json.RawMessage
-	planErr    error
-}
-
-func (m *mockZeroClaw) Available() bool {
-	return m.available
-}
-
-func (m *mockZeroClaw) SupportsSessions() bool {
-	return m.sessionsOK
-}
-
-func (m *mockZeroClaw) Ask(ctx context.Context, query string) (string, error) {
-	return m.response, nil
-}
-
-func (m *mockZeroClaw) AskWithSession(ctx context.Context, sessionID, query string) (string, error) {
-	if r, ok := m.sessions[sessionID]; ok {
-		return r, nil
-	}
-	return m.response, nil
-}
-
-func (m *mockZeroClaw) Plan(ctx context.Context, request json.RawMessage) (json.RawMessage, error) {
-	if m.planErr != nil {
-		return nil, m.planErr
-	}
-	if len(m.plan) != 0 {
-		return m.plan, nil
-	}
-	return nil, fmt.Errorf("no plan configured")
-}
-
 func TestAgent_SimpleQuery(t *testing.T) {
 	llm := &mockLLM{
 		responses: []*Response{
@@ -371,202 +332,14 @@ func TestWithMaxTurns(t *testing.T) {
 	}
 }
 
-func TestDispatcher_ForceLocal(t *testing.T) {
+func TestDispatcher_BasicRouting(t *testing.T) {
 	llm := &mockLLM{
 		responses: []*Response{{Content: "from L3a"}},
 	}
 	tools := &mockTools{tools: []ToolDefinition{}}
 	goAgent := NewAgent(llm, tools)
+	d := NewDispatcher(goAgent)
 
-	zc := &mockZeroClaw{available: true, response: "from L3b"}
-	d := NewDispatcher(goAgent, zc)
-
-	result, _, _, err := d.Ask(context.Background(), "optimize everything", DispatchOption{ForceLocal: true})
-	if err != nil {
-		t.Fatalf("Ask: %v", err)
-	}
-	if result != "from L3a" {
-		t.Errorf("result = %q, want from L3a", result)
-	}
-}
-
-func TestDispatcher_ForceDeep(t *testing.T) {
-	llm := &mockLLM{
-		responses: []*Response{{Content: "from L3a"}},
-	}
-	tools := &mockTools{tools: []ToolDefinition{}}
-	goAgent := NewAgent(llm, tools)
-
-	zc := &mockZeroClaw{available: true, response: "from L3b"}
-	d := NewDispatcher(goAgent, zc)
-
-	result, _, _, err := d.Ask(context.Background(), "simple query", DispatchOption{ForceDeep: true})
-	if err != nil {
-		t.Fatalf("Ask: %v", err)
-	}
-	if result != "from L3b" {
-		t.Errorf("result = %q, want from L3b", result)
-	}
-}
-
-func TestDispatcher_ForceDeepUnavailable(t *testing.T) {
-	llm := &mockLLM{
-		responses: []*Response{{Content: "from L3a"}},
-	}
-	tools := &mockTools{tools: []ToolDefinition{}}
-	goAgent := NewAgent(llm, tools)
-
-	zc := &mockZeroClaw{available: false}
-	d := NewDispatcher(goAgent, zc)
-
-	_, _, _, err := d.Ask(context.Background(), "test", DispatchOption{ForceDeep: true})
-	if err == nil {
-		t.Fatal("expected error when forcing deep with unavailable ZeroClaw")
-	}
-}
-
-func TestDispatcher_SessionRouting(t *testing.T) {
-	llm := &mockLLM{
-		responses: []*Response{{Content: "from L3a"}},
-	}
-	tools := &mockTools{tools: []ToolDefinition{}}
-	goAgent := NewAgent(llm, tools)
-
-	zc := &mockZeroClaw{
-		available:  true,
-		sessionsOK: true,
-		sessions:   map[string]string{"sess-1": "session response"},
-	}
-	d := NewDispatcher(goAgent, zc)
-
-	result, sid, _, err := d.Ask(context.Background(), "continue", DispatchOption{SessionID: "sess-1"})
-	if err != nil {
-		t.Fatalf("Ask: %v", err)
-	}
-	if result != "session response" {
-		t.Errorf("result = %q, want session response", result)
-	}
-	if sid != "sess-1" {
-		t.Errorf("sessionID = %q, want sess-1", sid)
-	}
-}
-
-func TestDispatcher_SessionFallbackToL3a(t *testing.T) {
-	llm := &mockLLM{
-		responses: []*Response{{Content: "from L3a with session"}},
-	}
-	tools := &mockTools{tools: []ToolDefinition{}}
-	store := NewSessionStore()
-	goAgent := NewAgent(llm, tools, WithSessions(store))
-
-	// ZeroClaw unavailable → session falls back to L3a
-	zc := &mockZeroClaw{available: false}
-	d := NewDispatcher(goAgent, zc)
-
-	result, sid, _, err := d.Ask(context.Background(), "continue", DispatchOption{SessionID: "my-session"})
-	if err != nil {
-		t.Fatalf("Ask: %v", err)
-	}
-	if result != "from L3a with session" {
-		t.Errorf("result = %q, want from L3a with session", result)
-	}
-	if sid != "my-session" {
-		t.Errorf("sessionID = %q, want my-session", sid)
-	}
-}
-
-func TestDispatcher_SessionFallbackToL3aWhenZeroClawHasNoSessionSupport(t *testing.T) {
-	llm := &mockLLM{
-		responses: []*Response{{Content: "from L3a with session"}},
-	}
-	tools := &mockTools{tools: []ToolDefinition{}}
-	store := NewSessionStore()
-	goAgent := NewAgent(llm, tools, WithSessions(store))
-
-	zc := &mockZeroClaw{available: true, response: "from L3b"}
-	d := NewDispatcher(goAgent, zc)
-
-	result, sid, _, err := d.Ask(context.Background(), "continue", DispatchOption{SessionID: "my-session"})
-	if err != nil {
-		t.Fatalf("Ask: %v", err)
-	}
-	if result != "from L3a with session" {
-		t.Errorf("result = %q, want from L3a with session", result)
-	}
-	if sid != "my-session" {
-		t.Errorf("sessionID = %q, want my-session", sid)
-	}
-}
-
-func TestDispatcher_ForceDeepSessionRequiresZeroClawSessionSupport(t *testing.T) {
-	llm := &mockLLM{
-		responses: []*Response{{Content: "from L3a"}},
-	}
-	tools := &mockTools{tools: []ToolDefinition{}}
-	goAgent := NewAgent(llm, tools)
-
-	zc := &mockZeroClaw{available: true, response: "from L3b"}
-	d := NewDispatcher(goAgent, zc)
-
-	_, _, _, err := d.Ask(context.Background(), "continue", DispatchOption{ForceDeep: true, SessionID: "sess-1"})
-	if err == nil {
-		t.Fatal("expected error when forcing deep with unsupported ZeroClaw sessions")
-	}
-}
-
-func TestDispatcher_ComplexQueryRouting(t *testing.T) {
-	tests := []struct {
-		name        string
-		query       string
-		zcAvailable bool
-		wantL3b     bool
-	}{
-		{"optimize with zc", "optimize my deployment", true, true},
-		{"analyze with zc", "analyze the performance", true, true},
-		{"why with zc", "why is it slow?", true, true},
-		{"plan with zc", "plan the migration", true, true},
-		{"all with zc", "list all issues", true, true},
-		{"trend with zc", "show me the trend", true, true},
-		{"simple with zc", "what GPU do I have?", true, false},
-		{"complex without zc", "optimize everything", false, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			llm := &mockLLM{
-				responses: []*Response{{Content: "from L3a"}},
-			}
-			tools := &mockTools{tools: []ToolDefinition{}}
-			goAgent := NewAgent(llm, tools)
-
-			zc := &mockZeroClaw{available: tt.zcAvailable, response: "from L3b"}
-			d := NewDispatcher(goAgent, zc)
-
-			result, _, _, err := d.Ask(context.Background(), tt.query, DispatchOption{})
-			if err != nil {
-				t.Fatalf("Ask: %v", err)
-			}
-
-			if tt.wantL3b && result != "from L3b" {
-				t.Errorf("expected L3b, got %q", result)
-			}
-			if !tt.wantL3b && result != "from L3a" {
-				t.Errorf("expected L3a, got %q", result)
-			}
-		})
-	}
-}
-
-func TestDispatcher_NilZeroClaw(t *testing.T) {
-	llm := &mockLLM{
-		responses: []*Response{{Content: "from L3a"}},
-	}
-	tools := &mockTools{tools: []ToolDefinition{}}
-	goAgent := NewAgent(llm, tools)
-
-	d := NewDispatcher(goAgent, nil)
-
-	// Should fall back to L3a even with complex query
 	result, _, _, err := d.Ask(context.Background(), "optimize everything", DispatchOption{})
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
@@ -576,48 +349,24 @@ func TestDispatcher_NilZeroClaw(t *testing.T) {
 	}
 }
 
-func TestDispatcher_NilZeroClaw_ForceDeep(t *testing.T) {
+func TestDispatcher_SessionContinuity(t *testing.T) {
 	llm := &mockLLM{
-		responses: []*Response{{Content: "from L3a"}},
+		responses: []*Response{{Content: "from L3a with session"}},
 	}
 	tools := &mockTools{tools: []ToolDefinition{}}
-	goAgent := NewAgent(llm, tools)
+	store := NewSessionStore()
+	goAgent := NewAgent(llm, tools, WithSessions(store))
+	d := NewDispatcher(goAgent)
 
-	d := NewDispatcher(goAgent, nil)
-
-	_, _, _, err := d.Ask(context.Background(), "test", DispatchOption{ForceDeep: true})
-	if err == nil {
-		t.Fatal("expected error when forcing deep with nil ZeroClaw")
+	result, sid, _, err := d.Ask(context.Background(), "continue", DispatchOption{SessionID: "my-session"})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
 	}
-}
-
-func TestIsComplexQuery(t *testing.T) {
-	tests := []struct {
-		query   string
-		complex bool
-	}{
-		{"optimize GPU usage", true},
-		{"why is inference slow", true},
-		{"analyze performance", true},
-		{"plan deployment strategy", true},
-		{"show all models", true},
-		{"show trend over time", true},
-		{"list models", false},
-		{"what GPU do I have", false},
-		{"deploy qwen3-8b", false},
-		{"OPTIMIZE this", true},                         // case insensitive
-		{"save a knowledge note with tool calling", false}, // "calling" contains "all" substring but is not "all"
-		{"install the binary", false},                      // "install" contains "all" substring but is not "all"
-		{"show all, please", true},                         // "all" with trailing punctuation still matches
+	if result != "from L3a with session" {
+		t.Errorf("result = %q, want from L3a with session", result)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.query, func(t *testing.T) {
-			got := isComplexQuery(tt.query)
-			if got != tt.complex {
-				t.Errorf("isComplexQuery(%q) = %v, want %v", tt.query, got, tt.complex)
-			}
-		})
+	if sid != "my-session" {
+		t.Errorf("sessionID = %q, want my-session", sid)
 	}
 }
 
@@ -652,7 +401,7 @@ func TestAgent_Available(t *testing.T) {
 func TestDispatcher_NoLLM_ReturnsError(t *testing.T) {
 	tools := &mockTools{tools: []ToolDefinition{}}
 	goAgent := NewAgent(nil, tools)
-	d := NewDispatcher(goAgent, nil)
+	d := NewDispatcher(goAgent)
 
 	_, _, _, err := d.Ask(context.Background(), "test", DispatchOption{})
 	if err == nil {
@@ -660,17 +409,6 @@ func TestDispatcher_NoLLM_ReturnsError(t *testing.T) {
 	}
 	if !contains(err.Error(), "no LLM backend") {
 		t.Errorf("error = %q, want mention of no LLM backend", err)
-	}
-}
-
-func TestDispatcher_ForceLocal_NoLLM(t *testing.T) {
-	tools := &mockTools{tools: []ToolDefinition{}}
-	goAgent := NewAgent(nil, tools)
-	d := NewDispatcher(goAgent, nil)
-
-	_, _, _, err := d.Ask(context.Background(), "test", DispatchOption{ForceLocal: true})
-	if err == nil {
-		t.Fatal("expected error when forcing local with no LLM")
 	}
 }
 
@@ -998,6 +736,89 @@ func TestPatrolSelfHealDisabled(t *testing.T) {
 	}
 }
 
+func TestPatrolGPUIdleRequiresConfiguredDuration(t *testing.T) {
+	tools := &mockTools{
+		tools: []ToolDefinition{},
+		results: map[string]*ToolResult{
+			"device.metrics": {Content: `{"gpu":{"temperature_celsius":55,"utilization_percent":5,"memory_used_mib":4096,"memory_total_mib":8192}}`},
+			"deploy.list":    {Content: `[]`},
+		},
+	}
+
+	config := DefaultPatrolConfig()
+	config.GPUIdlePct = 10
+	config.GPUIdleMinutes = 15
+	p := NewPatrol(config, tools, nil)
+
+	alerts := p.RunOnce(context.Background())
+	for _, alert := range alerts {
+		if alert.Type == "gpu_idle" {
+			t.Fatal("expected no gpu_idle alert before configured idle duration elapsed")
+		}
+	}
+
+	p.mu.Lock()
+	p.gpuIdleSince = time.Now().Add(-16 * time.Minute)
+	p.mu.Unlock()
+
+	alerts = p.RunOnce(context.Background())
+	var hasIdle bool
+	for _, alert := range alerts {
+		if alert.Type == "gpu_idle" {
+			hasIdle = true
+			break
+		}
+	}
+	if !hasIdle {
+		t.Fatal("expected gpu_idle alert after configured idle duration elapsed")
+	}
+}
+
+func TestPatrolMetricsGapResetsIdleObservation(t *testing.T) {
+	call := 0
+	tools := &mockTools{
+		tools: []ToolDefinition{},
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "device.metrics":
+				call++
+				if call == 1 {
+					return nil, fmt.Errorf("metrics unavailable")
+				}
+				return &ToolResult{Content: `{"gpu":{"temperature_celsius":55,"utilization_percent":5,"memory_used_mib":4096,"memory_total_mib":8192}}`}, nil
+			case "deploy.list":
+				return &ToolResult{Content: `[]`}, nil
+			default:
+				return nil, fmt.Errorf("unexpected tool: %s", name)
+			}
+		},
+	}
+
+	config := DefaultPatrolConfig()
+	config.GPUIdlePct = 10
+	config.GPUIdleMinutes = 15
+	p := NewPatrol(config, tools, nil)
+
+	p.mu.Lock()
+	p.gpuIdleSince = time.Now().Add(-16 * time.Minute)
+	p.mu.Unlock()
+
+	alerts := p.RunOnce(context.Background())
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alerts during metrics gap, got %d", len(alerts))
+	}
+	if !p.gpuIdleSince.IsZero() {
+		t.Fatal("expected metrics gap to clear idle observation state")
+	}
+
+	alerts = p.RunOnce(context.Background())
+	for _, alert := range alerts {
+		if alert.Type == "gpu_idle" {
+			t.Fatal("expected first low-utilization sample after metrics gap not to trigger gpu_idle")
+		}
+	}
+}
+
 func TestPatrolStatusCounters(t *testing.T) {
 	tools := &mockTools{
 		tools: []ToolDefinition{},
@@ -1016,6 +837,50 @@ func TestPatrolStatusCounters(t *testing.T) {
 	}
 	if status.LastRun.IsZero() {
 		t.Error("expected LastRun to be set after RunOnce")
+	}
+}
+
+func TestPatrolStartHonorsRuntimeIntervalChanges(t *testing.T) {
+	runCh := make(chan struct{}, 4)
+	tools := &mockTools{
+		tools: []ToolDefinition{},
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "device.metrics":
+				select {
+				case runCh <- struct{}{}:
+				default:
+				}
+				return &ToolResult{Content: `{"gpu":null}`}, nil
+			case "deploy.list":
+				return &ToolResult{Content: `[]`}, nil
+			default:
+				return nil, fmt.Errorf("unexpected tool: %s", name)
+			}
+		},
+	}
+
+	config := DefaultPatrolConfig()
+	config.Interval = 0
+	p := NewPatrol(config, tools, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer p.Stop()
+
+	select {
+	case <-runCh:
+		t.Fatal("patrol should remain disabled while interval is 0")
+	case <-time.After(60 * time.Millisecond):
+	}
+
+	p.SetInterval(10 * time.Millisecond)
+
+	select {
+	case <-runCh:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("patrol did not resume after interval was updated at runtime")
 	}
 }
 
@@ -1293,7 +1158,7 @@ func TestExplorationManagerTunePersistsRun(t *testing.T) {
 	}
 
 	tuner := NewTuner(tools)
-	manager := NewExplorationManager(db, tuner, tools, nil)
+	manager := NewExplorationManager(db, tuner, tools)
 	run, err := manager.Start(ctx, ExplorationStart{
 		Kind: "tune",
 		Target: ExplorationTarget{
@@ -1366,7 +1231,7 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 		},
 	}
 
-	manager := NewExplorationManager(db, nil, tools, nil)
+	manager := NewExplorationManager(db, nil, tools)
 	run, err := manager.Start(ctx, ExplorationStart{
 		Kind: "validate",
 		Target: ExplorationTarget{
@@ -1434,7 +1299,7 @@ func TestExplorationManagerOpenQuestionAutoResolves(t *testing.T) {
 		},
 	}
 
-	manager := NewExplorationManager(db, nil, tools, nil)
+	manager := NewExplorationManager(db, nil, tools)
 	run, err := manager.Start(ctx, ExplorationStart{
 		Kind:      "open_question",
 		SourceRef: "oq-001",
@@ -1486,79 +1351,6 @@ func TestExplorationManagerOpenQuestionAutoResolves(t *testing.T) {
 	}
 }
 
-func TestExplorationManagerValidateUsesZeroClawPlanner(t *testing.T) {
-	ctx := context.Background()
-	db, err := state.Open(ctx, ":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer db.Close()
-
-	tools := &mockTools{
-		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
-			if name != "benchmark.run" {
-				return nil, fmt.Errorf("unexpected tool: %s", name)
-			}
-			var args map[string]any
-			if err := json.Unmarshal(arguments, &args); err != nil {
-				t.Fatalf("Unmarshal benchmark args: %v", err)
-			}
-			if args["engine"] != "vllm" {
-				t.Fatalf("engine = %v, want vllm", args["engine"])
-			}
-			if args["hardware"] != "nvidia-gb10-arm64" {
-				t.Fatalf("hardware = %v, want nvidia-gb10-arm64", args["hardware"])
-			}
-			if args["concurrency"] != float64(4) {
-				t.Fatalf("concurrency = %v, want 4", args["concurrency"])
-			}
-			if args["rounds"] != float64(2) {
-				t.Fatalf("rounds = %v, want 2", args["rounds"])
-			}
-			return &ToolResult{Content: `{"result":{"throughput_tps":52.1},"saved":true,"benchmark_id":"bench-plan-001","config_id":"cfg-plan-001"}`}, nil
-		},
-	}
-
-	zc := &mockZeroClaw{
-		available: true,
-		plan:      json.RawMessage(`{"plan":{"kind":"validate","goal":"planner goal","target":{"model":"qwen3-8b","engine":"vllm","hardware":"nvidia-gb10-arm64"},"benchmark_profile":{"concurrency":4,"rounds":2}}}`),
-	}
-
-	manager := NewExplorationManager(db, nil, tools, zc)
-	run, err := manager.Start(ctx, ExplorationStart{
-		Kind:    "validate",
-		Planner: "zeroclaw",
-		Target: ExplorationTarget{
-			Model: "qwen3-8b",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if run.Goal != "planner goal" {
-		t.Fatalf("goal = %q, want planner goal", run.Goal)
-	}
-	if !strings.Contains(run.PlanJSON, `"engine":"vllm"`) {
-		t.Fatalf("plan_json = %s, want planned engine", run.PlanJSON)
-	}
-
-	var status *ExplorationStatus
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		status, err = manager.Result(ctx, run.ID)
-		if err != nil {
-			t.Fatalf("Result: %v", err)
-		}
-		if status.Run.Status == "completed" {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if status == nil || status.Run.Status != "completed" {
-		t.Fatalf("run status = %v, want completed", status)
-	}
-}
-
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }
@@ -1570,4 +1362,67 @@ func searchString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// mockToolRejectLLM fails with an error when tools are provided, succeeds without tools.
+type mockToolRejectLLM struct {
+	responses    []*Response
+	calls        int
+	toolAttempts int // how many times tools were sent
+}
+
+func (m *mockToolRejectLLM) ChatCompletion(_ context.Context, _ []Message, tools []ToolDefinition) (*Response, error) {
+	if len(tools) > 0 {
+		m.toolAttempts++
+		return nil, fmt.Errorf(`"auto" tool choice requires --enable-auto-tool-choice`)
+	}
+	if m.calls >= len(m.responses) {
+		return nil, fmt.Errorf("no more mock responses")
+	}
+	resp := m.responses[m.calls]
+	m.calls++
+	return resp, nil
+}
+
+func TestAgent_ContextOnlyMode_ToolCallRejected(t *testing.T) {
+	llm := &mockToolRejectLLM{
+		responses: []*Response{
+			{Content: "I can answer without tools."},
+			{Content: "Still in context-only mode."},
+		},
+	}
+	tools := &mockTools{
+		tools: []ToolDefinition{
+			{Name: "deploy.list", Description: "List deployments"},
+		},
+	}
+
+	a := NewAgent(llm, tools)
+
+	// First ask: detects tool rejection, falls back to context-only
+	result, _, _, err := a.Ask(context.Background(), "", "what is deployed?")
+	if err != nil {
+		t.Fatalf("expected context-only fallback, got error: %v", err)
+	}
+	if result != "I can answer without tools." {
+		t.Errorf("result = %q, want degraded response", result)
+	}
+	if a.ToolMode() != "context_only" {
+		t.Errorf("ToolMode = %q, want context_only", a.ToolMode())
+	}
+	if llm.toolAttempts != 1 {
+		t.Errorf("toolAttempts = %d, want 1 (probed once)", llm.toolAttempts)
+	}
+
+	// Second ask: should NOT attempt tools again (remembered context-only)
+	result, _, _, err = a.Ask(context.Background(), "", "hi again")
+	if err != nil {
+		t.Fatalf("second ask: %v", err)
+	}
+	if result != "Still in context-only mode." {
+		t.Errorf("result = %q, want context-only response", result)
+	}
+	if llm.toolAttempts != 1 {
+		t.Errorf("toolAttempts = %d after 2nd ask, want 1 (should not retry tools)", llm.toolAttempts)
+	}
 }

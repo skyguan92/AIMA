@@ -2,6 +2,7 @@
 build/
 /aima
 /aima.exe
+output/
 
 # Claude Code local config (keep skills tracked)
 .claude/*
@@ -18,6 +19,9 @@ hardware-reference/
 .vscode/
 *.swp
 *.swo
+
+# Playwright CLI artifacts
+.playwright-cli/
 
 # OS
 .DS_Store

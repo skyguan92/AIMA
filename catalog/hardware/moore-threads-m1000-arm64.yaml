@@ -1,7 +1,7 @@
 kind: hardware_profile
 metadata:
   name: moore-threads-m1000-arm64
-  description: "Moore Threads M1000 MUSA GPU, aarch64, unified memory ~62GB"
+  description: "Moore Threads M1000 Dev Kit, aarch64, unified memory ~62GB"
 hardware:
   gpu:
     arch: MUSA

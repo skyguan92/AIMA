@@ -1,12 +1,26 @@
 ---
 name: aima-tts
-description: Text-to-speech using AIMA's local qwen3-tts model. Generate audio files from text.
+description: Text-to-speech using AIMA's current local TTS model. Generate audio files from text.
 metadata: {"openclaw":{"emoji":"🔊","requires":{"bins":["curl"]},"always":true}}
 ---
 
-# AIMA Text-to-Speech (qwen3-tts)
+# AIMA Text-to-Speech
 
-Generate speech audio from text using AIMA's local TTS model.
+Generate speech audio from text using the TTS model currently managed by AIMA/OpenClaw.
+
+## When to use
+
+- The user explicitly asks for a spoken or voice reply.
+- The user asks you to say something aloud instead of only writing it.
+- The user wants a short audio clip in Chinese or English.
+
+## Required behavior
+
+- Write a short spoken script first.
+- Run `{baseDir}/scripts/speak.sh` with that script.
+- After OpenClaw attaches the generated media, reply with exactly `NO_REPLY`.
+- If TTS generation fails, give a brief text fallback that says the audio conversion failed.
+- Keep the spoken script short and in the user's language unless they ask for something longer.
 
 ## Quick start
 
@@ -19,6 +33,7 @@ Generate speech audio from text using AIMA's local TTS model.
 ```bash
 {baseDir}/scripts/speak.sh "今天天气真好" --filename weather.wav
 {baseDir}/scripts/speak.sh "Hello AIMA" --filename greeting.wav --voice default
+{baseDir}/scripts/speak.sh "请用参考音色说这句话" --api tts --reference-audio /tmp/ref.wav --reference-text "参考文案"
 ```
 
 ## Output
@@ -28,7 +43,9 @@ Generate speech audio from text using AIMA's local TTS model.
 
 ## Notes
 
-- Model: `qwen3-tts-0.6b` (local, no API key needed)
+- Model: auto-detected from `~/.openclaw/openclaw.json` (override with `AIMA_TTS_MODEL`)
 - Voice: `default` (single voice)
-- Output format: WAV
+- API: `speech` (`/v1/audio/speech`) or `tts` (`/v1/tts`)
+- Output format: configurable with `--response-format`
+- Optional reference fields: `--reference-audio`, `--reference-text`
 - Runs on AIMA proxy at `http://127.0.0.1:6188/v1`

@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,6 +19,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jguan/aima/internal/mcp"
+	"github.com/jguan/aima/internal/openclaw"
 	"github.com/jguan/aima/internal/proxy"
 )
 
@@ -25,6 +29,7 @@ func newServeCmd(app *App) *cobra.Command {
 		addr            string
 		mcpAddr         string
 		mcpMod          bool
+		mcpProfile      string
 		apiKey          string
 		mdnsEnabled     bool
 		discoverEnabled bool
@@ -53,6 +58,10 @@ func newServeCmd(app *App) *cobra.Command {
 			if err := validateServeSecurity(addr, mcpAddr, mcpMod, apiKey, allowInsecure); err != nil {
 				return err
 			}
+			profile, err := resolveMCPProfile(mcpMod, mcpProfile)
+			if err != nil {
+				return err
+			}
 
 			if !allowInsecure && apiKey == "" && (!isLoopbackListenAddr(addr) || (mcpMod && !isLoopbackListenAddr(mcpAddr))) {
 				slog.Warn("starting without API key on non-loopback address; this is insecure")
@@ -63,6 +72,12 @@ func newServeCmd(app *App) *cobra.Command {
 				app.Proxy.SetAPIKey(apiKey)
 				if app.FleetClient != nil {
 					app.FleetClient.SetAPIKey(apiKey)
+				}
+				// Sync proxy API key to LLM client when it targets the local proxy,
+				// so the agent can authenticate with its own proxy.
+				if app.LLMClient != nil && app.LLMClient.IsLocalEndpoint() {
+					app.LLMClient.SetAPIKey(apiKey)
+					slog.Info("synced proxy API key to agent LLM client (local endpoint)")
 				}
 				slog.Info("API key authentication enabled")
 			}
@@ -82,6 +97,9 @@ func newServeCmd(app *App) *cobra.Command {
 				}
 				go proxy.StartSyncLoop(ctx, app.Proxy, listFn, 5*time.Second)
 			}
+			if app.OpenClaw != nil {
+				go openclaw.StartSyncLoop(ctx, app.OpenClaw, 10*time.Second)
+			}
 
 			if app.Support != nil {
 				go func() {
@@ -89,6 +107,15 @@ func newServeCmd(app *App) *cobra.Command {
 						slog.Warn("support supervisor stopped", "error", err)
 					}
 				}()
+			}
+
+			// Auto-open browser when launched without subcommand (double-click).
+			if app.OpenBrowser {
+				app.Proxy.SetOnReady(func(listenAddr string) {
+					url := fmt.Sprintf("http://127.0.0.1:%d/ui/", parsePort(addr))
+					fmt.Fprintf(os.Stderr, "\n  AIMA is running at: %s\n\n", url)
+					openBrowser(url)
+				})
 			}
 
 			errCh := make(chan error, 2)
@@ -124,6 +151,10 @@ func newServeCmd(app *App) *cobra.Command {
 
 			// Start MCP server if requested (on a separate port)
 			if mcpMod {
+				if profile != mcp.ProfileFull {
+					app.MCP.SetProfile(profile)
+					slog.Info("MCP tool profile active", "profile", string(profile))
+				}
 				go func() {
 					slog.Info("starting MCP server (HTTP)", "addr", mcpAddr)
 					mux := http.NewServeMux()
@@ -167,12 +198,31 @@ func newServeCmd(app *App) *cobra.Command {
 	cmd.Flags().StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", proxy.DefaultPort), "Proxy server listen address")
 	cmd.Flags().StringVar(&mcpAddr, "mcp-addr", "127.0.0.1:9090", "MCP server listen address")
 	cmd.Flags().BoolVar(&mcpMod, "mcp", false, "Also serve MCP protocol over HTTP")
+	cmd.Flags().StringVar(&mcpProfile, "mcp-profile", "", "MCP tool profile: operator, patrol, explorer (default: all tools)")
 	cmd.Flags().StringVar(&apiKey, "api-key", defaultKey, "API key for authentication (or set AIMA_API_KEY env)")
 	cmd.Flags().BoolVar(&mdnsEnabled, "mdns", true, "Enable mDNS service broadcast")
 	cmd.Flags().BoolVar(&discoverEnabled, "discover", false, "Discover remote inference services via mDNS")
 	cmd.Flags().BoolVar(&allowInsecure, "allow-insecure-no-auth", false, "Allow non-loopback listen addresses without API key (NOT recommended)")
 
 	return cmd
+}
+
+func resolveMCPProfile(mcpEnabled bool, profile string) (mcp.Profile, error) {
+	if profile == "" {
+		return mcp.ProfileFull, nil
+	}
+	if !mcpEnabled {
+		return mcp.ProfileFull, fmt.Errorf("--mcp-profile requires --mcp")
+	}
+	return parseMCPProfile(profile)
+}
+
+func parseMCPProfile(profile string) (mcp.Profile, error) {
+	p := mcp.Profile(profile)
+	if !mcp.IsValidProfile(p) {
+		return mcp.ProfileFull, fmt.Errorf("unknown MCP profile %q; valid profiles: operator, patrol, explorer", profile)
+	}
+	return p, nil
 }
 
 func validateServeSecurity(addr, mcpAddr string, mcpEnabled bool, apiKey string, allowInsecure bool) error {
@@ -227,7 +277,23 @@ func backendModelNames(s *proxy.Server) []string {
 	return names
 }
 
-// apiKeyAuth wraps an HTTP handler with dynamic Bearer token authentication.
+// openBrowser opens the given URL in the user's default browser.
+// Fire-and-forget: errors are silently ignored (e.g. headless Linux).
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		return
+	}
+	_ = cmd.Start()
+}
+
 // keyFn is called on each request, enabling hot-reload of the API key.
 // When keyFn returns empty string, all requests pass through.
 func apiKeyAuth(keyFn func() string, next http.Handler) http.Handler {

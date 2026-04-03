@@ -209,6 +209,47 @@ func TestQueryRemoteModels_WithAPIKey(t *testing.T) {
 	}
 }
 
+func TestQueryRemoteStatus_UsesStatusMetadata(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok",
+			"models": []map[string]any{
+				{
+					"model_name":            "qwen3-8b",
+					"ready":                 true,
+					"remote":                false,
+					"parameter_count":       "8B",
+					"context_window_tokens": 8192,
+				},
+				{
+					"model_name":            "qwen3.5-35b-a3b",
+					"ready":                 true,
+					"remote":                false,
+					"parameter_count":       "35B",
+					"context_window_tokens": 16384,
+				},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	addr, port := splitHostPort(t, ts)
+	models := QueryRemoteStatus(context.Background(), addr, port, "")
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].ID != "qwen3.5-35b-a3b" {
+		t.Fatalf("first model = %q, want qwen3.5-35b-a3b", models[0].ID)
+	}
+	if models[0].ParameterCount != "35B" {
+		t.Fatalf("parameter_count = %q, want 35B", models[0].ParameterCount)
+	}
+}
+
 // newModelServer creates a test HTTP server that serves /v1/models in OpenAI format.
 func newModelServer(t *testing.T, modelNames []string) *httptest.Server {
 	t.Helper()

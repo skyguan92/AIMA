@@ -56,7 +56,7 @@ func testApp(t *testing.T) *App {
 				return json.RawMessage(`[]`), nil
 			},
 			AgentStatus: func(ctx context.Context) (json.RawMessage, error) {
-				return json.RawMessage(`{"zeroclaw_available":false,"zeroclaw_healthy":false}`), nil
+				return json.RawMessage(`{"agent_available":false,"active_exploration_runs":0}`), nil
 			},
 			SupportAskForHelp: func(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error) {
 				return json.RawMessage(`{"enabled":true,"device_id":"dev-test","created":false}`), nil
@@ -75,10 +75,10 @@ func TestNewRootCmd(t *testing.T) {
 
 	// Verify all expected subcommands are registered
 	expected := []string{
-		"init", "hal",
+		"run", "init", "hal",
 		"deploy", "undeploy", "status",
 		"model", "engine", "knowledge", "catalog",
-		"ask", "agent", "config", "serve", "discover",
+		"ask", "agent", "config", "serve", "mcp", "discover",
 	}
 	cmds := make(map[string]bool)
 	for _, c := range root.Commands() {
@@ -151,7 +151,7 @@ func TestEngineSubcommands(t *testing.T) {
 		t.Fatal("engine command not found")
 	}
 
-	expected := []string{"scan", "list", "pull", "import", "remove"}
+	expected := []string{"scan", "list", "pull", "import", "remove", "plan"}
 	subs := make(map[string]bool)
 	for _, c := range engineCmd.Commands() {
 		subs[c.Name()] = true
@@ -232,7 +232,7 @@ func TestAgentSubcommands(t *testing.T) {
 		t.Fatal("agent command not found")
 	}
 
-	expected := []string{"install", "status"}
+	expected := []string{"status", "rollback-list", "rollback"}
 	subs := make(map[string]bool)
 	for _, c := range agentCmd.Commands() {
 		subs[c.Name()] = true
@@ -490,6 +490,37 @@ func TestAgentStatusCmd(t *testing.T) {
 
 	if buf.Len() == 0 {
 		t.Error("agent status output is empty")
+	}
+}
+
+func TestExploreStartDoesNotExposePlannerFlag(t *testing.T) {
+	app := testApp(t)
+	root := NewRootCmd(app)
+
+	var exploreCmd *cobra.Command
+	for _, c := range root.Commands() {
+		if c.Name() == "explore" {
+			exploreCmd = c
+			break
+		}
+	}
+	if exploreCmd == nil {
+		t.Fatal("explore command not found")
+	}
+
+	var startCmd *cobra.Command
+	for _, c := range exploreCmd.Commands() {
+		if c.Name() == "start" {
+			startCmd = c
+			break
+		}
+	}
+	if startCmd == nil {
+		t.Fatal("explore start command not found")
+	}
+
+	if startCmd.Flags().Lookup("planner") != nil {
+		t.Fatal("planner flag should not be exposed")
 	}
 }
 

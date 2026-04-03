@@ -86,13 +86,24 @@ type Metrics struct {
 	RAM RAMMetrics  `json:"ram"`
 }
 
-// GPUMetrics holds real-time GPU utilization.
-type GPUMetrics struct {
+// GPUCardMetrics holds real-time metrics for a single GPU card.
+type GPUCardMetrics struct {
+	Index              int     `json:"index"`
 	UtilizationPercent int     `json:"utilization_percent"`
 	MemoryUsedMiB      int     `json:"memory_used_mib"`
 	MemoryTotalMiB     int     `json:"memory_total_mib"`
 	TemperatureCelsius float64 `json:"temperature_celsius"`
 	PowerDrawWatts     float64 `json:"power_draw_watts"`
+}
+
+// GPUMetrics holds real-time GPU utilization (aggregated across all cards).
+type GPUMetrics struct {
+	UtilizationPercent int              `json:"utilization_percent"`
+	MemoryUsedMiB      int              `json:"memory_used_mib"`
+	MemoryTotalMiB     int              `json:"memory_total_mib"`
+	TemperatureCelsius float64          `json:"temperature_celsius"`
+	PowerDrawWatts     float64          `json:"power_draw_watts"`
+	Cards              []GPUCardMetrics `json:"cards,omitempty"`
 }
 
 // CPUMetrics holds real-time CPU utilization.

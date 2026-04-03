@@ -11,6 +11,7 @@ image:
   tag: "latest"
   size_approx_mb: 4000
   platforms: [linux/arm64]
+  distribution: local
 patterns:
   - "^qwen-tts-fastapi-cuda-blackwell$"
   - "tts-fastapi-cuda-blackwell"
@@ -19,11 +20,23 @@ hardware:
   gpu_arch: Blackwell
   vram_min_mib: 2048
 startup:
-  command: ["python", "main.py", "--model", "{{.ModelPath}}", "--port", "8002", "--device", "cuda"]
+  command: ["python", "main.py", "--model", "{{.ModelPath}}", "--device", "cuda"]
+  ports:
+    - name: http
+      flag: --port
+      config_key: port
+      primary: true
+  env:
+    # Chinese female reference audio for voice cloning (Edge TTS 晓晓)
+    REFERENCE_TEXT: "其实我真的有发现，我是一个特别善于观察别人情绪的人。比如说你现在开心不开心，我一眼就能看出来。"
+    REFERENCE_AUDIO: "/tmp/ref_zh.wav"
   init_commands:
     - "rm -rf /model && ln -s /models /model"
   default_args:
     port: 8002
+    # GB10 上这条 CUDA 路线需要 transformers 自动分配设备；固定 cuda:0 会在
+    # generate_voice_clone() 里触发 CUDA runtime 错误。
+    device_map: auto
   # No health_check: TTS server is single-threaded; liveness probe
   # kills the pod during long inference requests (2-5 min).
   warmup:

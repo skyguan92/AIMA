@@ -77,6 +77,27 @@ func TestResolveWithUserOverrides(t *testing.T) {
 	}
 }
 
+func TestResolveIncludesCompatibilityMetadata(t *testing.T) {
+	cat := mustLoadCatalog(t)
+
+	hw := HardwareInfo{
+		GPUArch: "TestArch",
+		CPUArch: "x86_64",
+	}
+
+	resolved, err := cat.Resolve(hw, "test-model-8b", "testengine", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if resolved.CompatibilityProbe != "transformers_autoconfig" {
+		t.Fatalf("CompatibilityProbe = %q, want transformers_autoconfig", resolved.CompatibilityProbe)
+	}
+	if len(resolved.RepairInitCommands) != 1 || resolved.RepairInitCommands[0] != "python3 -m pip install --no-cache-dir transformers>=5" {
+		t.Fatalf("RepairInitCommands = %v", resolved.RepairInitCommands)
+	}
+}
+
 func TestResolveWildcardEngine(t *testing.T) {
 	cat := mustLoadCatalog(t)
 
@@ -291,7 +312,10 @@ func TestBuildSyntheticModelAsset(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ma := cat.BuildSyntheticModelAsset("test-model", tt.modelType, "testfam", "8B", tt.format)
+			ma := cat.BuildSyntheticModelAsset(ScanMetadata{
+				Name: "test-model", Type: tt.modelType, Family: "testfam",
+				ParamCount: "8B", Format: tt.format,
+			}, HardwareInfo{})
 			if ma.Metadata.Type != tt.wantType {
 				t.Errorf("Type = %q, want %q", ma.Metadata.Type, tt.wantType)
 			}
@@ -316,6 +340,192 @@ func TestBuildSyntheticModelAsset(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEstimateVRAMMiB(t *testing.T) {
+	tests := []struct {
+		name string
+		meta ScanMetadata
+		want int
+	}{
+		{"size_bytes 8GB GGUF", ScanMetadata{SizeBytes: 8 * 1024 * 1024 * 1024}, 8192 + 2048},
+		{"params 8B fp16", ScanMetadata{TotalParams: 8_000_000_000, Quantization: "fp16"}, 15258 + 3814},
+		{"params 70B int4", ScanMetadata{TotalParams: 70_000_000_000, Quantization: "int4"}, 33378 + 8344},
+		{"size_bytes takes priority over params", ScanMetadata{SizeBytes: 5 * 1024 * 1024 * 1024, TotalParams: 70_000_000_000}, 5120 + 1280},
+		{"no data returns 0", ScanMetadata{}, 0},
+		{"small model overhead floor 1GB", ScanMetadata{SizeBytes: 500 * 1024 * 1024}, 500 + 1024},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := estimateVRAMMiB(tt.meta)
+			if got != tt.want {
+				t.Errorf("estimateVRAMMiB() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInferTP(t *testing.T) {
+	tests := []struct {
+		name string
+		vram int
+		hw   HardwareInfo
+		want int
+	}{
+		{"fits single GPU", 10000, HardwareInfo{GPUVRAMMiB: 24576, GPUCount: 1}, 1},
+		{"no hw info", 10000, HardwareInfo{}, 1},
+		{"needs 2 GPUs", 40000, HardwareInfo{GPUVRAMMiB: 24576, GPUCount: 2}, 2},
+		{"needs 4 but only 2", 100000, HardwareInfo{GPUVRAMMiB: 24576, GPUCount: 2}, 2},
+		{"needs 8 GPUs", 140000, HardwareInfo{GPUVRAMMiB: 24576, GPUCount: 8}, 8},
+		{"unified memory fits", 30000, HardwareInfo{GPUVRAMMiB: 128000, GPUCount: 1, UnifiedMemory: true, RAMTotalMiB: 131072}, 1},
+		{"single GPU too small but only 1", 50000, HardwareInfo{GPUVRAMMiB: 24576, GPUCount: 1}, 1},
+		{"zero estimated", 0, HardwareInfo{GPUVRAMMiB: 24576, GPUCount: 2}, 1},
+		{"round up to power of 2", 60000, HardwareInfo{GPUVRAMMiB: 24576, GPUCount: 8}, 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferTP(tt.vram, tt.hw)
+			if got != tt.want {
+				t.Errorf("inferTP() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInferGMU(t *testing.T) {
+	tests := []struct {
+		name string
+		vram int
+		hw   HardwareInfo
+		want float64
+	}{
+		{"no hw info", 10000, HardwareInfo{}, 0},
+		{"discrete small model", 5000, HardwareInfo{GPUVRAMMiB: 24576}, 0.50},
+		{"discrete large model", 22000, HardwareInfo{GPUVRAMMiB: 24576}, 0.90},
+		{"unified 128GB", 30000, HardwareInfo{GPUVRAMMiB: 128000, UnifiedMemory: true, RAMTotalMiB: 131072}, 0.85},
+		{"unified 32GB", 10000, HardwareInfo{GPUVRAMMiB: 32000, UnifiedMemory: true, RAMTotalMiB: 32768}, 0.75},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferGMU(tt.vram, tt.hw)
+			if got != tt.want {
+				t.Errorf("inferGMU() = %.2f, want %.2f", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildSyntheticWithHardware(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{
+					Name: "vllm-test", Type: "vllm", Version: "1.0",
+					SupportedFormats: []string{"safetensors"},
+				},
+				Hardware: EngineHardware{GPUArch: "*"},
+			},
+			{
+				Metadata: EngineMetadata{
+					Name: "llamacpp-universal", Type: "llamacpp", Version: "1.0",
+					Default: true, SupportedFormats: []string{"gguf"},
+				},
+				Hardware: EngineHardware{GPUArch: "*"},
+			},
+		},
+	}
+	meta := ScanMetadata{
+		Name: "big-model", Type: "llm", Format: "safetensors",
+		SizeBytes: 16 * 1024 * 1024 * 1024, // 16GB
+	}
+	hw := HardwareInfo{GPUArch: "Ada", GPUVRAMMiB: 24576, GPUCount: 1}
+
+	ma := cat.BuildSyntheticModelAsset(meta, hw)
+
+	// Should have 3 variants: hardware-specific + wildcard + llamacpp fallback
+	if len(ma.Variants) != 3 {
+		t.Fatalf("Variants count = %d, want 3", len(ma.Variants))
+	}
+
+	// First variant should be hardware-specific with VRAM estimate
+	v := ma.Variants[0]
+	if v.Hardware.GPUArch != "Ada" {
+		t.Errorf("variant[0] GPUArch = %q, want Ada", v.Hardware.GPUArch)
+	}
+	if v.Hardware.VRAMMinMiB == 0 {
+		t.Error("variant[0] VRAMMinMiB should be > 0")
+	}
+	if v.DefaultConfig == nil {
+		t.Fatal("variant[0] DefaultConfig should not be nil")
+	}
+	if _, ok := v.DefaultConfig["gpu_memory_utilization"]; !ok {
+		t.Error("variant[0] should have gpu_memory_utilization")
+	}
+	if _, ok := v.DefaultConfig["max_model_len"]; !ok {
+		t.Error("variant[0] should have max_model_len")
+	}
+
+	// Wildcard variant should also have VRAM estimate
+	wc := ma.Variants[1]
+	if wc.Hardware.GPUArch != "*" {
+		t.Errorf("variant[1] GPUArch = %q, want *", wc.Hardware.GPUArch)
+	}
+	if wc.Hardware.VRAMMinMiB == 0 {
+		t.Error("variant[1] VRAMMinMiB should be > 0 (wildcard with VRAM constraint)")
+	}
+}
+
+func TestResolveSyntheticWithAutoTP(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{
+					Name: "vllm-test", Type: "vllm", Version: "1.0",
+					Default: true, SupportedFormats: []string{"safetensors"},
+				},
+				Hardware: EngineHardware{GPUArch: "*"},
+				Startup: EngineStartup{
+					Command:     []string{"serve"},
+					DefaultArgs: map[string]any{"gpu_memory_utilization": 0.9},
+				},
+			},
+		},
+	}
+
+	meta := ScanMetadata{
+		Name: "big-model", Type: "llm", Format: "safetensors",
+		SizeBytes: 32 * 1024 * 1024 * 1024,
+	}
+	hw := HardwareInfo{GPUArch: "Ada", GPUVRAMMiB: 24576, GPUCount: 2}
+	totalVRAM := estimateVRAMMiB(meta)
+
+	synth := cat.BuildSyntheticModelAsset(meta, hw)
+	cat.UpsertSyntheticModel(synth)
+
+	if len(cat.ModelAssets) != 1 {
+		t.Fatalf("ModelAssets count = %d, want 1", len(cat.ModelAssets))
+	}
+	variant := cat.ModelAssets[0].Variants[0]
+	if variant.Hardware.GPUCountMin != 2 {
+		t.Fatalf("GPUCountMin = %d, want 2", variant.Hardware.GPUCountMin)
+	}
+	if variant.Hardware.VRAMMinMiB != ceilDiv(totalVRAM, 2) {
+		t.Fatalf("VRAMMinMiB = %d, want %d", variant.Hardware.VRAMMinMiB, ceilDiv(totalVRAM, 2))
+	}
+
+	resolved, err := cat.Resolve(hw, "big-model", "", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.Engine != "vllm" {
+		t.Fatalf("Engine = %q, want vllm", resolved.Engine)
+	}
+	if got := int(toFloat64(resolved.Config["tensor_parallel_size"])); got != 2 {
+		t.Fatalf("tensor_parallel_size = %d, want 2", got)
+	}
+	if resolved.EstimatedVRAMMiB != totalVRAM {
+		t.Fatalf("EstimatedVRAMMiB = %d, want %d", resolved.EstimatedVRAMMiB, totalVRAM)
 	}
 }
 
@@ -508,6 +718,49 @@ func TestResolveVRAMZeroSkipsFilter(t *testing.T) {
 	}
 	if resolved.Engine != "testengine" {
 		t.Errorf("Engine = %q, want testengine (zero VRAM = skip filter)", resolved.Engine)
+	}
+}
+
+func TestRealCatalogKTLowVRAMDoesNotMatchSingleGPUVariants(t *testing.T) {
+	cat, err := LoadCatalog(catalogFS())
+	if err != nil {
+		t.Fatalf("LoadCatalog(real FS): %v", err)
+	}
+
+	tests := []string{
+		"qwen3-30b-a3b",
+		"qwen3.5-35b-a3b",
+	}
+	hw := HardwareInfo{
+		GPUArch:     "Ada",
+		GPUVRAMMiB:  4096,
+		GPUCount:    1,
+		Platform:    "linux/amd64",
+		RuntimeType: "native",
+	}
+
+	for _, modelName := range tests {
+		modelName := modelName
+		t.Run(modelName, func(t *testing.T) {
+			if _, err := cat.Resolve(hw, modelName, "sglang-kt", nil); err == nil {
+				t.Fatalf("Resolve(%s, sglang-kt) unexpectedly succeeded on 4 GiB Ada", modelName)
+			}
+		})
+	}
+}
+
+func TestRealCatalogSGLangKTUsesAppImageExtractAndRunFallback(t *testing.T) {
+	cat, err := LoadCatalog(catalogFS())
+	if err != nil {
+		t.Fatalf("LoadCatalog(real FS): %v", err)
+	}
+
+	engine := cat.FindEngineByName("sglang-kt-ada", HardwareInfo{GPUArch: "Ada"})
+	if engine == nil {
+		t.Fatal("sglang-kt-ada engine not found in real catalog")
+	}
+	if got := engine.Startup.Env["APPIMAGE_EXTRACT_AND_RUN"]; got != "1" {
+		t.Fatalf("APPIMAGE_EXTRACT_AND_RUN = %q, want 1", got)
 	}
 }
 
@@ -1023,6 +1276,47 @@ func TestResolveTimeFieldsZeroWhenMissing(t *testing.T) {
 	}
 }
 
+func TestResolveLeavesEngineImageEmptyForNativePreinstalledEngine(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{{
+			Metadata: EngineMetadata{Name: "vllm-musa", Type: "vllm", Version: "0.9.2"},
+			Hardware: EngineHardware{GPUArch: "MUSA"},
+			Startup: EngineStartup{
+				Command:     []string{"vllm", "serve", "{{.ModelPath}}"},
+				DefaultArgs: map[string]any{},
+				HealthCheck: HealthCheck{Path: "/health", TimeoutS: 60},
+			},
+			Source: &EngineSource{
+				InstallType: "preinstalled",
+				Probe: &EngineSourceProbe{
+					Paths: []string{"/opt/mt-ai/llm/venv/bin/vllm"},
+				},
+			},
+			Runtime: EngineRuntime{Default: "native"},
+		}},
+		ModelAssets: []ModelAsset{{
+			Kind:     "model_asset",
+			Metadata: ModelMetadata{Name: "qwen3-8b"},
+			Variants: []ModelVariant{{
+				Name:     "qwen3-8b-musa",
+				Hardware: ModelVariantHardware{GPUArch: "MUSA"},
+				Engine:   "vllm",
+			}},
+		}},
+	}
+	hw := HardwareInfo{GPUArch: "MUSA", Platform: "linux/arm64", RuntimeType: "native"}
+	resolved, err := cat.Resolve(hw, "qwen3-8b", "vllm", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.EngineImage != "" {
+		t.Fatalf("EngineImage = %q, want empty for native preinstalled engine", resolved.EngineImage)
+	}
+	if resolved.RuntimeRecommendation != "native" {
+		t.Fatalf("RuntimeRecommendation = %q, want native", resolved.RuntimeRecommendation)
+	}
+}
+
 func TestCheckFitPowerBudget(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1286,4 +1580,189 @@ func TestFindEngineByName(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGPUCountFiltering(t *testing.T) {
+	// Build a catalog with a multi-GPU variant (gpu_count_min: 2) and a single-GPU fallback.
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata:  EngineMetadata{Name: "eng-multi", Type: "vllm", Version: "1.0"},
+				Hardware:  EngineHardware{GPUArch: "TestArch"},
+				Amplifier: EngineAmplifier{PerformanceMultiplier: 2.0},
+			},
+			{
+				Metadata:  EngineMetadata{Name: "eng-single", Type: "single", Version: "1.0"},
+				Hardware:  EngineHardware{GPUArch: "TestArch"},
+				Amplifier: EngineAmplifier{PerformanceMultiplier: 1.0},
+			},
+		},
+		ModelAssets: []ModelAsset{{
+			Metadata: ModelMetadata{Name: "test-multi-gpu"},
+			Variants: []ModelVariant{
+				{
+					Name:     "multi-gpu-tp2",
+					Hardware: ModelVariantHardware{GPUArch: "TestArch", VRAMMinMiB: 4096, GPUCountMin: 2},
+					Engine:   "eng-multi",
+					Format:   "safetensors",
+					DefaultConfig: map[string]any{
+						"tensor_parallel_size": 2,
+						"dtype":                "bfloat16",
+					},
+				},
+				{
+					Name:     "single-gpu",
+					Hardware: ModelVariantHardware{GPUArch: "TestArch", VRAMMinMiB: 4096},
+					Engine:   "eng-single",
+					Format:   "safetensors",
+					DefaultConfig: map[string]any{
+						"dtype": "float16",
+					},
+				},
+			},
+		}},
+		PartitionStrategies: []PartitionStrategy{{
+			Metadata: PartitionMetadata{Name: "test-multi-slot"},
+			Target: PartitionTarget{
+				HardwareProfile: "*",
+				WorkloadPattern: "single_model",
+			},
+			Slots: []PartitionSlotDef{
+				{Name: "primary", GPU: SlotGPU{Count: 2}},
+				{Name: "secondary", GPU: SlotGPU{Count: 1}},
+			},
+		}},
+	}
+
+	t.Run("2 GPUs selects multi-GPU variant", func(t *testing.T) {
+		hw := HardwareInfo{GPUArch: "TestArch", GPUVRAMMiB: 8192, GPUCount: 2}
+		engine, err := cat.InferEngineType("test-multi-gpu", hw)
+		if err != nil {
+			t.Fatalf("InferEngineType: %v", err)
+		}
+		if engine != "eng-multi" {
+			t.Errorf("engine = %q, want eng-multi", engine)
+		}
+		resolved, err := cat.Resolve(hw, "test-multi-gpu", engine, nil)
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if resolved.Config["tensor_parallel_size"] != 2 {
+			t.Errorf("tensor_parallel_size = %v, want 2", resolved.Config["tensor_parallel_size"])
+		}
+	})
+
+	t.Run("1 GPU skips multi-GPU variant", func(t *testing.T) {
+		hw := HardwareInfo{GPUArch: "TestArch", GPUVRAMMiB: 8192, GPUCount: 1}
+		engine, err := cat.InferEngineType("test-multi-gpu", hw)
+		if err != nil {
+			t.Fatalf("InferEngineType: %v", err)
+		}
+		if engine != "eng-single" {
+			t.Errorf("engine = %q, want eng-single (multi-GPU variant should be filtered)", engine)
+		}
+		resolved, err := cat.Resolve(hw, "test-multi-gpu", engine, nil)
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if _, has := resolved.Config["tensor_parallel_size"]; has {
+			t.Errorf("single-GPU variant should not have tensor_parallel_size")
+		}
+	})
+
+	t.Run("GPUCount=0 (unknown) does not filter", func(t *testing.T) {
+		hw := HardwareInfo{GPUArch: "TestArch", GPUVRAMMiB: 8192, GPUCount: 0}
+		engine, err := cat.InferEngineType("test-multi-gpu", hw)
+		if err != nil {
+			t.Fatalf("InferEngineType: %v", err)
+		}
+		// eng-multi has higher multiplier; GPUCount=0 means unknown, should not filter
+		if engine != "eng-multi" {
+			t.Errorf("engine = %q, want eng-multi (GPUCount=0 should not filter)", engine)
+		}
+	})
+
+	t.Run("slot GPU count constrains variant selection", func(t *testing.T) {
+		hw := HardwareInfo{GPUArch: "TestArch", GPUVRAMMiB: 8192, GPUCount: 2}
+		resolved, err := cat.Resolve(hw, "test-multi-gpu", "", map[string]any{
+			"partition": "test-multi-slot",
+			"slot":      "secondary",
+		})
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if resolved.Engine != "eng-single" {
+			t.Errorf("engine = %q, want eng-single for 1-GPU slot", resolved.Engine)
+		}
+		if resolved.Partition == nil || resolved.Partition.GPUCount != 1 {
+			t.Fatalf("partition GPUCount = %+v, want 1-GPU slot", resolved.Partition)
+		}
+		if _, has := resolved.Config["tensor_parallel_size"]; has {
+			t.Errorf("single-GPU slot should not select TP=2 variant")
+		}
+	})
+}
+
+func TestCheckFitTPExceedsGPUCount(t *testing.T) {
+	t.Run("TP=2 with 1 GPU rejects", func(t *testing.T) {
+		resolved := &ResolvedConfig{
+			Config: map[string]any{"tensor_parallel_size": 2},
+		}
+		hw := HardwareInfo{GPUCount: 1, GPUVRAMMiB: 24576}
+		fit := CheckFit(resolved, hw)
+		if fit.Fit {
+			t.Fatal("expected Fit=false for TP=2 on 1 GPU")
+		}
+		if !strings.Contains(fit.Reason, "tensor_parallel_size=2") || !strings.Contains(fit.Reason, "GPU count=1") {
+			t.Errorf("unexpected reason: %q", fit.Reason)
+		}
+	})
+
+	t.Run("TP=2 with 2 GPUs passes", func(t *testing.T) {
+		resolved := &ResolvedConfig{
+			Config: map[string]any{"tensor_parallel_size": 2},
+		}
+		hw := HardwareInfo{GPUCount: 2, GPUVRAMMiB: 24576}
+		fit := CheckFit(resolved, hw)
+		if !fit.Fit {
+			t.Fatalf("expected Fit=true for TP=2 on 2 GPUs, got Reason=%q", fit.Reason)
+		}
+	})
+
+	t.Run("TP=2 with GPUCount=0 (unknown) passes", func(t *testing.T) {
+		resolved := &ResolvedConfig{
+			Config: map[string]any{"tensor_parallel_size": 2},
+		}
+		hw := HardwareInfo{GPUCount: 0, GPUVRAMMiB: 24576}
+		fit := CheckFit(resolved, hw)
+		if !fit.Fit {
+			t.Fatalf("expected Fit=true when GPUCount unknown, got Reason=%q", fit.Reason)
+		}
+	})
+
+	t.Run("TP=2 with 2 GPUs but 1-GPU slot rejects", func(t *testing.T) {
+		resolved := &ResolvedConfig{
+			Config:    map[string]any{"tensor_parallel_size": 2},
+			Partition: &PartitionSlot{Name: "secondary", GPUCount: 1},
+		}
+		hw := HardwareInfo{GPUCount: 2, GPUVRAMMiB: 24576}
+		fit := CheckFit(resolved, hw)
+		if fit.Fit {
+			t.Fatal("expected Fit=false for TP=2 on 1-GPU slot")
+		}
+		if !strings.Contains(fit.Reason, "GPU count=1") {
+			t.Errorf("unexpected reason: %q", fit.Reason)
+		}
+	})
+
+	t.Run("no TP config passes", func(t *testing.T) {
+		resolved := &ResolvedConfig{
+			Config: map[string]any{"dtype": "float16"},
+		}
+		hw := HardwareInfo{GPUCount: 1, GPUVRAMMiB: 8192}
+		fit := CheckFit(resolved, hw)
+		if !fit.Fit {
+			t.Fatalf("expected Fit=true without TP config, got Reason=%q", fit.Reason)
+		}
+	})
 }

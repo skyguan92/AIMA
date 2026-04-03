@@ -51,9 +51,17 @@ func detectRAM(ctx context.Context, runner CommandRunner) RAMInfo {
 		}
 	}
 
-	// macOS doesn't have MemAvailable like Linux. Use vm_stat to estimate.
-	if out, err := runner.Run(ctx, "vm_stat"); err == nil {
-		info.AvailableMiB = parseVMStatAvailable(string(out))
+	// Prefer memory_pressure because it reflects macOS's own reclaimability model
+	// better than raw vm_stat counters. Fall back to vm_stat when unavailable.
+	if out, err := runner.Run(ctx, "memory_pressure"); err == nil {
+		if availableMiB, ok := parseMemoryPressureAvailable(string(out), info.TotalMiB); ok {
+			info.AvailableMiB = availableMiB
+		}
+	}
+	if info.AvailableMiB == 0 {
+		if out, err := runner.Run(ctx, "vm_stat"); err == nil {
+			info.AvailableMiB = parseVMStatAvailable(string(out))
+		}
 	}
 
 	// Parse swap from "sysctl vm.swapusage" — e.g. "total = 2048.00M  used = ..."
@@ -87,7 +95,7 @@ func parseSwapUsage(output string) int {
 func parseVMStatAvailable(output string) int {
 	// vm_stat reports page counts. Page size is typically 16384 on Apple Silicon, 4096 on Intel.
 	var pageSize int64 = 4096
-	var freePages, inactivePages int64
+	var freePages, inactivePages, speculativePages, purgeablePages int64
 
 	for _, line := range strings.Split(output, "\n") {
 		if strings.HasPrefix(line, "Mach Virtual Memory Statistics") {
@@ -107,11 +115,42 @@ func parseVMStatAvailable(output string) int {
 			freePages = val
 		case "Pages inactive":
 			inactivePages = val
+		case "Pages speculative":
+			speculativePages = val
+		case "Pages purgeable":
+			purgeablePages = val
 		}
 	}
 
-	availableBytes := (freePages + inactivePages) * pageSize
+	// speculative and purgeable pages are reclaimable, so counting them here
+	// matches macOS memory pressure semantics better than free+inactive alone.
+	availableBytes := (freePages + inactivePages + speculativePages + purgeablePages) * pageSize
 	return int(availableBytes / (1024 * 1024))
+}
+
+func parseMemoryPressureAvailable(output string, totalMiB int) (int, bool) {
+	if totalMiB <= 0 {
+		return 0, false
+	}
+	const prefix = "System-wide memory free percentage:"
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		pctStr := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		pctStr = strings.TrimSuffix(pctStr, "%")
+		pct, err := strconv.ParseFloat(strings.TrimSpace(pctStr), 64)
+		if err != nil {
+			return 0, false
+		}
+		if pct < 0 {
+			pct = 0
+		}
+		availableMiB := int(math.Round(float64(totalMiB) * pct / 100.0))
+		return availableMiB, true
+	}
+	return 0, false
 }
 
 func parseVMStatLine(line string) (string, int64) {

@@ -183,6 +183,15 @@ nvidia-ctk 组件也使用 `method: archive` 但 `extract_binaries` 为空 — a
 6. 下次 aima serve 重启自动选择 K3S 作为默认 runtime
 ```
 
+### aima-serve 共享数据目录
+
+`aima init` 安装 `aima-serve` systemd 服务时，会在 `/etc/aima/` 写入：
+
+- `aima-serve.env`：服务端的 `AIMA_DATA_DIR` 等环境变量
+- `data-dir`：给普通用户 CLI 读取的共享数据目录指针
+
+这样非 root 用户执行 `aima status`、`aima deploy list` 等命令时，会优先复用 systemd 服务的数据目录，而不是退回到各自的 `~/.aima`。
+
 ---
 
 ## 离线安装包
@@ -208,7 +217,7 @@ dist/                          # ~/.aima/dist/{os}-{arch}/
 - NVIDIA CTK deb 包: NVIDIA GitHub release (mirror: ghfast, ghproxy)
 - K3S 二进制 + airgap tar: K3S 官方 GitHub release
 - HAMi chart: HAMi 官方 GitHub release
-- HAMi airgap tar: AIMA GitHub release (v0.1.0-images)
+- HAMi airgap tar: AIMA stack bundle tag (`bundle/stack/2026-02-26`)
 
 ---
 
@@ -248,9 +257,10 @@ Stack Component 中的先验知识经历三个阶段：
 - `internal/stack/installer.go` - 通用 stack installer (`FilterByTier`, `installArchive`, `WriteRegistries`)
 - `internal/knowledge/loader.go` - Stack 结构体（`StackSource.Archive/ExtractBinaries`, `StackInstall.Tier/SystemdUnits/PostInstall`, `SystemdUnit`）
 - `internal/cli/init.go` - CLI init 命令（`--k3s` flag, tier 传递）
-- `internal/mcp/tools.go` - MCP tool 定义（`stack.preflight`, `stack.init` 接受 `tier` 参数）
+- `internal/mcp/tools_system.go` - `stack.*` / `system.*` MCP 工具定义
+- `internal/mcp/tools.go` - `RegisterAllTools()` 注册入口
 - `catalog/stack/` - Stack Component YAML（docker, nvidia-ctk, k3s, hami, aima-serve）
 
 ---
 
-*最后更新：2026-03-03*
+*最后更新：2026-04-01 (补充 aima-serve 共享数据目录说明，并对齐 MCP 分文件结构)*

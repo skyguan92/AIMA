@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,14 +29,21 @@ func SyncBackends(s *Server, deployments []*DeploymentInfo) {
 		if model == "" {
 			model = d.Name
 		}
+		upstreamModel := model
+		if labelModel := strings.TrimSpace(d.Labels[LabelServedModel]); labelModel != "" {
+			upstreamModel = labelModel
+		}
 		active[strings.ToLower(model)] = true
 
 		if d.Ready && d.Address != "" {
 			s.RegisterBackend(model, &Backend{
-				ModelName:  model,
-				EngineType: d.Labels["aima.dev/engine"],
-				Address:    d.Address,
-				Ready:      true,
+				ModelName:           model,
+				UpstreamModel:       upstreamModel,
+				EngineType:          d.Labels["aima.dev/engine"],
+				Address:             d.Address,
+				Ready:               true,
+				ParameterCount:      parameterCountFromLabels(d.Labels),
+				ContextWindowTokens: contextWindowFromLabels(d.Labels),
 			})
 			continue
 		}
@@ -48,19 +56,28 @@ func SyncBackends(s *Server, deployments []*DeploymentInfo) {
 			if engineType == "" {
 				engineType = b.EngineType
 			}
+			if strings.TrimSpace(d.Labels[LabelServedModel]) == "" {
+				upstreamModel = backendUpstreamModel(b)
+			}
 			s.RegisterBackend(model, &Backend{
-				ModelName:  model,
-				EngineType: engineType,
-				Address:    b.Address,
-				BasePath:   b.BasePath,
-				Ready:      false,
-				Remote:     b.Remote,
+				ModelName:           model,
+				UpstreamModel:       upstreamModel,
+				EngineType:          engineType,
+				Address:             b.Address,
+				BasePath:            b.BasePath,
+				Ready:               false,
+				Remote:              b.Remote,
+				ParameterCount:      preserveParameterCount(b.ParameterCount, d.Labels),
+				ContextWindowTokens: preserveContextWindow(b.ContextWindowTokens, d.Labels),
 			})
 		} else {
 			s.RegisterBackend(model, &Backend{
-				ModelName:  model,
-				EngineType: d.Labels["aima.dev/engine"],
-				Ready:      false,
+				ModelName:           model,
+				UpstreamModel:       upstreamModel,
+				EngineType:          d.Labels["aima.dev/engine"],
+				Ready:               false,
+				ParameterCount:      parameterCountFromLabels(d.Labels),
+				ContextWindowTokens: contextWindowFromLabels(d.Labels),
 			})
 		}
 	}
@@ -72,6 +89,42 @@ func SyncBackends(s *Server, deployments []*DeploymentInfo) {
 			s.RemoveBackend(name)
 		}
 	}
+}
+
+func contextWindowFromLabels(labels map[string]string) int {
+	if len(labels) == 0 {
+		return 0
+	}
+	raw := strings.TrimSpace(labels["aima.dev/context_window"])
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return value
+}
+
+func preserveContextWindow(existing int, labels map[string]string) int {
+	if value := contextWindowFromLabels(labels); value > 0 {
+		return value
+	}
+	return existing
+}
+
+func parameterCountFromLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(labels[LabelParameterCount])
+}
+
+func preserveParameterCount(existing string, labels map[string]string) string {
+	if value := parameterCountFromLabels(labels); value != "" {
+		return value
+	}
+	return strings.TrimSpace(existing)
 }
 
 // StartSyncLoop runs SyncBackends immediately and then every interval until ctx is cancelled.

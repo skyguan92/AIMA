@@ -2,29 +2,56 @@ package openclaw
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/jguan/aima/internal/openclaw/plugins"
 	"github.com/jguan/aima/internal/openclaw/skills"
 )
+
+var deployedSkillRoots = []string{
+	"aima-control",
+}
+
+var deployedPluginRoots = []string{
+	"aima-local-audio",
+	"aima-local-image",
+	"aima-local-tts",
+}
 
 // SyncResult holds the categorized models ready for OpenClaw config generation.
 type SyncResult struct {
 	LLMModels      []ModelEntry    `json:"llmModels,omitempty"`
+	VLMModels      []ModelEntry    `json:"vlmModels,omitempty"`
 	ASRModels      []AudioEntry    `json:"asrModels,omitempty"`
 	TTSModel       *TTSEntry       `json:"ttsModel,omitempty"`
 	ImageGenModels []ImageGenEntry `json:"imageGenModels,omitempty"`
+	MCPServer      *MCPServerEntry `json:"mcpServer,omitempty"`
 	ProxyAddr      string          `json:"proxyAddr"`
 	APIKey         string          `json:"apiKey,omitempty"`
 	ConfigPath     string          `json:"configPath"`
+	ConfigExists   bool            `json:"configExists"`
 	Written        bool            `json:"written"`
 }
 
-// ModelEntry represents an LLM/VLM model for OpenClaw's models.providers.vllm.
+// MCPServerEntry describes the stdio MCP server entry AIMA wants OpenClaw to use.
+type MCPServerEntry struct {
+	Name       string   `json:"name"`
+	Command    string   `json:"command,omitempty"`
+	Args       []string `json:"args,omitempty"`
+	Registered bool     `json:"registered"`
+	Managed    bool     `json:"managed"`
+	Action     string   `json:"action,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+}
+
+// ModelEntry represents an LLM/VLM model for OpenClaw's provider config.
 type ModelEntry struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
@@ -43,7 +70,8 @@ type TTSEntry struct {
 	ID string `json:"id"`
 }
 
-// ImageGenEntry represents an image generation model for OpenClaw's tools.media.image.
+// ImageGenEntry represents an image generation model exposed through
+// OpenClaw's image-generation provider wiring.
 type ImageGenEntry struct {
 	ID string `json:"id"`
 }
@@ -54,9 +82,11 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 
 	result := &SyncResult{
 		ProxyAddr:  deps.ProxyAddr,
-		APIKey:     deps.APIKey,
+		APIKey:     deps.proxyAPIKey(),
 		ConfigPath: deps.ConfigPath,
+		MCPServer:  desiredMCPServer(deps),
 	}
+	var ttsIDs []string
 
 	for _, b := range backends {
 		if !b.Ready || b.Remote {
@@ -66,25 +96,32 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 		modelType := deps.Catalog.ModelType(b.ModelName)
 		switch modelType {
 		case "llm", "vlm":
+			ctxWindow := b.ContextWindowTokens // prefer actual deployment config
+			if ctxWindow <= 0 {
+				ctxWindow = deps.Catalog.ModelContextWindow(b.ModelName) // fallback to catalog
+			}
 			entry := ModelEntry{
 				ID:            b.ModelName,
 				Name:          formatDisplayName(b.ModelName, modelType),
-				ContextWindow: deps.Catalog.ModelContextWindow(b.ModelName),
-				MaxTokens:     defaultMaxTokens(deps.Catalog.ModelContextWindow(b.ModelName)),
+				ContextWindow: ctxWindow,
+				MaxTokens:     defaultMaxTokens(ctxWindow),
 			}
 			if modelType == "vlm" {
 				entry.Input = []string{"text", "image"}
 			} else {
 				entry.Input = []string{"text"}
 			}
-			result.LLMModels = append(result.LLMModels, entry)
+			if deps.Catalog.ModelChatProvider(b.ModelName) {
+				result.LLMModels = append(result.LLMModels, entry)
+			} else {
+				result.VLMModels = append(result.VLMModels, entry)
+			}
 
 		case "asr":
 			result.ASRModels = append(result.ASRModels, AudioEntry{ID: b.ModelName})
 
 		case "tts":
-			// Only one TTS model supported — last wins
-			result.TTSModel = &TTSEntry{ID: b.ModelName}
+			ttsIDs = append(ttsIDs, b.ModelName)
 
 		case "image_gen":
 			result.ImageGenModels = append(result.ImageGenModels, ImageGenEntry{ID: b.ModelName})
@@ -94,34 +131,57 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 				"model", b.ModelName, "type", modelType)
 		}
 	}
-
-	if dryRun {
-		return result, nil
+	sort.Slice(result.LLMModels, func(i, j int) bool { return result.LLMModels[i].ID < result.LLMModels[j].ID })
+	sort.Slice(result.VLMModels, func(i, j int) bool { return result.VLMModels[i].ID < result.VLMModels[j].ID })
+	sort.Slice(result.ASRModels, func(i, j int) bool { return result.ASRModels[i].ID < result.ASRModels[j].ID })
+	sort.Slice(result.ImageGenModels, func(i, j int) bool { return result.ImageGenModels[i].ID < result.ImageGenModels[j].ID })
+	sort.Strings(ttsIDs)
+	if len(ttsIDs) > 0 {
+		result.TTSModel = &TTSEntry{ID: ttsIDs[0]}
 	}
 
 	// Read existing config (may not exist yet)
 	existing, err := ReadConfig(deps.ConfigPath)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
 			return result, fmt.Errorf("openclaw sync: %w", err)
 		}
 		existing = make(map[string]any)
+	} else {
+		result.ConfigExists = true
 	}
 
-	merged := MergeAIMAConfig(existing, result)
+	managed, err := ReadManagedState(deps.ConfigPath)
+	if err != nil {
+		return result, fmt.Errorf("openclaw sync: %w", err)
+	}
+
+	merged, nextManaged := MergeAIMAConfigWithState(existing, managed, result)
+	if dryRun {
+		return result, nil
+	}
 	if err := WriteConfig(deps.ConfigPath, merged); err != nil {
+		return result, err
+	}
+	if err := WriteManagedState(deps.ConfigPath, nextManaged); err != nil {
 		return result, err
 	}
 	result.Written = true
 
+	stateDir := filepath.Dir(deps.ConfigPath)
 	// Deploy AIMA skills to ~/.openclaw/skills/
-	skillsDir := filepath.Join(filepath.Dir(deps.ConfigPath), "skills")
+	skillsDir := filepath.Join(stateDir, "skills")
 	if err := DeploySkills(skillsDir); err != nil {
 		slog.Warn("openclaw sync: failed to deploy skills", "err", err)
+	}
+	pluginsDir := filepath.Join(stateDir, "extensions")
+	if err := deployPluginsWithRoots(pluginsDir, desiredPluginRoots(result)); err != nil {
+		return result, fmt.Errorf("openclaw sync: deploy plugins: %w", err)
 	}
 
 	slog.Info("openclaw sync complete",
 		"llm", len(result.LLMModels),
+		"vlm", len(result.VLMModels),
 		"asr", len(result.ASRModels),
 		"tts", result.TTSModel != nil,
 		"image_gen", len(result.ImageGenModels),
@@ -130,27 +190,106 @@ func Sync(ctx context.Context, deps *Deps, dryRun bool) (*SyncResult, error) {
 	return result, nil
 }
 
+func desiredMCPServer(deps *Deps) *MCPServerEntry {
+	if deps == nil {
+		return nil
+	}
+	command := strings.TrimSpace(deps.MCPCommand)
+	if command == "" {
+		command = "aima"
+	}
+	return &MCPServerEntry{
+		Name:    aimaMCPServerID,
+		Command: command,
+		Args:    []string{"mcp", "--profile", "operator"},
+	}
+}
+
 // DeploySkills copies embedded AIMA skills to the target directory.
 // Existing files are overwritten to keep skills in sync with the binary.
 func DeploySkills(targetDir string) error {
-	return fs.WalkDir(skills.FS, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
+	return deployEmbeddedRoots(skills.FS, targetDir, deployedSkillRoots, true)
+}
+
+// DeployPlugins copies embedded AIMA OpenClaw plugins to the target directory.
+func DeployPlugins(targetDir string) error {
+	return deployPluginsWithRoots(targetDir, deployedPluginRoots)
+}
+
+func deployPluginsWithRoots(targetDir string, roots []string) error {
+	return deployEmbeddedRoots(plugins.FS, targetDir, roots, true)
+}
+
+func desiredPluginRoots(result *SyncResult) []string {
+	if result == nil {
+		return nil
+	}
+	roots := make([]string, 0, 3)
+	if len(result.ASRModels) > 0 {
+		roots = append(roots, "aima-local-audio")
+	}
+	if len(result.ImageGenModels) > 0 {
+		roots = append(roots, "aima-local-image")
+	}
+	if result.TTSModel != nil {
+		roots = append(roots, "aima-local-tts")
+	}
+	return roots
+}
+
+func deployEmbeddedRoots(embedded fs.FS, targetDir string, roots []string, pruneStale bool) error {
+	if pruneStale {
+		if err := pruneEmbeddedRoots(embedded, targetDir, roots); err != nil {
 			return err
 		}
-		dest := filepath.Join(targetDir, path)
-		if d.IsDir() {
-			return os.MkdirAll(dest, 0755)
+	}
+	for _, root := range roots {
+		if err := fs.WalkDir(embedded, root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			dest := filepath.Join(targetDir, path)
+			if d.IsDir() {
+				return os.MkdirAll(dest, 0755)
+			}
+			data, err := fs.ReadFile(embedded, path)
+			if err != nil {
+				return fmt.Errorf("read embedded asset %s: %w", path, err)
+			}
+			perm := os.FileMode(0644)
+			if strings.HasSuffix(path, ".sh") {
+				perm = 0755
+			}
+			return os.WriteFile(dest, data, perm)
+		}); err != nil {
+			return err
 		}
-		data, err := skills.FS.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read embedded skill %s: %w", path, err)
+	}
+	return nil
+}
+
+func pruneEmbeddedRoots(embedded fs.FS, targetDir string, keepRoots []string) error {
+	entries, err := fs.ReadDir(embedded, ".")
+	if err != nil {
+		return fmt.Errorf("read embedded root entries: %w", err)
+	}
+	keep := make(map[string]struct{}, len(keepRoots))
+	for _, root := range keepRoots {
+		keep[root] = struct{}{}
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
-		perm := os.FileMode(0644)
-		if strings.HasSuffix(path, ".sh") {
-			perm = 0755
+		name := entry.Name()
+		if _, ok := keep[name]; ok {
+			continue
 		}
-		return os.WriteFile(dest, data, perm)
-	})
+		if err := os.RemoveAll(filepath.Join(targetDir, name)); err != nil {
+			return fmt.Errorf("remove stale embedded root %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // formatDisplayName creates a human-readable display name from a model ID.
@@ -187,15 +326,14 @@ func isSizeSuffix(s string) bool {
 }
 
 // defaultMaxTokens returns a reasonable maxTokens based on context window.
+// This is the maximum output tokens OpenClaw will allow per request.
 func defaultMaxTokens(contextWindow int) int {
 	if contextWindow <= 0 {
 		return 4096
 	}
-	// Default to 1/4 of context window, capped at 8192
-	max := contextWindow / 4
-	if max > 8192 {
-		return 8192
-	}
+	// Use half the context window for output (other half reserved for input),
+	// with a floor of 1024 tokens.
+	max := contextWindow / 2
 	if max < 1024 {
 		return 1024
 	}
