@@ -1372,6 +1372,124 @@ func TestLoadLLMSettings_Defaults(t *testing.T) {
 	}
 }
 
+func TestLoadLLMSettings_EmptyStoredValuesFallbackToLocalDefaults(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	t.Setenv("AIMA_LLM_ENDPOINT", "")
+	t.Setenv("AIMA_LLM_MODEL", "")
+	t.Setenv("AIMA_API_KEY", "")
+	t.Setenv("AIMA_LLM_USER_AGENT", "")
+	t.Setenv("AIMA_LLM_EXTRA_PARAMS", "")
+
+	if err := db.SetConfig(ctx, "api_key", "local"); err != nil {
+		t.Fatalf("SetConfig api_key: %v", err)
+	}
+	if err := db.SetConfig(ctx, "llm.endpoint", ""); err != nil {
+		t.Fatalf("SetConfig llm.endpoint: %v", err)
+	}
+	if err := db.SetConfig(ctx, "llm.model", ""); err != nil {
+		t.Fatalf("SetConfig llm.model: %v", err)
+	}
+	if err := db.SetConfig(ctx, "llm.api_key", ""); err != nil {
+		t.Fatalf("SetConfig llm.api_key: %v", err)
+	}
+
+	settings := loadLLMSettings(ctx, db)
+	if settings.Endpoint != defaultLLMEndpoint() {
+		t.Fatalf("Endpoint = %q, want %q", settings.Endpoint, defaultLLMEndpoint())
+	}
+	if settings.Model != "" {
+		t.Fatalf("Model = %q, want empty", settings.Model)
+	}
+	if settings.APIKey != "local" {
+		t.Fatalf("APIKey = %q, want local", settings.APIKey)
+	}
+}
+
+func TestReloadLLMSettings_ReappliesResolvedDefaultsToLiveClient(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	t.Setenv("AIMA_LLM_ENDPOINT", "")
+	t.Setenv("AIMA_LLM_MODEL", "")
+	t.Setenv("AIMA_API_KEY", "")
+	t.Setenv("AIMA_LLM_USER_AGENT", "")
+	t.Setenv("AIMA_LLM_EXTRA_PARAMS", "")
+
+	if err := db.SetConfig(ctx, "api_key", "local"); err != nil {
+		t.Fatalf("SetConfig api_key: %v", err)
+	}
+	if err := db.SetConfig(ctx, "llm.endpoint", ""); err != nil {
+		t.Fatalf("SetConfig llm.endpoint: %v", err)
+	}
+	if err := db.SetConfig(ctx, "llm.model", ""); err != nil {
+		t.Fatalf("SetConfig llm.model: %v", err)
+	}
+	if err := db.SetConfig(ctx, "llm.api_key", ""); err != nil {
+		t.Fatalf("SetConfig llm.api_key: %v", err)
+	}
+
+	client := agent.NewOpenAIClient("https://api.kimi.com/coding/v1",
+		agent.WithModel("kimi-for-coding"),
+		agent.WithAPIKey("sk-kimi"),
+	)
+
+	settings := reloadLLMSettings(ctx, db, client, "")
+	if settings.Endpoint != defaultLLMEndpoint() {
+		t.Fatalf("settings.Endpoint = %q, want %q", settings.Endpoint, defaultLLMEndpoint())
+	}
+	if client.Endpoint() != defaultLLMEndpoint() {
+		t.Fatalf("client.Endpoint() = %q, want %q", client.Endpoint(), defaultLLMEndpoint())
+	}
+}
+
+func TestReloadLLMSettings_FallsBackToServeAPIKeyForLocalProxy(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	t.Setenv("AIMA_LLM_ENDPOINT", "")
+	t.Setenv("AIMA_LLM_MODEL", "")
+	t.Setenv("AIMA_API_KEY", "")
+	t.Setenv("AIMA_LLM_USER_AGENT", "")
+	t.Setenv("AIMA_LLM_EXTRA_PARAMS", "")
+
+	if err := db.SetConfig(ctx, "llm.endpoint", ""); err != nil {
+		t.Fatalf("SetConfig llm.endpoint: %v", err)
+	}
+	if err := db.SetConfig(ctx, "llm.api_key", ""); err != nil {
+		t.Fatalf("SetConfig llm.api_key: %v", err)
+	}
+
+	client := agent.NewOpenAIClient("https://api.kimi.com/coding/v1",
+		agent.WithModel("kimi-for-coding"),
+		agent.WithAPIKey("sk-kimi"),
+	)
+
+	settings := reloadLLMSettings(ctx, db, client, "local")
+	if settings.Endpoint != defaultLLMEndpoint() {
+		t.Fatalf("settings.Endpoint = %q, want %q", settings.Endpoint, defaultLLMEndpoint())
+	}
+	if settings.APIKey != "local" {
+		t.Fatalf("settings.APIKey = %q, want local", settings.APIKey)
+	}
+	if client.Endpoint() != defaultLLMEndpoint() {
+		t.Fatalf("client.Endpoint() = %q, want %q", client.Endpoint(), defaultLLMEndpoint())
+	}
+}
+
 func TestMCPToolAdapter_SystemConfigReadAllowedWriteBlocked(t *testing.T) {
 	s := mcp.NewServer()
 	called := 0

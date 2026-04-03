@@ -35,6 +35,10 @@ type llmSettings struct {
 	ExtraParams map[string]any
 }
 
+func defaultLLMEndpoint() string {
+	return fmt.Sprintf("http://localhost:%d/v1", proxy.DefaultPort)
+}
+
 // buildLLMClient creates an OpenAI-compatible LLM client for the Go Agent.
 // Endpoint defaults to localhost proxy; model auto-discovered from /v1/models.
 func buildLLMClient(ctx context.Context, db *state.DB) *agent.OpenAIClient {
@@ -53,6 +57,26 @@ func buildLLMClient(ctx context.Context, db *state.DB) *agent.OpenAIClient {
 		opts = append(opts, agent.WithExtraParams(settings.ExtraParams))
 	}
 	return agent.NewOpenAIClient(settings.Endpoint, opts...)
+}
+
+func applyLLMSettings(llmClient *agent.OpenAIClient, settings llmSettings) {
+	if llmClient == nil {
+		return
+	}
+	llmClient.SetEndpoint(settings.Endpoint)
+	llmClient.SetModel(settings.Model)
+	llmClient.SetAPIKey(settings.APIKey)
+	llmClient.SetUserAgent(settings.UserAgent)
+	llmClient.SetExtraParams(settings.ExtraParams)
+}
+
+func reloadLLMSettings(ctx context.Context, db *state.DB, llmClient *agent.OpenAIClient, localAPIKey string) llmSettings {
+	settings := loadLLMSettings(ctx, db)
+	if settings.APIKey == "" && strings.TrimSpace(localAPIKey) != "" && agent.IsLoopbackEndpoint(settings.Endpoint) {
+		settings.APIKey = localAPIKey
+	}
+	applyLLMSettings(llmClient, settings)
+	return settings
 }
 
 func agentAvailable(ctx context.Context, llmClient *agent.OpenAIClient) bool {
@@ -83,7 +107,7 @@ func buildAgentStatusPayload(ctx context.Context, llmClient *agent.OpenAIClient,
 
 func loadLLMSettings(ctx context.Context, db *state.DB) llmSettings {
 	settings := llmSettings{
-		Endpoint: fmt.Sprintf("http://localhost:%d/v1", proxy.DefaultPort),
+		Endpoint: defaultLLMEndpoint(),
 	}
 	if endpoint := os.Getenv("AIMA_LLM_ENDPOINT"); endpoint != "" {
 		settings.Endpoint = agent.EnsureHTTPScheme(endpoint)

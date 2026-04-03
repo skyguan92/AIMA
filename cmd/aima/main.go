@@ -390,25 +390,17 @@ func run() error {
 		case "api_key":
 			proxyServer.SetAPIKey(value)
 			fleetClient.SetAPIKey(value)
-			if llmClient.IsLocalEndpoint() {
-				llmClient.SetAPIKey(value)
-			}
 			slog.Info("API key hot-reloaded via system.config")
-		case "llm.endpoint":
-			llmClient.SetEndpoint(value)
-			slog.Info("LLM endpoint hot-swapped via system.config", "endpoint", value)
-		case "llm.model":
-			llmClient.SetModel(value)
-			slog.Info("LLM model hot-swapped via system.config", "model", value)
-		case "llm.api_key":
-			llmClient.SetAPIKey(value)
-			slog.Info("LLM API key hot-swapped via system.config")
-		case "llm.user_agent":
-			llmClient.SetUserAgent(value)
-			slog.Info("LLM User-Agent hot-swapped via system.config", "user_agent", value)
-		case "llm.extra_params":
-			llmClient.SetExtraParams(parseExtraParams(value))
-			slog.Info("LLM extra params hot-swapped via system.config")
+		}
+		switch key {
+		case "api_key", "llm.endpoint", "llm.model", "llm.api_key", "llm.user_agent", "llm.extra_params":
+			settings := reloadLLMSettings(ctx, db, llmClient, proxyServer.APIKey())
+			slog.Info("LLM settings hot-reloaded via system.config",
+				"trigger", key,
+				"endpoint", settings.Endpoint,
+				"model", settings.Model,
+				"has_api_key", settings.APIKey != "",
+				"has_extra_params", settings.ExtraParams != nil)
 		}
 		return nil
 	}

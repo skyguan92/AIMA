@@ -326,6 +326,22 @@ body {
   color: var(--text-tertiary);
 }
 
+.hardware-group {
+  margin-top: 14px;
+}
+.hardware-group:first-of-type {
+  margin-top: 0;
+}
+.hardware-group-title {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+}
+
 /* Gauge bars */
 .gauge { margin-bottom: 8px; }
 .gauge-label {
@@ -2387,7 +2403,7 @@ body {
   <!-- Main 3-Column Layout -->
   <div class="main">
 
-    <!-- Left Sidebar: Hardware + Engines + Models -->
+    <!-- Left Sidebar: Hardware + Models + Engines -->
     <div class="sidebar-left">
 
       <!-- Hardware Panel -->
@@ -2398,82 +2414,61 @@ body {
           <span class="device-name" x-text="hostname || selfIp || 'This Device'"></span>
           <span class="device-ip" x-show="selfIp && selfIp !== 'localhost' && selfIp !== '127.0.0.1'" x-text="selfIp"></span>
         </div>
-        <template x-if="hw.gpu">
-          <div>
-            <div class="gauge">
-              <div class="gauge-label">
-                <span x-text="'GPU ' + hw.gpu.name"></span>
-                <span x-text="hw.gpu.util + '%'"></span>
-              </div>
-              <div class="gauge-bar">
-                <div class="gauge-fill" :class="hw.gpu.util > 90 ? 'crit' : hw.gpu.util > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.util + '%'"></div>
-              </div>
-            </div>
-            <div class="gauge">
-              <div class="gauge-label">
-                <span>VRAM</span>
-                <span x-text="hw.gpu.memUsed + '/' + hw.gpu.memTotal"></span>
-              </div>
-              <div class="gauge-bar">
-                <div class="gauge-fill" :class="hw.gpu.memPct > 90 ? 'crit' : hw.gpu.memPct > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.memPct + '%'"></div>
-              </div>
-            </div>
-            <div style="font-size:11px;color:var(--text-dim);margin-top:2px" x-show="hw.gpu.temp">
-              <span x-text="hw.gpu.temp + '\u00B0C'"></span>
-              <span x-show="hw.gpu.power" x-text="' / ' + hw.gpu.power + 'W'"></span>
-            </div>
-          </div>
-        </template>
-        <template x-if="!hw.gpu">
-          <div class="empty" x-text="t('no_gpu')"></div>
-        </template>
-        <div class="gauge" style="margin-top:8px">
-          <div class="gauge-label"><span>CPU</span><span x-text="hw.cpu.pct + '%'"></span></div>
-          <div class="gauge-bar">
-            <div class="gauge-fill" :class="hw.cpu.pct > 90 ? 'crit' : hw.cpu.pct > 70 ? 'warn' : ''" :style="'width:' + hw.cpu.pct + '%'"></div>
-          </div>
-        </div>
-        <div class="gauge">
-          <div class="gauge-label">
-            <span>RAM</span>
-            <span x-text="hw.mem.used + '/' + hw.mem.total"></span>
-          </div>
-          <div class="gauge-bar">
-            <div class="gauge-fill" :class="hw.mem.pct > 90 ? 'crit' : hw.mem.pct > 70 ? 'warn' : ''" :style="'width:' + hw.mem.pct + '%'"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Engines Panel -->
-      <div class="panel">
-        <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span></div>
-        <template x-if="engines.length === 0 && !downloads.some(d => d.type === 'engine')">
-          <div class="empty" x-text="t('no_engines')"></div>
-        </template>
-        <ul class="panel-list">
-          <template x-for="dl in downloads.filter(d => d.type === 'engine' && d.phase !== 'complete')" :key="dl.id">
-            <li>
-              <span class="dot dot-orange"></span>
-              <div style="flex:1;overflow:hidden">
-                <div x-text="dl.name" style="text-overflow:ellipsis;overflow:hidden"></div>
-                <div class="deploy-progress" style="margin-top:4px">
-                  <div class="deploy-progress-fill starting" :style="'width:' + dlPercent(dl) + '%'"></div>
+        <div class="hardware-group">
+          <div class="hardware-group-title" x-text="t('hardware_group_accelerator')"></div>
+          <template x-if="hw.gpu">
+            <div>
+              <div class="gauge">
+                <div class="gauge-label">
+                  <span x-text="hw.gpu.countLabel + ' ' + hw.gpu.name"></span>
+                  <span x-text="hw.gpu.util + '%'"></span>
                 </div>
-                <div class="deploy-phase-text">
-                  <span><span class="deploy-phase-icon">&#x25D0;</span> <span x-text="dl.message || dl.phase"></span></span>
-                  <span class="deploy-eta" x-text="dlDetail(dl)"></span>
+                <div class="gauge-bar">
+                  <div class="gauge-fill" :class="hw.gpu.util > 90 ? 'crit' : hw.gpu.util > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.util + '%'"></div>
                 </div>
               </div>
-            </li>
+              <div class="gauge">
+                <div class="gauge-label">
+                  <span x-text="'VRAM ' + hw.gpu.vramSummary"></span>
+                  <span x-text="hw.gpu.memUsed + '/' + hw.gpu.memTotal"></span>
+                </div>
+                <div class="gauge-bar">
+                  <div class="gauge-fill" :class="hw.gpu.memPct > 90 ? 'crit' : hw.gpu.memPct > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.memPct + '%'"></div>
+                </div>
+              </div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:2px" x-show="hw.gpu.temp">
+                <span x-text="hw.gpu.temp + '\u00B0C'"></span>
+                <span x-show="hw.gpu.power" x-text="' / ' + hw.gpu.power + 'W'"></span>
+                <span x-show="hw.gpu.computeId" x-text="' · ' + hw.gpu.computeId"></span>
+              </div>
+            </div>
           </template>
-          <template x-for="(e, ei) in engines" :key="e.id || ei">
-            <li>
-              <span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span>
-              <span x-text="e.type"></span>
-              <span class="item-detail" x-text="e.variant || ''"></span>
-            </li>
+          <template x-if="!hw.gpu">
+            <div class="empty" x-text="t('no_gpu')"></div>
           </template>
-        </ul>
+        </div>
+        <div class="hardware-group">
+          <div class="hardware-group-title" x-text="t('hardware_group_host')"></div>
+          <div class="gauge">
+            <div class="gauge-label"><span x-text="hw.cpu.label"></span><span x-text="hw.cpu.pct + '%'"></span></div>
+            <div class="gauge-bar">
+              <div class="gauge-fill" :class="hw.cpu.pct > 90 ? 'crit' : hw.cpu.pct > 70 ? 'warn' : ''" :style="'width:' + hw.cpu.pct + '%'"></div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:2px" x-show="hw.cpu.model">
+            <span x-text="hw.cpu.model"></span>
+            <span x-show="hw.cpu.coreInfo" x-text="' · ' + hw.cpu.coreInfo"></span>
+          </div>
+          <div class="gauge" style="margin-top:6px">
+            <div class="gauge-label">
+              <span>RAM</span>
+              <span x-text="hw.mem.used + '/' + hw.mem.total"></span>
+            </div>
+            <div class="gauge-bar">
+              <div class="gauge-fill" :class="hw.mem.pct > 90 ? 'crit' : hw.mem.pct > 70 ? 'warn' : ''" :style="'width:' + hw.mem.pct + '%'"></div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Models Panel -->
@@ -2516,6 +2511,38 @@ body {
                     x-text="modelDeployButtonLabel(m.name)"></button>
                 </div>
               </div>
+            </li>
+          </template>
+        </ul>
+      </div>
+
+      <!-- Engines Panel -->
+      <div class="panel">
+        <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span></div>
+        <template x-if="engines.length === 0 && !downloads.some(d => d.type === 'engine')">
+          <div class="empty" x-text="t('no_engines')"></div>
+        </template>
+        <ul class="panel-list">
+          <template x-for="dl in downloads.filter(d => d.type === 'engine' && d.phase !== 'complete')" :key="dl.id">
+            <li>
+              <span class="dot dot-orange"></span>
+              <div style="flex:1;overflow:hidden">
+                <div x-text="dl.name" style="text-overflow:ellipsis;overflow:hidden"></div>
+                <div class="deploy-progress" style="margin-top:4px">
+                  <div class="deploy-progress-fill starting" :style="'width:' + dlPercent(dl) + '%'"></div>
+                </div>
+                <div class="deploy-phase-text">
+                  <span><span class="deploy-phase-icon">&#x25D0;</span> <span x-text="dl.message || dl.phase"></span></span>
+                  <span class="deploy-eta" x-text="dlDetail(dl)"></span>
+                </div>
+              </div>
+            </li>
+          </template>
+          <template x-for="(e, ei) in engines" :key="e.id || ei">
+            <li>
+              <span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span>
+              <span x-text="e.type"></span>
+              <span class="item-detail" x-text="e.variant || ''"></span>
             </li>
           </template>
         </ul>
@@ -2742,7 +2769,7 @@ body {
 
     </div>
 
-    <!-- Right Sidebar: Agent Status + Fleet + Deployments -->
+    <!-- Right Sidebar: Agent Status + Deployments + Fleet -->
     <div class="sidebar-right">
 
       <!-- Agent Status Panel -->
@@ -2800,28 +2827,6 @@ body {
         </div>
       </div>
 
-      <!-- Fleet Panel -->
-      <div class="panel fleet-panel">
-        <div class="panel-title">&#x25C9; <span x-text="t('fleet')"></span></div>
-        <div class="fleet-scroll">
-          <template x-if="fleet.length === 0">
-            <div class="empty" x-text="t('no_fleet')"></div>
-          </template>
-          <template x-for="(d, fi) in fleet" :key="d.id || d.addr || fi">
-            <div class="fleet-device" :class="{ clickable: d.addr && d.online }" @click="openDeviceUI(d)">
-              <span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span>
-              <div style="flex:1;min-width:0">
-                <div class="name" x-text="d.name || d.id"></div>
-                <div class="meta" x-text="d.meta || ''"></div>
-              </div>
-              <template x-if="d.addr && d.online">
-                <span class="fleet-link-hint" title="Open Web UI">&#x2197;</span>
-              </template>
-            </div>
-          </template>
-        </div>
-      </div>
-
       <!-- Deployments Panel -->
       <div class="panel">
         <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
@@ -2866,6 +2871,28 @@ body {
           </template>
         </ul>
       </div>
+
+      <!-- Fleet Panel -->
+      <div class="panel fleet-panel">
+        <div class="panel-title">&#x25C9; <span x-text="t('fleet')"></span></div>
+        <div class="fleet-scroll">
+          <template x-if="fleet.length === 0">
+            <div class="empty" x-text="t('no_fleet')"></div>
+          </template>
+          <template x-for="(d, fi) in fleet" :key="d.id || d.addr || fi">
+            <div class="fleet-device" :class="{ clickable: d.addr && d.online }" @click="openDeviceUI(d)">
+              <span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span>
+              <div style="flex:1;min-width:0">
+                <div class="name" x-text="d.name || d.id"></div>
+                <div class="meta" x-text="d.meta || ''"></div>
+              </div>
+              <template x-if="d.addr && d.online">
+                <span class="fleet-link-hint" title="Open Web UI">&#x2197;</span>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -2881,46 +2908,6 @@ body {
   <div class="mobile-panel" :class="mobileTab !== 'chat' ? 'show' : ''" x-show="mobileTab !== 'chat'">
     <template x-if="mobileTab === 'dashboard'">
       <div style="display:flex;flex-direction:column;gap:8px">
-        <div class="panel">
-          <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
-          <template x-if="deployments.length === 0">
-            <div class="empty" x-text="t('no_deployments')"></div>
-          </template>
-          <ul class="panel-list">
-            <template x-for="(dep, di) in deployments" :key="di">
-              <li :class="{ starting: dep.startup_progress > 0 && dep.startup_progress < 100 }" style="flex-wrap:wrap">
-                <span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span>
-                <div style="flex:1;min-width:0">
-                  <div x-text="dep.name" style="text-overflow:ellipsis;overflow:hidden"></div>
-                  <div style="font-size:10px;color:var(--text-dim)" x-text="dep.detail"></div>
-                  <template x-if="dep.phase === 'running' && dep.ready && dep.address">
-                    <div style="font-size:10px;color:var(--success);margin-top:2px;display:flex;align-items:center;gap:4px">
-                      <span>●</span>
-                      <span x-text="'Ready: ' + dep.address"></span>
-                    </div>
-                  </template>
-                  <template x-if="(dep.phase === 'starting' || dep.startup_progress > 0) && !dep.ready">
-                    <div style="margin-top:6px">
-                      <div class="deploy-progress">
-                        <div class="deploy-progress-fill starting" :style="'width:' + Math.max(5, Math.min(dep.startup_progress || 5, 95)) + '%'"></div>
-                      </div>
-                      <div class="deploy-phase-text">
-                        <span>
-                          <span class="deploy-phase-icon">◐</span>
-                          <span x-text="dep.startup_message || dep.startup_phase || 'Initializing...'"></span>
-                        </span>
-                        <span class="deploy-eta" x-text="dep.eta ? '~' + dep.eta : (dep.startup_progress || 5) + '%'"></span>
-                      </div>
-                    </div>
-                  </template>
-                  <template x-if="dep.phase === 'failed' && dep.failure_detail">
-                    <div class="deploy-error-lines" x-text="dep.failure_detail" :title="dep.error_lines || dep.failure_detail"></div>
-                  </template>
-                </div>
-              </li>
-            </template>
-          </ul>
-        </div>
         <!-- Mobile Agent Status -->
         <div class="panel">
           <div class="panel-title">&#x25CE; <span x-text="t('agent_status')"></span></div>
@@ -2972,22 +2959,73 @@ body {
           </div>
         </div>
         <div class="panel">
-          <div class="panel-title">&#x25A0; <span x-text="t('hardware')"></span></div>
-          <template x-if="hw.gpu">
-            <div>
-              <div class="gauge"><div class="gauge-label"><span x-text="'GPU ' + hw.gpu.name"></span><span x-text="hw.gpu.util + '%'"></span></div><div class="gauge-bar"><div class="gauge-fill" :style="'width:' + hw.gpu.util + '%'"></div></div></div>
-              <div class="gauge"><div class="gauge-label"><span>VRAM</span><span x-text="hw.gpu.memUsed + '/' + hw.gpu.memTotal"></span></div><div class="gauge-bar"><div class="gauge-fill" :style="'width:' + hw.gpu.memPct + '%'"></div></div></div>
-            </div>
+          <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
+          <template x-if="deployments.length === 0">
+            <div class="empty" x-text="t('no_deployments')"></div>
           </template>
-          <div class="gauge"><div class="gauge-label"><span>CPU</span><span x-text="hw.cpu.pct + '%'"></span></div><div class="gauge-bar"><div class="gauge-fill" :style="'width:' + hw.cpu.pct + '%'"></div></div></div>
-          <div class="gauge"><div class="gauge-label"><span>RAM</span><span x-text="hw.mem.used + '/' + hw.mem.total"></span></div><div class="gauge-bar"><div class="gauge-fill" :style="'width:' + hw.mem.pct + '%'"></div></div></div>
+          <ul class="panel-list">
+            <template x-for="(dep, di) in deployments" :key="di">
+              <li :class="{ starting: dep.startup_progress > 0 && dep.startup_progress < 100 }" style="flex-wrap:wrap">
+                <span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span>
+                <div style="flex:1;min-width:0">
+                  <div x-text="dep.name" style="text-overflow:ellipsis;overflow:hidden"></div>
+                  <div style="font-size:10px;color:var(--text-dim)" x-text="dep.detail"></div>
+                  <template x-if="dep.phase === 'running' && dep.ready && dep.address">
+                    <div style="font-size:10px;color:var(--success);margin-top:2px;display:flex;align-items:center;gap:4px">
+                      <span>●</span>
+                      <span x-text="'Ready: ' + dep.address"></span>
+                    </div>
+                  </template>
+                  <template x-if="(dep.phase === 'starting' || dep.startup_progress > 0) && !dep.ready">
+                    <div style="margin-top:6px">
+                      <div class="deploy-progress">
+                        <div class="deploy-progress-fill starting" :style="'width:' + Math.max(5, Math.min(dep.startup_progress || 5, 95)) + '%'"></div>
+                      </div>
+                      <div class="deploy-phase-text">
+                        <span>
+                          <span class="deploy-phase-icon">◐</span>
+                          <span x-text="dep.startup_message || dep.startup_phase || 'Initializing...'"></span>
+                        </span>
+                        <span class="deploy-eta" x-text="dep.eta ? '~' + dep.eta : (dep.startup_progress || 5) + '%'"></span>
+                      </div>
+                    </div>
+                  </template>
+                  <template x-if="dep.phase === 'failed' && dep.failure_detail">
+                    <div class="deploy-error-lines" x-text="dep.failure_detail" :title="dep.error_lines || dep.failure_detail"></div>
+                  </template>
+                </div>
+              </li>
+            </template>
+          </ul>
         </div>
         <div class="panel">
-          <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span></div>
-          <ul class="panel-list">
-            <template x-for="dl in downloads.filter(d => d.type === 'engine' && d.phase !== 'complete')" :key="dl.id"><li><span class="dot dot-orange"></span><div style="flex:1;min-width:0"><div x-text="dl.name"></div><div class="deploy-progress" style="margin-top:2px"><div class="deploy-progress-fill starting" :style="'width:' + dlPercent(dl) + '%'"></div></div></div></li></template>
-            <template x-for="(e, ei) in engines" :key="e.id || ei"><li><span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span><span x-text="e.type"></span></li></template>
-          </ul>
+          <div class="panel-title">&#x25A0; <span x-text="t('hardware')"></span></div>
+          <div class="hardware-group">
+            <div class="hardware-group-title" x-text="t('hardware_group_accelerator')"></div>
+            <template x-if="hw.gpu">
+              <div>
+                <div class="gauge"><div class="gauge-label"><span x-text="hw.gpu.countLabel + ' ' + hw.gpu.name"></span><span x-text="hw.gpu.util + '%'"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.gpu.util > 90 ? 'crit' : hw.gpu.util > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.util + '%'"></div></div></div>
+                <div class="gauge"><div class="gauge-label"><span x-text="'VRAM ' + hw.gpu.vramSummary"></span><span x-text="hw.gpu.memUsed + '/' + hw.gpu.memTotal"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.gpu.memPct > 90 ? 'crit' : hw.gpu.memPct > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.memPct + '%'"></div></div></div>
+                <div style="font-size:11px;color:var(--text-dim);margin-top:2px" x-show="hw.gpu.temp">
+                  <span x-text="hw.gpu.temp + '\u00B0C'"></span>
+                  <span x-show="hw.gpu.power" x-text="' / ' + hw.gpu.power + 'W'"></span>
+                  <span x-show="hw.gpu.computeId" x-text="' \u00B7 ' + hw.gpu.computeId"></span>
+                </div>
+              </div>
+            </template>
+            <template x-if="!hw.gpu">
+              <div class="empty" x-text="t('no_gpu')"></div>
+            </template>
+          </div>
+          <div class="hardware-group">
+            <div class="hardware-group-title" x-text="t('hardware_group_host')"></div>
+            <div class="gauge"><div class="gauge-label"><span x-text="hw.cpu.label"></span><span x-text="hw.cpu.pct + '%'"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.cpu.pct > 90 ? 'crit' : hw.cpu.pct > 70 ? 'warn' : ''" :style="'width:' + hw.cpu.pct + '%'"></div></div></div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px" x-show="hw.cpu.model">
+              <span x-text="hw.cpu.model"></span>
+              <span x-show="hw.cpu.coreInfo" x-text="' \u00B7 ' + hw.cpu.coreInfo"></span>
+            </div>
+            <div class="gauge" style="margin-top:6px"><div class="gauge-label"><span>RAM</span><span x-text="hw.mem.used + '/' + hw.mem.total"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.mem.pct > 90 ? 'crit' : hw.mem.pct > 70 ? 'warn' : ''" :style="'width:' + hw.mem.pct + '%'"></div></div></div>
+          </div>
         </div>
         <div class="panel">
           <div class="panel-title">&#x25C6; <span x-text="t('models')"></span></div>
@@ -3013,6 +3051,13 @@ body {
                 </div>
               </li>
             </template>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span></div>
+          <ul class="panel-list">
+            <template x-for="dl in downloads.filter(d => d.type === 'engine' && d.phase !== 'complete')" :key="dl.id"><li><span class="dot dot-orange"></span><div style="flex:1;min-width:0"><div x-text="dl.name"></div><div class="deploy-progress" style="margin-top:2px"><div class="deploy-progress-fill starting" :style="'width:' + dlPercent(dl) + '%'"></div></div></div></li></template>
+            <template x-for="(e, ei) in engines" :key="e.id || ei"><li><span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span><span x-text="e.type"></span></li></template>
           </ul>
         </div>
       </div>
@@ -3370,6 +3415,8 @@ var I18N = {
     no_models: 'No models found',
     no_fleet: 'No devices discovered',
     no_deployments: 'No active deployments',
+    hardware_group_accelerator: 'Accelerator',
+    hardware_group_host: 'Host',
     deploy_label: 'Deploy',
     deploying_label: 'Deploying...',
     running_label: 'Running',
@@ -3512,6 +3559,8 @@ var I18N = {
     no_models: '\u672A\u53D1\u73B0\u6A21\u578B',
     no_fleet: '\u672A\u53D1\u73B0\u8BBE\u5907',
     no_deployments: '\u65E0\u6D3B\u52A8\u90E8\u7F72',
+    hardware_group_accelerator: '\u52A0\u901F\u5668',
+    hardware_group_host: '\u4E3B\u673A',
     deploy_label: '\u90E8\u7F72',
     deploying_label: '\u90E8\u7F72\u4E2D...',
     running_label: '\u8FD0\u884C\u4E2D',
@@ -4129,7 +4178,7 @@ function aimaApp() {
     // Dashboard data
     hw: {
       gpu: null,
-      cpu: { pct: 0 },
+      cpu: { pct: 0, model: '', label: 'CPU', coreInfo: '' },
       mem: { pct: 0, used: '0', total: '0' }
     },
     hostname: '',
@@ -4573,13 +4622,20 @@ function aimaApp() {
       if (hw && hw.gpu) {
         const g = hw.gpu;
         const gm = (met && met.gpu) || {};
-        const memTotal = gm.memory_total_mib || g.vram_mib || 0;
+        const count = g.count || 1;
+        const perCardVram = gm.memory_total_mib || g.vram_mib || 0;
         const memUsed = gm.memory_used_mib || 0;
-        const memPct = memTotal > 0 ? Math.round(memUsed / memTotal * 100) : 0;
+        const memPct = perCardVram > 0 ? Math.round(memUsed / perCardVram * 100) : 0;
+        const countLabel = count > 1 ? (count + '\u00D7') : '';
+        const vramSummary = count > 1 ? ('(' + this.fmtMiB(perCardVram) + ' \u00D7 ' + count + ')') : '';
         this.hw.gpu = {
           name: g.name || 'GPU',
+          count: count,
+          countLabel: countLabel,
+          vramSummary: vramSummary,
+          computeId: g.compute_id || '',
           util: gm.utilization_percent || 0,
-          memTotal: this.fmtMiB(memTotal),
+          memTotal: this.fmtMiB(perCardVram),
           memUsed: this.fmtMiB(memUsed),
           memPct: memPct,
           temp: gm.temperature_celsius || g.temperature_celsius || 0,
@@ -4589,6 +4645,12 @@ function aimaApp() {
         this.hw.gpu = null;
       }
 
+      if (hw && hw.cpu) {
+        const c = hw.cpu;
+        this.hw.cpu.model = c.model || '';
+        this.hw.cpu.label = 'CPU' + (c.cores ? (' ' + c.cores + 'C/' + (c.threads || c.cores) + 'T') : '');
+        this.hw.cpu.coreInfo = c.cores ? (c.cores + ' cores / ' + (c.threads || c.cores) + ' threads') : '';
+      }
       if (met && met.cpu) {
         this.hw.cpu.pct = Math.round(met.cpu.usage_percent || 0);
       }
