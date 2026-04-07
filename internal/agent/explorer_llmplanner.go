@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -64,10 +65,19 @@ func buildPlannerPrompt(input PlanInput) string {
 }
 
 func parsePlanResponse(content string) (*ExplorerPlan, error) {
+	// Strip markdown code fences that LLMs commonly wrap JSON in
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "```") {
+		if i := strings.Index(trimmed, "\n"); i != -1 {
+			trimmed = trimmed[i+1:]
+		}
+		trimmed = strings.TrimSuffix(strings.TrimSpace(trimmed), "```")
+		trimmed = strings.TrimSpace(trimmed)
+	}
 	var parsed struct {
 		Tasks []PlanTask `json:"tasks"`
 	}
-	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
 		return nil, fmt.Errorf("parse LLM plan response: %w", err)
 	}
 	h := sha256.Sum256([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))

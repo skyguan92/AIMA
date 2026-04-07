@@ -8,7 +8,7 @@ import (
 
 func TestHarvester_TemplateNote(t *testing.T) {
 	h := &Harvester{tier: 1}
-	note := h.generateNote(context.Background(), HarvestInput{
+	note, _ := h.generateNote(context.Background(), HarvestInput{
 		Task: PlanTask{Model: "qwen3-8b", Engine: "vllm"},
 		Result: HarvestResult{
 			Success:    true,

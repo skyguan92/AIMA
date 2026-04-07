@@ -180,14 +180,14 @@ func newKnowledgeSyncCmd(app *App) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("push: %w", err)
 				}
-				fmt.Println("Push:", formatJSON(data))
+				fmt.Fprintln(cmd.OutOrStdout(), "Push:", formatJSON(data))
 			}
 			if pull {
 				data, err := app.ToolDeps.SyncPull(cmd.Context())
 				if err != nil {
 					return fmt.Errorf("pull: %w", err)
 				}
-				fmt.Println("Pull:", formatJSON(data))
+				fmt.Fprintln(cmd.OutOrStdout(), "Pull:", formatJSON(data))
 			}
 			return nil
 		},
@@ -199,14 +199,11 @@ func newKnowledgeSyncCmd(app *App) *cobra.Command {
 }
 
 func newKnowledgeValidateCmd(app *App) *cobra.Command {
-	return &cobra.Command{
+	var hardware, engine, model string
+	cmd := &cobra.Command{
 		Use:   "validate",
 		Short: "Compare predicted vs actual performance",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			hardware, _ := cmd.Flags().GetString("hardware")
-			engine, _ := cmd.Flags().GetString("engine")
-			model, _ := cmd.Flags().GetString("model")
-
 			params, _ := json.Marshal(map[string]string{
 				"hardware": hardware, "engine": engine, "model": model,
 			})
@@ -214,10 +211,14 @@ func newKnowledgeValidateCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Println(formatJSON(data))
+			fmt.Fprintln(cmd.OutOrStdout(), formatJSON(data))
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&hardware, "hardware", "", "Filter by hardware profile")
+	cmd.Flags().StringVar(&engine, "engine", "", "Filter by engine type")
+	cmd.Flags().StringVar(&model, "model", "", "Filter by model name")
+	return cmd
 }
 
 func newKnowledgeAdviseCmd(app *App) *cobra.Command {

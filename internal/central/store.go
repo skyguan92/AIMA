@@ -2,6 +2,7 @@ package central
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -287,11 +288,13 @@ const (
 	AnalysisStatusFailed    = "failed"
 )
 
-// genID generates a short ID with a prefix, using SHA-256 of prefix + timestamp.
+// genID generates a short ID with a prefix, using SHA-256 of prefix + timestamp + random nonce.
 func genID(prefix string) string {
-	data := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	var nonce [4]byte
+	rand.Read(nonce[:])
+	data := fmt.Sprintf("%s-%d-%x", prefix, time.Now().UnixNano(), nonce)
 	h := sha256.Sum256([]byte(data))
-	return fmt.Sprintf("%s_%x", prefix, h[:6])
+	return fmt.Sprintf("%s_%x", prefix, h[:8])
 }
 
 func nowRFC3339() string {
