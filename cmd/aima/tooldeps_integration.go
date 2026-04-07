@@ -449,7 +449,7 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("central returned %d", resp.StatusCode)
 		}
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		if err != nil {
 			return nil, fmt.Errorf("read advisories response: %w", err)
 		}
@@ -492,7 +492,7 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("central returned %d", resp.StatusCode)
 		}
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		if err != nil {
 			return nil, fmt.Errorf("read scenarios response: %w", err)
 		}

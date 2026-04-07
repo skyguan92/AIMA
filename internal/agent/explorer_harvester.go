@@ -73,10 +73,16 @@ func (h *Harvester) Harvest(ctx context.Context, input HarvestInput) []HarvestAc
 	}
 
 	// Record knowledge note
-	note := h.generateNote(ctx, input)
+	note, insightPending := h.generateNote(ctx, input)
 	actions = append(actions, HarvestAction{Type: "note", Detail: note})
+	if insightPending {
+		actions = append(actions, HarvestAction{Type: "insight_pending", Detail: "LLM unavailable, template note only"})
+	}
 	if h.saveNote != nil {
 		title := fmt.Sprintf("%s on %s benchmark", input.Task.Model, input.Task.Engine)
+		if insightPending {
+			title += " [insight_pending]"
+		}
 		_ = h.saveNote(ctx, title, note, input.Task.Hardware, input.Task.Model, input.Task.Engine)
 	}
 
@@ -100,15 +106,17 @@ func (h *Harvester) Harvest(ctx context.Context, input HarvestInput) []HarvestAc
 	return actions
 }
 
-func (h *Harvester) generateNote(ctx context.Context, input HarvestInput) string {
+func (h *Harvester) generateNote(ctx context.Context, input HarvestInput) (string, bool) {
 	if h.tier >= 2 && h.llm != nil {
 		note, err := h.generateLLMNote(ctx, input)
 		if err == nil {
-			return note
+			return note, false
 		}
 		slog.Warn("LLM note generation failed, falling back to template", "error", err)
+		// Return template note with insight_pending flag
+		return h.generateTemplateNote(input), true
 	}
-	return h.generateTemplateNote(input)
+	return h.generateTemplateNote(input), false
 }
 
 func (h *Harvester) generateTemplateNote(input HarvestInput) string {
