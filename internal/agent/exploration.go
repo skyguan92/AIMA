@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,9 +73,10 @@ type ExplorationManager struct {
 	tuner *Tuner
 	tools ToolExecutor
 
-	mu         sync.Mutex
-	activeRuns map[string]context.CancelFunc
-	tuneRunID  string
+	mu           sync.Mutex
+	activeRuns   map[string]context.CancelFunc
+	tuneRunID    string
+	lastDeployCfg map[string]any // captured from deploy.apply response for overlay YAML
 }
 
 func NewExplorationManager(db *state.DB, tuner *Tuner, tools ToolExecutor) *ExplorationManager {
@@ -495,6 +497,9 @@ func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.Expl
 		ResponseJSON: responseJSON,
 	})
 
+	// Capture resolved config from deploy.apply response for overlay YAML.
+	m.captureDeployConfig(responseJSON)
+
 	slog.Info("exploration: model deployed for validation",
 		"model", plan.Target.Model, "engine", plan.Target.Engine)
 
@@ -541,7 +546,13 @@ func (m *ExplorationManager) stopConflictingDeploy(ctx context.Context, targetMo
 		return
 	}
 	for _, d := range deploys {
-		if d.Name == targetModel || (d.Phase != "running" && d.Phase != "starting" && d.Phase != "failed") {
+		if d.Name == targetModel {
+			continue
+		}
+		// Only delete deployments that are actually holding GPU resources.
+		// "failed" deployments already released GPU memory — just clean up metadata.
+		needsGPUWait := d.Phase == "running" || d.Phase == "starting"
+		if !needsGPUWait && d.Phase != "failed" {
 			continue
 		}
 		slog.Info("exploration: deleting conflicting deployment to free slot",
@@ -550,9 +561,40 @@ func (m *ExplorationManager) stopConflictingDeploy(ctx context.Context, targetMo
 		if _, err := m.tools.ExecuteTool(ctx, "deploy.delete", deleteArgs); err != nil {
 			slog.Warn("exploration: failed to delete conflicting deployment", "name", d.Name, "error", err)
 		}
-		// Allow time for GPU memory to be released after process termination
-		time.Sleep(2 * time.Second)
+		// Only wait for GPU memory release if the deployment was actually running.
+		if needsGPUWait {
+			m.waitForDeleteComplete(ctx, d.Name)
+		}
 	}
+}
+
+// waitForDeleteComplete polls deploy.status until the deployment is no longer running,
+// confirming GPU memory has been freed. Falls back to a fixed delay on timeout.
+func (m *ExplorationManager) waitForDeleteComplete(ctx context.Context, name string) {
+	const (
+		pollInterval = 2 * time.Second
+		maxWait      = 30 * time.Second
+	)
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		phase, _ := m.checkDeployStatus(ctx, name)
+		// Gone or terminal phase = GPU memory released
+		if phase == "" || phase == "failed" || phase == "stopped" || phase == "exited" {
+			slog.Info("exploration: deleted deployment no longer holding GPU", "name", name, "phase", phase)
+			// Grace period for GPU memory to fully release from driver
+			time.Sleep(3 * time.Second)
+			return
+		}
+		slog.Info("exploration: waiting for deleted deployment to release GPU",
+			"name", name, "phase", phase)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(pollInterval):
+		}
+	}
+	slog.Warn("exploration: timeout waiting for deployment to release GPU, proceeding anyway",
+		"name", name, "waited", maxWait)
 }
 
 // waitForReady polls deploy.status until the deployment reports ready, or timeout.
@@ -713,8 +755,12 @@ variants:
 		plan.Target.Engine,
 	)
 
-	// Append deployment config entries
+	// Append deployment config entries — skip internal keys (starting with '.')
+	// and nil values that would produce invalid YAML.
 	for k, v := range deployConfig {
+		if strings.HasPrefix(k, ".") || v == nil {
+			continue
+		}
 		switch val := v.(type) {
 		case float64:
 			if val == float64(int(val)) {
@@ -722,6 +768,10 @@ variants:
 			} else {
 				yaml += fmt.Sprintf("      %s: %v\n", k, val)
 			}
+		case bool:
+			yaml += fmt.Sprintf("      %s: %v\n", k, val)
+		case string:
+			yaml += fmt.Sprintf("      %s: \"%s\"\n", k, val)
 		default:
 			yaml += fmt.Sprintf("      %s: %v\n", k, v)
 		}
@@ -784,11 +834,40 @@ variants:
 	})
 }
 
-// getDeployConfig extracts config from the exploration plan's SearchSpace.
-// For validate tasks this is empty (engine defaults apply); for tune tasks
-// it contains the specific parameters being tested.
+// captureDeployConfig parses the config map from a deploy.apply JSON response
+// and stores it for later use by maybeCreateKnowledge.
+func (m *ExplorationManager) captureDeployConfig(responseJSON string) {
+	if responseJSON == "" {
+		return
+	}
+	var resp struct {
+		Config map[string]any `json:"config"`
+	}
+	if err := json.Unmarshal([]byte(responseJSON), &resp); err != nil || len(resp.Config) == 0 {
+		return
+	}
+	m.mu.Lock()
+	m.lastDeployCfg = resp.Config
+	m.mu.Unlock()
+	slog.Info("exploration: captured deploy config for overlay YAML",
+		"keys", len(resp.Config))
+}
+
+// getDeployConfig returns the resolved config captured from deploy.apply.
+// For validate tasks this contains the engine defaults (tp_size, mem_fraction_static, etc.);
+// for tune tasks, SearchSpace overrides are merged on top by maybeCreateKnowledge.
 func (m *ExplorationManager) getDeployConfig(_ context.Context, _ string) map[string]any {
-	return make(map[string]any)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastDeployCfg == nil {
+		return make(map[string]any)
+	}
+	// Return a copy to avoid mutation
+	cfg := make(map[string]any, len(m.lastDeployCfg))
+	for k, v := range m.lastDeployCfg {
+		cfg[k] = v
+	}
+	return cfg
 }
 
 func (m *ExplorationManager) executeOpenQuestion(ctx context.Context, run *state.ExplorationRun) {
