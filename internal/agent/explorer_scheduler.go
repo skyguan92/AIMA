@@ -77,5 +77,9 @@ func (s *Scheduler) isQuietHour(hour int) bool {
 	if s.config.QuietStart == s.config.QuietEnd {
 		return false // no quiet hours configured
 	}
-	return hour >= s.config.QuietStart && hour < s.config.QuietEnd
+	if s.config.QuietStart < s.config.QuietEnd {
+		return hour >= s.config.QuietStart && hour < s.config.QuietEnd
+	}
+	// Wrap around midnight: e.g. QuietStart=22, QuietEnd=6 means 22:00-06:00
+	return hour >= s.config.QuietStart || hour < s.config.QuietEnd
 }

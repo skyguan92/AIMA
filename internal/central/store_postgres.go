@@ -265,7 +265,7 @@ func (p *PostgresCentralStore) QueryConfigurations(ctx context.Context, f Config
 
 func (p *PostgresCentralStore) ListConfigurationsForSync(ctx context.Context, f SyncFilter) ([]Configuration, error) {
 	query := `SELECT id, COALESCE(device_id,''), hardware, engine_type, COALESCE(engine_version,''), model,
-	           COALESCE(slot,''), config::text, config_hash, COALESCE(derived_from,''), COALESCE(status,''),
+	           COALESCE(slot,''), config::text, config_hash, COALESCE(status,''), COALESCE(derived_from,''),
 	           COALESCE(tags,''), COALESCE(source,''), COALESCE(created_at::text,''), COALESCE(updated_at::text,'')
 	          FROM configurations WHERE 1=1`
 	var args []any
@@ -297,7 +297,7 @@ func (p *PostgresCentralStore) ListConfigurationsForSync(ctx context.Context, f 
 		var c Configuration
 		var derivedFrom sql.NullString
 		if err := rows.Scan(&c.ID, &c.DeviceID, &c.Hardware, &c.EngineType, &c.EngineVersion,
-			&c.Model, &c.Slot, &c.Config, &c.ConfigHash, &derivedFrom, &c.Status,
+			&c.Model, &c.Slot, &c.Config, &c.ConfigHash, &c.Status, &derivedFrom,
 			&c.Tags, &c.Source, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}

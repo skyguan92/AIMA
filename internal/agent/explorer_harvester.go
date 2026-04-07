@@ -73,7 +73,7 @@ func (h *Harvester) Harvest(ctx context.Context, input HarvestInput) []HarvestAc
 	}
 
 	// Record knowledge note
-	note := h.generateNote(input)
+	note := h.generateNote(ctx, input)
 	actions = append(actions, HarvestAction{Type: "note", Detail: note})
 	if h.saveNote != nil {
 		title := fmt.Sprintf("%s on %s benchmark", input.Task.Model, input.Task.Engine)
@@ -100,9 +100,9 @@ func (h *Harvester) Harvest(ctx context.Context, input HarvestInput) []HarvestAc
 	return actions
 }
 
-func (h *Harvester) generateNote(input HarvestInput) string {
+func (h *Harvester) generateNote(ctx context.Context, input HarvestInput) string {
 	if h.tier >= 2 && h.llm != nil {
-		note, err := h.generateLLMNote(context.Background(), input)
+		note, err := h.generateLLMNote(ctx, input)
 		if err == nil {
 			return note
 		}
