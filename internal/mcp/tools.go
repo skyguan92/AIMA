@@ -49,6 +49,8 @@ var profileIncludes = map[Profile][]string{
 		"benchmark.", "explore.", "tuning.", "explorer.",
 		"knowledge.resolve", "knowledge.search_configs", "knowledge.promote",
 		"knowledge.save", "knowledge.validate",
+		"knowledge.advise", "knowledge.advisory_feedback",
+		"scenario.generate", "scenario.list_central",
 		"hardware.detect", "hardware.metrics",
 	},
 }
@@ -257,4 +259,5 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	registerAgentTools(s, deps)
 	registerIntegrationTools(s, deps)
 	registerExplorerTools(s, deps)
+	registerCentralScenarioTools(s, deps)
 }
