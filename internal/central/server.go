@@ -458,29 +458,138 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Placeholder handlers for v0.4 endpoints — implemented in Task 8
 func (s *Server) handleAdvise(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	adv, ok := s.advisor.(*Advisor)
+	if !ok || adv == nil {
+		http.Error(w, "advisor not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Action   string   `json:"action"` // "recommend" or "optimize"
+		Hardware string   `json:"hardware"`
+		Model    string   `json:"model"`
+		Engine   string   `json:"engine,omitempty"`
+		ConfigID string   `json:"config_id,omitempty"`
+		Goal     string   `json:"goal,omitempty"`
+		Models   []string `json:"models,omitempty"`
+	}
+	limited := http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(limited).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	switch req.Action {
+	case "recommend":
+		resp, advisory, err := adv.Recommend(ctx, RecommendRequest{
+			Hardware: req.Hardware,
+			Model:    req.Model,
+			Goal:     req.Goal,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"recommendation": resp, "advisory": advisory})
+
+	case "optimize":
+		resp, advisory, err := adv.OptimizeScenario(ctx, OptimizeRequest{
+			ConfigID: req.ConfigID,
+			Hardware: req.Hardware,
+			Model:    req.Model,
+			Engine:   req.Engine,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"optimization": resp, "advisory": advisory})
+
+	default:
+		http.Error(w, "unknown action: "+req.Action, http.StatusBadRequest)
+	}
 }
 
 func (s *Server) handleListAdvisories(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	q := r.URL.Query()
+	advs, err := s.store.ListAdvisories(r.Context(), AdvisoryFilter{
+		Type:     q.Get("type"),
+		Severity: q.Get("severity"),
+		Hardware: q.Get("hardware"),
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, advs)
 }
 
 func (s *Server) handleAdvisoryFeedback(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing advisory id", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Feedback string `json:"feedback"`
+		Accepted bool   `json:"accepted"`
+	}
+	limited := http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(limited).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.UpdateAdvisoryFeedback(r.Context(), id, req.Feedback, req.Accepted); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 func (s *Server) handleScenarioGenerate(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	adv, ok := s.advisor.(*Advisor)
+	if !ok || adv == nil {
+		http.Error(w, "advisor not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req GenerateScenarioRequest
+	limited := http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(limited).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	resp, scenario, err := adv.GenerateScenario(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"scenario": resp, "stored": scenario})
 }
 
 func (s *Server) handleListScenarios(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	scenarios, err := s.store.ListScenarios(r.Context(), ScenarioFilter{
+		Hardware: r.URL.Query().Get("hardware"),
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, scenarios)
 }
 
 func (s *Server) handleListAnalysis(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	runs, err := s.store.ListAnalysisRuns(r.Context(), 20)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, runs)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
