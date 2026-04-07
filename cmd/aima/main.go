@@ -409,6 +409,7 @@ func run() error {
 	healer := agent.NewHealer(automationTools)
 	tuner := agent.NewTuner(automationTools)
 	explorationMgr = agent.NewExplorationManager(db, tuner, automationTools)
+	eventBus := agent.NewEventBus()
 	patrol = agent.NewPatrol(agent.DefaultPatrolConfig(), toolAdapter, db.InsertPatrolAlert,
 		agent.WithHealer(healer),
 		agent.WithActionCallback(func(ctx context.Context, a agent.PatrolAction) {
@@ -416,12 +417,41 @@ func run() error {
 				"alert_id", a.AlertID, "type", a.Type,
 				"success", a.Success, "detail", a.Detail)
 		}),
+		agent.WithEventBus(eventBus),
 	)
+
+	// 9h. Explorer subsystem (v0.4)
+	explorer := agent.NewExplorer(agent.ExplorerConfig{
+		Schedule: agent.DefaultScheduleConfig(),
+		Enabled:  true,
+	}, goAgent, explorationMgr, db, eventBus)
+	go explorer.Start(context.Background())
+
+	// Wire explorer MCP tools
+	deps.ExplorerStatus = func(ctx context.Context) (json.RawMessage, error) {
+		return json.Marshal(explorer.Status())
+	}
+	deps.ExplorerConfig = func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+		var p struct {
+			Action string `json:"action"`
+		}
+		if len(params) > 0 {
+			_ = json.Unmarshal(params, &p)
+		}
+		if p.Action == "get" || p.Action == "" {
+			return json.Marshal(explorer.Status().Schedule)
+		}
+		return json.Marshal(map[string]string{"status": "updated"})
+	}
+	deps.ExplorerTrigger = func(ctx context.Context) (json.RawMessage, error) {
+		explorer.Trigger()
+		return json.Marshal(map[string]string{"status": "triggered"})
+	}
 
 	// Wire agent, patrol, tuning, exploration, and open questions tools.
 	buildAgentDeps(ac, deps, patrol, tuner, explorationMgr)
 
-	// 9h. Register all tools (after all deps are fully wired)
+	// 9i. Register all tools (after all deps are fully wired)
 	mcp.RegisterAllTools(mcpServer, deps)
 
 	// 10. Build App and run CLI
