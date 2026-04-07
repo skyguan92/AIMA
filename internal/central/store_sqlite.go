@@ -258,7 +258,7 @@ func (s *SQLiteCentralStore) QueryConfigurations(ctx context.Context, f ConfigFi
 
 func (s *SQLiteCentralStore) ListConfigurationsForSync(ctx context.Context, f SyncFilter) ([]Configuration, error) {
 	query := `SELECT id, COALESCE(device_id,''), hardware, engine_type, COALESCE(engine_version,''), model,
-	           COALESCE(slot,''), config, config_hash, COALESCE(derived_from,''), COALESCE(status,''),
+	           COALESCE(slot,''), config, config_hash, COALESCE(status,''), COALESCE(derived_from,''),
 	           COALESCE(tags,''), COALESCE(source,''), COALESCE(created_at,''), COALESCE(updated_at,'')
 	          FROM configurations WHERE 1=1`
 	var args []any
@@ -287,7 +287,7 @@ func (s *SQLiteCentralStore) ListConfigurationsForSync(ctx context.Context, f Sy
 		var c Configuration
 		var derivedFrom sql.NullString
 		if err := rows.Scan(&c.ID, &c.DeviceID, &c.Hardware, &c.EngineType, &c.EngineVersion,
-			&c.Model, &c.Slot, &c.Config, &c.ConfigHash, &derivedFrom, &c.Status,
+			&c.Model, &c.Slot, &c.Config, &c.ConfigHash, &c.Status, &derivedFrom,
 			&c.Tags, &c.Source, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}

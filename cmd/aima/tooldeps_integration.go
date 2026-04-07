@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"net/url"
 	"strings"
 	"time"
 
@@ -327,7 +328,7 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 			return nil, fmt.Errorf("central returned %d", resp.StatusCode)
 		}
 
-		syncData, err := io.ReadAll(resp.Body)
+		syncData, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20)) // 50 MiB max
 		if err != nil {
 			return nil, fmt.Errorf("read central response: %w", err)
 		}
@@ -563,16 +564,18 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 		if endpoint == "" {
 			return nil, fmt.Errorf("central.endpoint not configured")
 		}
-		url := endpoint + "/api/v1/scenarios"
-		sep := "?"
+		u := endpoint + "/api/v1/scenarios"
+		params := url.Values{}
 		if hardware != "" {
-			url += sep + "hardware=" + hardware
-			sep = "&"
+			params.Set("hardware", hardware)
 		}
 		if source != "" {
-			url += sep + "source=" + source
+			params.Set("source", source)
 		}
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if len(params) > 0 {
+			u += "?" + params.Encode()
+		}
+		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, err
 		}
