@@ -506,6 +506,40 @@ func run() error {
 			}
 			return questions, nil
 		}),
+		agent.WithGatherAdvisories(func(ctx context.Context) ([]agent.Advisory, error) {
+			if deps.SyncPullAdvisories == nil {
+				return nil, nil
+			}
+			data, err := deps.SyncPullAdvisories(ctx)
+			if err != nil {
+				return nil, err
+			}
+			var items []map[string]any
+			if err := json.Unmarshal(data, &items); err != nil {
+				return nil, nil // no advisories or unparseable
+			}
+			advisories := make([]agent.Advisory, 0, len(items))
+			for _, item := range items {
+				adv := agent.Advisory{
+					ID:             stringField(item,"id"),
+					Type:           stringField(item,"type"),
+					TargetHardware: stringField(item,"target_hardware"),
+					TargetModel:    stringField(item,"target_model"),
+					TargetEngine:   stringField(item,"target_engine"),
+					Confidence:     stringField(item,"confidence"),
+					Reasoning:      stringField(item,"reasoning"),
+				}
+				if cfg, ok := item["config"].(map[string]any); ok {
+					adv.Config = cfg
+				} else if content, ok := item["content"].(map[string]any); ok {
+					adv.Config = content
+				}
+				if adv.ID != "" && adv.TargetModel != "" {
+					advisories = append(advisories, adv)
+				}
+			}
+			return advisories, nil
+		}),
 		agent.WithExplorerSaveNote(func(ctx context.Context, title, content, hardware, model, engine string) error {
 			return db.InsertNote(ctx, &state.KnowledgeNote{
 				Title:           title,

@@ -44,6 +44,7 @@ type Explorer struct {
 	gatherGaps          func(ctx context.Context) ([]GapEntry, error)
 	gatherDeploys       func(ctx context.Context) ([]DeployStatus, error)
 	gatherOpenQuestions func(ctx context.Context) ([]OpenQuestion, error)
+	gatherAdvisories    func(ctx context.Context) ([]Advisory, error)
 
 	// Harvester callbacks, wired via options or buildToolDeps.
 	syncPush func(ctx context.Context) error
@@ -93,6 +94,11 @@ func WithExplorerSyncPush(fn func(ctx context.Context) error) ExplorerOption {
 // WithExplorerSaveNote sets the callback for durable knowledge-note persistence.
 func WithExplorerSaveNote(fn func(ctx context.Context, title, content, hardware, model, engine string) error) ExplorerOption {
 	return func(e *Explorer) { e.saveNote = fn }
+}
+
+// WithGatherAdvisories sets the function to gather pending advisories from central.
+func WithGatherAdvisories(fn func(ctx context.Context) ([]Advisory, error)) ExplorerOption {
+	return func(e *Explorer) { e.gatherAdvisories = fn }
 }
 
 // WithAdvisoryFeedback sets the callback for sending advisory feedback to central.
@@ -184,6 +190,7 @@ func (e *Explorer) Start(ctx context.Context) {
 
 	// Main event loop
 	ch := e.bus.Subscribe()
+	defer e.bus.Unsubscribe(ch)
 	for {
 		select {
 		case <-ctx.Done():
@@ -285,20 +292,25 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	// Generate exploration plan
 	planner := e.currentPlanner()
 	plan, err := planner.Plan(ctx, *input)
+	degraded := false
 	if err != nil {
 		slog.Warn("explorer: plan generation failed", "error", err)
 		// If LLM planner failed, try rule planner fallback
 		if tier >= 2 {
-			slog.Info("explorer: falling back to RulePlanner")
+			slog.Info("explorer: LLM unavailable, degrading to Tier 1 planner")
 			rp := &RulePlanner{}
 			plan, err = rp.Plan(ctx, *input)
 			if err != nil {
 				slog.Error("explorer: rule planner also failed", "error", err)
 				return
 			}
+			degraded = true
 		} else {
 			return
 		}
+	}
+	if degraded {
+		plan.Reasoning = "rule-based (degraded from Tier 2)"
 	}
 
 	if len(plan.Tasks) == 0 {
@@ -379,15 +391,19 @@ func (e *Explorer) handleAdvisory(ctx context.Context, ev ExplorerEvent) {
 	}()
 }
 
-// handleScenario processes a central scenario event. Currently logs and defers.
+// handleScenario processes a central scenario event: parses the scenario,
+// checks feasibility against local hardware, and persists a knowledge note.
 func (e *Explorer) handleScenario(ctx context.Context, ev ExplorerEvent) {
 	if len(ev.Advisory) == 0 {
 		return
 	}
 
 	var scenario struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID       string   `json:"id"`
+		Name     string   `json:"name"`
+		Hardware string   `json:"hardware_profile"`
+		Models   []string `json:"models"`
+		Source   string   `json:"source"`
 	}
 	if err := json.Unmarshal(ev.Advisory, &scenario); err != nil {
 		slog.Warn("explorer: parse scenario", "error", err)
@@ -395,7 +411,26 @@ func (e *Explorer) handleScenario(ctx context.Context, ev ExplorerEvent) {
 	}
 
 	slog.Info("explorer: received central scenario",
-		"id", scenario.ID, "name", scenario.Name)
+		"id", scenario.ID, "name", scenario.Name, "models", len(scenario.Models))
+
+	// Check feasibility: compare scenario hardware target against local hardware
+	hw, err := e.currentHardware(ctx)
+	if err != nil {
+		slog.Debug("explorer: cannot check scenario feasibility", "error", err)
+		return
+	}
+
+	match := scenario.Hardware == "" || scenario.Hardware == hw.Profile || scenario.Hardware == hw.GPUArch
+	slog.Info("explorer: scenario feasibility",
+		"scenario", scenario.Name, "target_hw", scenario.Hardware,
+		"local_hw", hw.Profile, "feasible", match)
+
+	// Persist a knowledge note about the received scenario
+	if e.saveNote != nil {
+		note := fmt.Sprintf("Received scenario %q from central (source=%s, models=%v, feasible=%v)",
+			scenario.Name, scenario.Source, scenario.Models, match)
+		_ = e.saveNote(ctx, "central scenario received", note, hw.Profile, "", "")
+	}
 }
 
 func (e *Explorer) sendAdvisoryFeedback(ctx context.Context, advisoryID, status, reason string) {
@@ -411,21 +446,31 @@ func (e *Explorer) sendAdvisoryFeedback(ctx context.Context, advisoryID, status,
 
 func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 	harvester := e.currentHarvester()
-	for i, task := range plan.Tasks {
+	for i := range plan.Tasks {
+		task := &plan.Tasks[i]
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
+		// Skip tasks that require LLM if tier has degraded
+		if taskRequiresLLM(task.Kind) && e.detectTier() < 2 {
+			slog.Info("explorer: skipping LLM-only task (tier degraded)",
+				"kind", task.Kind, "model", task.Model)
+			task.Status = "skipped_tier_degraded"
+			continue
+		}
+
 		slog.Info("explorer: executing task",
 			"kind", task.Kind, "model", task.Model, "engine", task.Engine,
 			"progress", fmt.Sprintf("%d/%d", i+1, len(plan.Tasks)))
 
-		result := e.executeTask(ctx, task)
+		result := e.executeTask(ctx, *task)
+		task.Status = "completed"
 
 		// Harvest results
-		actions := harvester.Harvest(ctx, HarvestInput{Task: task, Result: result})
+		actions := harvester.Harvest(ctx, HarvestInput{Task: *task, Result: result})
 		for _, a := range actions {
 			slog.Info("explorer: harvest action", "type", a.Type, "detail", a.Detail)
 		}
@@ -440,16 +485,26 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 		}
 	}
 
-	// Mark plan completed
+	// Mark plan completed (with updated task statuses in JSON)
 	if e.db != nil {
 		now := time.Now()
+		summaryJSON := ""
+		if planJSON, err := json.Marshal(plan); err == nil {
+			summaryJSON = string(planJSON)
+		}
 		_ = e.db.UpdateExplorationPlan(ctx, &state.ExplorationPlanRow{
 			ID:          plan.ID,
 			Status:      "completed",
 			Progress:    len(plan.Tasks),
 			CompletedAt: &now,
+			SummaryJSON: summaryJSON,
 		})
 	}
+}
+
+// taskRequiresLLM returns true for task kinds that need LLM reasoning.
+func taskRequiresLLM(kind string) bool {
+	return kind == "compare"
 }
 
 func (e *Explorer) executeTask(ctx context.Context, task PlanTask) HarvestResult {
@@ -547,6 +602,13 @@ func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*Plan
 		openQuestions, err := e.gatherOpenQuestions(ctx)
 		if err == nil {
 			input.OpenQuestions = openQuestions
+		}
+	}
+
+	if e.gatherAdvisories != nil {
+		advisories, err := e.gatherAdvisories(ctx)
+		if err == nil {
+			input.Advisories = advisories
 		}
 	}
 

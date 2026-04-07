@@ -604,7 +604,13 @@ func (s *Server) handleAdvisoryFeedback(w http.ResponseWriter, r *http.Request) 
 		Feedback:    feedback,
 		ValidatedAt: nowRFC3339(),
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else if strings.Contains(err.Error(), "cannot transition") {
+			http.Error(w, err.Error(), http.StatusConflict)
+		} else {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "advisory_id": id, "status": status})
@@ -661,8 +667,13 @@ func (s *Server) handleListAnalysis(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	w.Write(b)
 }
 
 func parseLimit(v string, fallback int) int {
