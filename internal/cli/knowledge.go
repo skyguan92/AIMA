@@ -227,6 +227,7 @@ func newKnowledgeAdviseCmd(app *App) *cobra.Command {
 		Use:   "advise <model>",
 		Short: "Request AI-powered recommendation from central server",
 		Long: `Request a config/engine recommendation from the central knowledge server.
+The response is normalized to the edge-facing v2 advisory shape when possible.
 Requires central.endpoint to be configured.
 
 Examples:

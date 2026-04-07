@@ -44,8 +44,8 @@ func registerKnowledgeTools(s *Server, deps *ToolDeps) {
 		Name:        "knowledge.search",
 		Description: "Search knowledge notes (agent exploration records) by hardware, model, or engine filter. Returns matching notes with titles, tags, and content.",
 		InputSchema: schema(
-			`"hardware":{"type":"string","description":"Filter by hardware profile, e.g. 'nvidia-rtx4060'"},`+
-				`"model":{"type":"string","description":"Filter by model name, e.g. 'qwen3-0.6b'"},`+
+			`"hardware":{"type":"string","description":"Filter by hardware profile, e.g. 'nvidia-rtx4060'"},` +
+				`"model":{"type":"string","description":"Filter by model name, e.g. 'qwen3-0.6b'"},` +
 				`"engine":{"type":"string","description":"Filter by engine type, e.g. 'vllm'"}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SearchKnowledge == nil {
@@ -350,9 +350,9 @@ func registerKnowledgeTools(s *Server, deps *ToolDeps) {
 		Name:        "knowledge.export",
 		Description: "Export knowledge data (configurations, benchmarks, notes) to JSON. Filter by hardware, model, or engine.",
 		InputSchema: schema(
-			`"hardware":{"type":"string","description":"Filter by hardware profile ID"},`+
-				`"model":{"type":"string","description":"Filter by model name"},`+
-				`"engine":{"type":"string","description":"Filter by engine type"},`+
+			`"hardware":{"type":"string","description":"Filter by hardware profile ID"},` +
+				`"model":{"type":"string","description":"Filter by model name"},` +
+				`"engine":{"type":"string","description":"Filter by engine type"},` +
 				`"output_path":{"type":"string","description":"File path to write JSON. If omitted, returns JSON in response."}`),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.ExportKnowledge == nil {
@@ -409,8 +409,8 @@ func registerKnowledgeTools(s *Server, deps *ToolDeps) {
 		Name:        "knowledge.validate",
 		Description: "Compare predicted vs actual performance. Flags divergent predictions (>20% deviation).",
 		InputSchema: schema(
-			`"hardware":{"type":"string","description":"GPU architecture"},`+
-				`"engine":{"type":"string","description":"Engine type"},`+
+			`"hardware":{"type":"string","description":"GPU architecture"},` +
+				`"engine":{"type":"string","description":"Engine type"},` +
 				`"model":{"type":"string","description":"Model name"}`,
 		),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
@@ -452,16 +452,16 @@ func registerKnowledgeTools(s *Server, deps *ToolDeps) {
 		Name:        "knowledge.open_questions",
 		Description: "List, resolve, or launch exploration runs for open questions from knowledge assets.",
 		InputSchema: schema(
-			`"action":{"type":"string","description":"Action: list (default), resolve, run/validate to create an exploration run","enum":["list","resolve","run","validate"]},`+
-				`"status":{"type":"string","description":"Filter by status: untested, tested, confirmed, confirmed_incompatible, rejected"},`+
-				`"id":{"type":"string","description":"Question ID (for resolve action)"},`+
-				`"result":{"type":"string","description":"Actual test result (for resolve action)"},`+
-				`"hardware":{"type":"string","description":"Hardware that tested (for resolve/run action)"},`+
-				`"model":{"type":"string","description":"Model used for automated validation runs"},`+
-				`"engine":{"type":"string","description":"Engine used for automated validation runs"},`+
-				`"endpoint":{"type":"string","description":"Inference endpoint override for automated validation runs"},`+
-				`"requested_by":{"type":"string","description":"Who requested the run"},`+
-				`"concurrency":{"type":"integer","description":"Benchmark concurrency for automated validation runs"},`+
+			`"action":{"type":"string","description":"Action: list (default), resolve, run/validate to create an exploration run","enum":["list","resolve","run","validate"]},` +
+				`"status":{"type":"string","description":"Filter by status: untested, tested, confirmed, confirmed_incompatible, rejected"},` +
+				`"id":{"type":"string","description":"Question ID (for resolve action)"},` +
+				`"result":{"type":"string","description":"Actual test result (for resolve action)"},` +
+				`"hardware":{"type":"string","description":"Hardware that tested (for resolve/run action)"},` +
+				`"model":{"type":"string","description":"Model used for automated validation runs"},` +
+				`"engine":{"type":"string","description":"Engine used for automated validation runs"},` +
+				`"endpoint":{"type":"string","description":"Inference endpoint override for automated validation runs"},` +
+				`"requested_by":{"type":"string","description":"Who requested the run"},` +
+				`"concurrency":{"type":"integer","description":"Benchmark concurrency for automated validation runs"},` +
 				`"rounds":{"type":"integer","description":"Benchmark rounds for automated validation runs"}`,
 		),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
@@ -479,7 +479,7 @@ func registerKnowledgeTools(s *Server, deps *ToolDeps) {
 	// knowledge.sync_push
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.sync_push",
-		Description: "Push local knowledge (configurations + benchmarks) to the central knowledge server.",
+		Description: "Push local knowledge to the central knowledge server and return the normalized v2 protocol result.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SyncPush == nil {
@@ -496,7 +496,7 @@ func registerKnowledgeTools(s *Server, deps *ToolDeps) {
 	// knowledge.sync_pull
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.sync_pull",
-		Description: "Pull new knowledge from the central server (configs/benchmarks newer than last pull), including advisories and scenarios from the v2 sync protocol.",
+		Description: "Pull new knowledge from the central server and return normalized v2 protocol results, including advisories and scenarios.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.SyncPull == nil {
@@ -545,11 +545,11 @@ func registerKnowledgeTools(s *Server, deps *ToolDeps) {
 	// knowledge.advisory_feedback — send feedback on a central advisory
 	s.RegisterTool(&Tool{
 		Name:        "knowledge.advisory_feedback",
-		Description: "Send feedback on a central advisory after local validation (accepted/rejected with reason).",
+		Description: "Send feedback on a central advisory after local validation. Preferred statuses are validated or rejected; accepted is kept as a legacy alias.",
 		InputSchema: schema(
 			`"advisory_id":{"type":"string","description":"Advisory ID from central server"},`+
-				`"status":{"type":"string","enum":["accepted","rejected","partial"],"description":"Feedback status"},`+
-				`"reason":{"type":"string","description":"Explanation of why advisory was accepted or rejected"}`,
+				`"status":{"type":"string","enum":["validated","rejected","accepted"],"description":"Feedback status. validated is preferred; accepted is a legacy alias for validated"},`+
+				`"reason":{"type":"string","description":"Explanation of why advisory was validated or rejected"}`,
 			"advisory_id", "status"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.AdvisoryFeedback == nil {

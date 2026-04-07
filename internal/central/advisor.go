@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // LLMCompleter is the interface for LLM completions used by the Advisor.
@@ -25,9 +27,10 @@ func NewAdvisor(store CentralStore, llm LLMCompleter) *Advisor {
 
 // RecommendRequest is the input for engine/config recommendation.
 type RecommendRequest struct {
-	Hardware string `json:"hardware"`
-	Model    string `json:"model"`
-	Goal     string `json:"goal,omitempty"` // e.g., "low-latency", "high-throughput"
+	Hardware        string `json:"hardware,omitempty"`
+	HardwareProfile string `json:"hardware_profile,omitempty"`
+	Model           string `json:"model"`
+	Goal            string `json:"goal,omitempty"` // e.g., "low-latency", "high-throughput"
 }
 
 // RecommendResponse is the structured LLM output for recommendations.
@@ -42,14 +45,19 @@ type RecommendResponse struct {
 
 // Recommend queries the knowledge store for context and asks the LLM for a recommendation.
 func (a *Advisor) Recommend(ctx context.Context, req RecommendRequest) (*RecommendResponse, *Advisory, error) {
+	hardware := req.Hardware
+	if hardware == "" {
+		hardware = req.HardwareProfile
+	}
+
 	// Gather context from store
 	configs, _ := a.store.QueryConfigurations(ctx, ConfigFilter{
-		Hardware: req.Hardware,
+		Hardware: hardware,
 		Model:    req.Model,
 		Limit:    20,
 	})
 	benchmarks, _ := a.store.QueryBenchmarks(ctx, BenchmarkFilter{
-		Hardware: req.Hardware,
+		Hardware: hardware,
 		Model:    req.Model,
 		Limit:    20,
 	})
@@ -67,18 +75,29 @@ func (a *Advisor) Recommend(ctx context.Context, req RecommendRequest) (*Recomme
 	}
 
 	// Store advisory
+	basedOnJSON, _ := json.Marshal(map[string]any{
+		"configuration_count": len(configs),
+		"benchmark_count":     len(benchmarks),
+	})
 	adv := Advisory{
-		ID:         genID("adv"),
-		Type:       "recommendation",
-		Severity:   "info",
-		Hardware:   req.Hardware,
-		Model:      req.Model,
-		Engine:     resp.Engine,
-		Title:      fmt.Sprintf("Recommendation: %s on %s", req.Model, req.Hardware),
-		Summary:    resp.Reasoning,
-		Details:    raw,
-		Confidence: resp.Confidence,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+		ID:             genID("adv"),
+		Type:           AdvisoryTypeConfigRecommend,
+		Status:         AdvisoryStatusPending,
+		Severity:       "info",
+		TargetHardware: hardware,
+		TargetModel:    req.Model,
+		TargetEngine:   resp.Engine,
+		ContentJSON:    json.RawMessage(raw),
+		Reasoning:      resp.Reasoning,
+		Confidence:     resp.Confidence,
+		BasedOnJSON:    basedOnJSON,
+		Title:          fmt.Sprintf("Recommendation: %s on %s", req.Model, hardware),
+		Summary:        resp.Reasoning,
+		Hardware:       hardware,
+		Model:          req.Model,
+		Engine:         resp.Engine,
+		Details:        raw,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 	_ = a.store.InsertAdvisory(ctx, adv)
 
@@ -126,18 +145,30 @@ func (a *Advisor) OptimizeScenario(ctx context.Context, req OptimizeRequest) (*O
 		return nil, nil, fmt.Errorf("parse llm response: %w", err)
 	}
 
+	basedOnJSON, _ := json.Marshal(map[string]any{
+		"config_id":           req.ConfigID,
+		"configuration_count": len(configs),
+		"benchmark_count":     len(benchmarks),
+	})
 	adv := Advisory{
-		ID:         genID("adv"),
-		Type:       "optimization",
-		Severity:   "info",
-		Hardware:   req.Hardware,
-		Model:      req.Model,
-		Engine:     req.Engine,
-		Title:      fmt.Sprintf("Optimization: %s/%s on %s", req.Engine, req.Model, req.Hardware),
-		Summary:    resp.Reasoning,
-		Details:    raw,
-		Confidence: resp.Confidence,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+		ID:             genID("adv"),
+		Type:           AdvisoryTypeScenarioOptimization,
+		Status:         AdvisoryStatusPending,
+		Severity:       "info",
+		TargetHardware: req.Hardware,
+		TargetModel:    req.Model,
+		TargetEngine:   req.Engine,
+		ContentJSON:    json.RawMessage(raw),
+		Reasoning:      resp.Reasoning,
+		Confidence:     resp.Confidence,
+		BasedOnJSON:    basedOnJSON,
+		Title:          fmt.Sprintf("Optimization: %s/%s on %s", req.Engine, req.Model, req.Hardware),
+		Summary:        resp.Reasoning,
+		Hardware:       req.Hardware,
+		Model:          req.Model,
+		Engine:         req.Engine,
+		Details:        raw,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 	_ = a.store.InsertAdvisory(ctx, adv)
 
@@ -146,9 +177,10 @@ func (a *Advisor) OptimizeScenario(ctx context.Context, req OptimizeRequest) (*O
 
 // GenerateScenarioRequest is the input for multi-model scenario generation.
 type GenerateScenarioRequest struct {
-	Hardware string   `json:"hardware"`
-	Models   []string `json:"models"`
-	Goal     string   `json:"goal,omitempty"`
+	Hardware        string   `json:"hardware,omitempty"`
+	HardwareProfile string   `json:"hardware_profile,omitempty"`
+	Models          []string `json:"models"`
+	Goal            string   `json:"goal,omitempty"`
 }
 
 // GenerateScenarioResponse is the structured LLM output for scenario generation.
@@ -163,11 +195,16 @@ type GenerateScenarioResponse struct {
 
 // GenerateScenario creates a multi-model deployment plan.
 func (a *Advisor) GenerateScenario(ctx context.Context, req GenerateScenarioRequest) (*GenerateScenarioResponse, *Scenario, error) {
+	hardware := req.Hardware
+	if hardware == "" {
+		hardware = req.HardwareProfile
+	}
+
 	// Gather context for each model
 	var allConfigs []Configuration
 	for _, model := range req.Models {
 		configs, _ := a.store.QueryConfigurations(ctx, ConfigFilter{
-			Hardware: req.Hardware,
+			Hardware: hardware,
 			Model:    model,
 			Limit:    5,
 		})
@@ -187,15 +224,32 @@ func (a *Advisor) GenerateScenario(ctx context.Context, req GenerateScenarioRequ
 	}
 
 	modelsJSON, _ := json.Marshal(req.Models)
+	scenarioYAMLBytes, err := yaml.Marshal(map[string]any{
+		"name":        resp.Name,
+		"description": resp.Description,
+		"goal":        req.Goal,
+		"hardware":    hardware,
+		"deployments": resp.Deployments,
+		"total_vram":  resp.TotalVRAM,
+		"reasoning":   resp.Reasoning,
+		"confidence":  resp.Confidence,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal scenario yaml: %w", err)
+	}
 	scenario := Scenario{
-		ID:          genID("scn"),
-		Name:        resp.Name,
-		Description: resp.Description,
-		Hardware:    req.Hardware,
-		Models:      string(modelsJSON),
-		Config:      raw,
-		Source:      "advisor",
-		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+		ID:              genID("scn"),
+		Name:            resp.Name,
+		Description:     resp.Description,
+		HardwareProfile: hardware,
+		ScenarioYAML:    string(scenarioYAMLBytes),
+		Source:          "generated",
+		Version:         1,
+		CreatedAt:       time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt:       time.Now().UTC().Format(time.RFC3339),
+		Hardware:        hardware,
+		Models:          string(modelsJSON),
+		Config:          raw,
 	}
 	_ = a.store.InsertScenario(ctx, scenario)
 
@@ -205,7 +259,11 @@ func (a *Advisor) GenerateScenario(ctx context.Context, req GenerateScenarioRequ
 // --- prompt builders ---
 
 func (a *Advisor) buildRecommendPrompt(req RecommendRequest, configs []Configuration, benchmarks []BenchmarkResult) string {
-	prompt := fmt.Sprintf("Hardware: %s\nModel: %s\n", req.Hardware, req.Model)
+	hardware := req.Hardware
+	if hardware == "" {
+		hardware = req.HardwareProfile
+	}
+	prompt := fmt.Sprintf("Hardware: %s\nModel: %s\n", hardware, req.Model)
 	if req.Goal != "" {
 		prompt += fmt.Sprintf("Goal: %s\n", req.Goal)
 	}
@@ -247,6 +305,10 @@ func (a *Advisor) buildOptimizePrompt(req OptimizeRequest, configs []Configurati
 }
 
 func (a *Advisor) buildScenarioPrompt(req GenerateScenarioRequest, configs []Configuration) string {
+	hardware := req.Hardware
+	if hardware == "" {
+		hardware = req.HardwareProfile
+	}
 	modelsStr := ""
 	for i, m := range req.Models {
 		if i > 0 {
@@ -254,7 +316,7 @@ func (a *Advisor) buildScenarioPrompt(req GenerateScenarioRequest, configs []Con
 		}
 		modelsStr += m
 	}
-	prompt := fmt.Sprintf("Hardware: %s\nModels to deploy: %s\n", req.Hardware, modelsStr)
+	prompt := fmt.Sprintf("Hardware: %s\nModels to deploy: %s\n", hardware, modelsStr)
 	if req.Goal != "" {
 		prompt += fmt.Sprintf("Goal: %s\n", req.Goal)
 	}

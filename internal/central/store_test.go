@@ -177,61 +177,82 @@ func storeTestSuite(t *testing.T, store CentralStore) {
 
 	t.Run("AdvisoryRoundTrip", func(t *testing.T) {
 		a := Advisory{
-			ID:        "adv-1",
-			Type:      "recommendation",
-			Severity:  "info",
-			Hardware:  "nvidia-rtx4090",
-			Title:     "Try vLLM",
-			Summary:   "vLLM performs well on RTX 4090",
-			Details:   `{"engine":"vllm"}`,
-			Confidence: "high",
-			CreatedAt: "2026-01-01T00:00:00Z",
+			ID:             "adv-1",
+			Type:           AdvisoryTypeConfigRecommend,
+			Status:         AdvisoryStatusPending,
+			Severity:       "info",
+			TargetHardware: "nvidia-rtx4090",
+			TargetModel:    "qwen3-8b",
+			TargetEngine:   "vllm",
+			Title:          "Try vLLM",
+			Reasoning:      "vLLM performs well on RTX 4090",
+			ContentJSON:    []byte(`{"engine":"vllm"}`),
+			Confidence:     "high",
+			CreatedAt:      "2026-01-01T00:00:00Z",
 		}
 		if err := store.InsertAdvisory(ctx, a); err != nil {
 			t.Fatalf("InsertAdvisory: %v", err)
 		}
-		advs, err := store.ListAdvisories(ctx, AdvisoryFilter{Type: "recommendation"})
+		advs, err := store.ListAdvisories(ctx, AdvisoryFilter{Type: AdvisoryTypeConfigRecommend, Status: AdvisoryStatusPending})
 		if err != nil {
 			t.Fatalf("ListAdvisories: %v", err)
 		}
 		if len(advs) != 1 {
 			t.Fatalf("advisories = %d, want 1", len(advs))
 		}
-		if advs[0].Title != "Try vLLM" {
-			t.Fatalf("Title = %q, want 'Try vLLM'", advs[0].Title)
+		if advs[0].TargetHardware != "nvidia-rtx4090" {
+			t.Fatalf("TargetHardware = %q, want nvidia-rtx4090", advs[0].TargetHardware)
 		}
 
-		// Feedback
-		if err := store.UpdateAdvisoryFeedback(ctx, "adv-1", "helpful", true); err != nil {
-			t.Fatalf("UpdateAdvisoryFeedback: %v", err)
+		if err := store.UpdateAdvisoryStatus(ctx, "adv-1", AdvisoryStatusUpdate{
+			Status:      AdvisoryStatusDelivered,
+			DeliveredAt: "2026-01-01T00:05:00Z",
+		}); err != nil {
+			t.Fatalf("UpdateAdvisoryStatus(delivered): %v", err)
 		}
-		advs2, _ := store.ListAdvisories(ctx, AdvisoryFilter{})
+		if err := store.UpdateAdvisoryStatus(ctx, "adv-1", AdvisoryStatusUpdate{
+			Status:      AdvisoryStatusValidated,
+			Feedback:    "helpful",
+			ValidatedAt: "2026-01-01T00:10:00Z",
+		}); err != nil {
+			t.Fatalf("UpdateAdvisoryStatus(validated): %v", err)
+		}
+		advs2, _ := store.ListAdvisories(ctx, AdvisoryFilter{ID: "adv-1"})
 		found := false
 		for _, a := range advs2 {
 			if a.ID == "adv-1" {
 				found = true
-				if a.Feedback != "helpful" || !a.Accepted {
-					t.Fatalf("feedback not updated: %+v", a)
+				if a.Feedback != "helpful" || !a.Accepted || a.Status != AdvisoryStatusValidated {
+					t.Fatalf("advisory lifecycle not updated: %+v", a)
 				}
 			}
 		}
 		if !found {
-			t.Fatal("advisory adv-1 not found after feedback")
+			t.Fatal("advisory adv-1 not found after lifecycle update")
 		}
 	})
 
 	t.Run("AnalysisRunRoundTrip", func(t *testing.T) {
 		r := AnalysisRun{
-			ID:            "run-1",
-			Type:          "gap_scan",
-			Status:        "completed",
-			Summary:       "Found 3 gaps",
-			AdvisoryCount: 3,
-			DurationMs:    1500,
-			CreatedAt:     "2026-01-01T00:00:00Z",
+			ID:        "run-1",
+			Type:      AnalysisTypeGapScan,
+			Status:    AnalysisStatusRunning,
+			InputJSON: []byte(`{"configs":1}`),
+			StartedAt: "2026-01-01T00:00:00Z",
 		}
 		if err := store.InsertAnalysisRun(ctx, r); err != nil {
 			t.Fatalf("InsertAnalysisRun: %v", err)
+		}
+		if err := store.UpdateAnalysisRun(ctx, "run-1", AnalysisRunUpdate{
+			Status:        AnalysisStatusCompleted,
+			Summary:       "Found 3 gaps",
+			OutputJSON:    []byte(`{"gaps":3}`),
+			Advisories:    []byte(`["adv-1","adv-2","adv-3"]`),
+			AdvisoryCount: 3,
+			DurationMs:    1500,
+			CompletedAt:   "2026-01-01T00:00:02Z",
+		}); err != nil {
+			t.Fatalf("UpdateAnalysisRun: %v", err)
 		}
 		runs, err := store.ListAnalysisRuns(ctx, 10)
 		if err != nil {
@@ -240,21 +261,25 @@ func storeTestSuite(t *testing.T, store CentralStore) {
 		if len(runs) != 1 {
 			t.Fatalf("runs = %d, want 1", len(runs))
 		}
-		if runs[0].Summary != "Found 3 gaps" {
-			t.Fatalf("Summary = %q, want 'Found 3 gaps'", runs[0].Summary)
+		if runs[0].Summary != "Found 3 gaps" || runs[0].Status != AnalysisStatusCompleted {
+			t.Fatalf("run = %+v, want completed summary", runs[0])
 		}
 	})
 
 	t.Run("ScenarioRoundTrip", func(t *testing.T) {
 		s := Scenario{
-			ID:          "scn-1",
-			Name:        "dual-model",
-			Description: "Two models on one GPU",
-			Hardware:    "nvidia-rtx4090",
-			Models:      `["qwen3-8b","llama3-8b"]`,
-			Config:      `{"partition":"50-50"}`,
-			Source:      "advisor",
-			CreatedAt:   "2026-01-01T00:00:00Z",
+			ID:              "scn-1",
+			Name:            "dual-model",
+			Description:     "Two models on one GPU",
+			HardwareProfile: "nvidia-rtx4090",
+			ScenarioYAML:    "deployments:\n  - model: qwen3-8b",
+			Source:          "generated",
+			Version:         1,
+			CreatedAt:       "2026-01-01T00:00:00Z",
+			UpdatedAt:       "2026-01-01T00:00:00Z",
+			Hardware:        "nvidia-rtx4090",
+			Models:          `["qwen3-8b","llama3-8b"]`,
+			Config:          `{"partition":"50-50"}`,
 		}
 		if err := store.InsertScenario(ctx, s); err != nil {
 			t.Fatalf("InsertScenario: %v", err)
@@ -266,8 +291,8 @@ func storeTestSuite(t *testing.T, store CentralStore) {
 		if len(scenarios) != 1 {
 			t.Fatalf("scenarios = %d, want 1", len(scenarios))
 		}
-		if scenarios[0].Name != "dual-model" {
-			t.Fatalf("Name = %q, want 'dual-model'", scenarios[0].Name)
+		if scenarios[0].Name != "dual-model" || scenarios[0].ScenarioYAML == "" {
+			t.Fatalf("scenario = %+v, want normalized scenario yaml", scenarios[0])
 		}
 	})
 

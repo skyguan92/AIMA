@@ -64,3 +64,39 @@ func TestScheduler_EmitsEvents(t *testing.T) {
 		t.Fatal("timeout waiting for scheduled event")
 	}
 }
+
+func TestScheduler_SetConfigReloadsIntervals(t *testing.T) {
+	bus := NewEventBus()
+	ch := bus.Subscribe()
+	s := NewScheduler(ScheduleConfig{
+		GapScanInterval:   0,
+		SyncInterval:      0,
+		FullAuditInterval: 0,
+		MaxConcurrentRuns: 1,
+		QuietStart:        0,
+		QuietEnd:          0,
+	}, bus)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go s.Start(ctx)
+
+	time.Sleep(30 * time.Millisecond)
+	s.SetConfig(ScheduleConfig{
+		GapScanInterval:   40 * time.Millisecond,
+		SyncInterval:      0,
+		FullAuditInterval: 0,
+		MaxConcurrentRuns: 1,
+		QuietStart:        0,
+		QuietEnd:          0,
+	})
+
+	select {
+	case ev := <-ch:
+		if ev.Type != EventScheduledGapScan {
+			t.Fatalf("type = %q, want %q", ev.Type, EventScheduledGapScan)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for reloaded scheduler event")
+	}
+}

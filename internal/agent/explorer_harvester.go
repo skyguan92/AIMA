@@ -19,7 +19,7 @@ type HarvestResult struct {
 	TTFTP95    float64
 	VRAMMiB    float64
 	Config     map[string]any
-	Promoted   bool   // set by maybeAutoPromote
+	Promoted   bool // set by maybeAutoPromote
 	Error      string
 }
 
@@ -67,7 +67,7 @@ func (h *Harvester) Harvest(ctx context.Context, input HarvestInput) []HarvestAc
 		note := fmt.Sprintf("%s on %s: FAILED -- %s", input.Task.Model, input.Task.Engine, input.Result.Error)
 		actions = append(actions, HarvestAction{Type: "note", Detail: note})
 		if h.saveNote != nil {
-			_ = h.saveNote(ctx, "exploration failed", note, "", input.Task.Model, input.Task.Engine)
+			_ = h.saveNote(ctx, "exploration failed", note, input.Task.Hardware, input.Task.Model, input.Task.Engine)
 		}
 		return actions
 	}
@@ -77,7 +77,7 @@ func (h *Harvester) Harvest(ctx context.Context, input HarvestInput) []HarvestAc
 	actions = append(actions, HarvestAction{Type: "note", Detail: note})
 	if h.saveNote != nil {
 		title := fmt.Sprintf("%s on %s benchmark", input.Task.Model, input.Task.Engine)
-		_ = h.saveNote(ctx, title, note, "", input.Task.Model, input.Task.Engine)
+		_ = h.saveNote(ctx, title, note, input.Task.Hardware, input.Task.Model, input.Task.Engine)
 	}
 
 	// Track promotion

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -92,7 +93,9 @@ func (s *Server) routes() {
 	// v0.4 advisor routes
 	s.mux.HandleFunc("POST /api/v1/advise", s.authMiddleware(s.handleAdvise))
 	s.mux.HandleFunc("GET /api/v1/advisories", s.authMiddleware(s.handleListAdvisories))
+	s.mux.HandleFunc("POST /api/v1/advisory/feedback", s.authMiddleware(s.handleAdvisoryFeedback))
 	s.mux.HandleFunc("POST /api/v1/advisories/{id}/feedback", s.authMiddleware(s.handleAdvisoryFeedback))
+	s.mux.HandleFunc("POST /api/v1/scenario/generate", s.authMiddleware(s.handleScenarioGenerate))
 	s.mux.HandleFunc("POST /api/v1/scenarios/generate", s.authMiddleware(s.handleScenarioGenerate))
 	s.mux.HandleFunc("GET /api/v1/scenarios", s.authMiddleware(s.handleListScenarios))
 	s.mux.HandleFunc("GET /api/v1/analysis", s.authMiddleware(s.handleListAnalysis))
@@ -332,6 +335,10 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		noteIngested++
 	}
 
+	if analyzer, ok := s.analyzer.(*Analyzer); ok && analyzer != nil {
+		analyzer.OnIngest(ctx, payload)
+	}
+
 	writeJSON(w, map[string]any{
 		"ingested":   ingested,
 		"duplicates": duplicates,
@@ -466,13 +473,14 @@ func (s *Server) handleAdvise(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Action   string   `json:"action"` // "recommend" or "optimize"
-		Hardware string   `json:"hardware"`
-		Model    string   `json:"model"`
-		Engine   string   `json:"engine,omitempty"`
-		ConfigID string   `json:"config_id,omitempty"`
-		Goal     string   `json:"goal,omitempty"`
-		Models   []string `json:"models,omitempty"`
+		Action          string   `json:"action"` // "recommend" or "optimize"
+		Hardware        string   `json:"hardware"`
+		HardwareProfile string   `json:"hardware_profile"`
+		Model           string   `json:"model"`
+		Engine          string   `json:"engine,omitempty"`
+		ConfigID        string   `json:"config_id,omitempty"`
+		Goal            string   `json:"goal,omitempty"`
+		Models          []string `json:"models,omitempty"`
 	}
 	limited := http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(limited).Decode(&req); err != nil {
@@ -484,9 +492,10 @@ func (s *Server) handleAdvise(w http.ResponseWriter, r *http.Request) {
 	switch req.Action {
 	case "recommend":
 		resp, advisory, err := adv.Recommend(ctx, RecommendRequest{
-			Hardware: req.Hardware,
-			Model:    req.Model,
-			Goal:     req.Goal,
+			Hardware:        req.Hardware,
+			HardwareProfile: req.HardwareProfile,
+			Model:           req.Model,
+			Goal:            req.Goal,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -514,28 +523,50 @@ func (s *Server) handleAdvise(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListAdvisories(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	limit := parseLimit(q.Get("limit"), 50)
+	hardware := q.Get("hardware")
+	if hardware == "" {
+		hardware = q.Get("target_hardware")
+	}
+	_, _ = s.store.ExpireAdvisories(r.Context(), time.Now().UTC().Add(-30*24*time.Hour))
 	advs, err := s.store.ListAdvisories(r.Context(), AdvisoryFilter{
 		Type:     q.Get("type"),
+		Status:   q.Get("status"),
 		Severity: q.Get("severity"),
-		Hardware: q.Get("hardware"),
+		Hardware: hardware,
+		Model:    firstNonEmpty(q.Get("model"), q.Get("target_model")),
+		Engine:   firstNonEmpty(q.Get("engine"), q.Get("target_engine")),
+		Limit:    limit,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if q.Get("status") == AdvisoryStatusPending {
+		deliveredAt := nowRFC3339()
+		for i := range advs {
+			if err := s.store.UpdateAdvisoryStatus(r.Context(), advs[i].ID, AdvisoryStatusUpdate{
+				Status:      AdvisoryStatusDelivered,
+				DeliveredAt: deliveredAt,
+			}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			advs[i].Status = AdvisoryStatusDelivered
+			advs[i].DeliveredAt = deliveredAt
+		}
 	}
 	writeJSON(w, advs)
 }
 
 func (s *Server) handleAdvisoryFeedback(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		http.Error(w, "missing advisory id", http.StatusBadRequest)
-		return
-	}
-
 	var req struct {
-		Feedback string `json:"feedback"`
-		Accepted bool   `json:"accepted"`
+		AdvisoryID string `json:"advisory_id"`
+		Status     string `json:"status"`
+		Feedback   string `json:"feedback"`
+		Reason     string `json:"reason"`
+		Accepted   *bool  `json:"accepted"`
 	}
 	limited := http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(limited).Decode(&req); err != nil {
@@ -543,11 +574,40 @@ func (s *Server) handleAdvisoryFeedback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.store.UpdateAdvisoryFeedback(r.Context(), id, req.Feedback, req.Accepted); err != nil {
+	if id == "" {
+		id = req.AdvisoryID
+	}
+	if id == "" {
+		http.Error(w, "missing advisory id", http.StatusBadRequest)
+		return
+	}
+
+	status := req.Status
+	if status == "" && req.Accepted != nil {
+		if *req.Accepted {
+			status = AdvisoryStatusValidated
+		} else {
+			status = AdvisoryStatusRejected
+		}
+	}
+	if status != AdvisoryStatusValidated && status != AdvisoryStatusRejected {
+		http.Error(w, "status must be 'validated' or 'rejected'", http.StatusBadRequest)
+		return
+	}
+	feedback := strings.TrimSpace(req.Feedback)
+	if feedback == "" {
+		feedback = strings.TrimSpace(req.Reason)
+	}
+
+	if err := s.store.UpdateAdvisoryStatus(r.Context(), id, AdvisoryStatusUpdate{
+		Status:      status,
+		Feedback:    feedback,
+		ValidatedAt: nowRFC3339(),
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true})
+	writeJSON(w, map[string]any{"ok": true, "advisory_id": id, "status": status})
 }
 
 func (s *Server) handleScenarioGenerate(w http.ResponseWriter, r *http.Request) {
@@ -573,8 +633,16 @@ func (s *Server) handleScenarioGenerate(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleListScenarios(w http.ResponseWriter, r *http.Request) {
+	hardware := r.URL.Query().Get("hardware")
+	if hardware == "" {
+		hardware = r.URL.Query().Get("hardware_profile")
+	}
 	scenarios, err := s.store.ListScenarios(r.Context(), ScenarioFilter{
-		Hardware: r.URL.Query().Get("hardware"),
+		Name:       r.URL.Query().Get("name"),
+		Hardware:   hardware,
+		Source:     r.URL.Query().Get("source"),
+		AdvisoryID: r.URL.Query().Get("advisory_id"),
+		Limit:      parseLimit(r.URL.Query().Get("limit"), 100),
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -584,7 +652,7 @@ func (s *Server) handleListScenarios(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAnalysis(w http.ResponseWriter, r *http.Request) {
-	runs, err := s.store.ListAnalysisRuns(r.Context(), 20)
+	runs, err := s.store.ListAnalysisRuns(r.Context(), parseLimit(r.URL.Query().Get("limit"), 20))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -595,4 +663,24 @@ func (s *Server) handleListAnalysis(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+func parseLimit(v string, fallback int) int {
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

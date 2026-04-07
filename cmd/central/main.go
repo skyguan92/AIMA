@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/jguan/aima/internal/central"
 )
@@ -26,23 +29,43 @@ func main() {
 	defer srv.Close()
 
 	// Set up advisor and analyzer if LLM is configured
-	if llmURL := os.Getenv("LLM_BASE_URL"); llmURL != "" {
-		llmKey := os.Getenv("LLM_API_KEY")
-		llmModel := envOr("LLM_MODEL", "gpt-4")
+	llmEndpoint := firstEnv("CENTRAL_LLM_ENDPOINT", "LLM_BASE_URL")
+	llmKey := firstEnv("CENTRAL_LLM_API_KEY", "LLM_API_KEY")
+	llmModel := firstEnv("CENTRAL_LLM_MODEL", "LLM_MODEL")
+	if llmModel == "" {
+		llmModel = "gpt-4"
+	}
 
-		completer := central.NewOpenAICompleter(llmURL, llmKey, central.WithOpenAIModel(llmModel))
+	if llmEndpoint != "" {
+		completer := central.NewOpenAICompleter(llmEndpoint, llmKey, central.WithOpenAIModel(llmModel))
 
 		advisor := central.NewAdvisor(srv.Store(), completer)
 		srv.SetAdvisor(advisor)
-		slog.Info("advisor enabled", "llm_url", llmURL, "model", llmModel)
+		slog.Info("advisor enabled", "llm_endpoint", llmEndpoint, "model", llmModel)
 
-		analyzer := central.NewAnalyzer(srv.Store(), completer)
-		srv.SetAnalyzer(analyzer)
-		analyzer.Start(context.Background())
-		defer analyzer.Stop()
-		slog.Info("analyzer started")
+		if envBool("CENTRAL_ANALYZER_ENABLED", true) {
+			analyzerCfg := central.AnalyzerConfig{
+				InitialDelay:           envDuration("CENTRAL_ANALYZER_INITIAL_DELAY", 30*time.Second),
+				GapScanInterval:        envDuration("CENTRAL_ANALYZER_GAP_INTERVAL", 24*time.Hour),
+				PatternInterval:        envDuration("CENTRAL_ANALYZER_PATTERN_INTERVAL", 7*24*time.Hour),
+				ScenarioHealthInterval: envDuration("CENTRAL_ANALYZER_SCENARIO_INTERVAL", 7*24*time.Hour),
+				PostIngestDelay:        envDuration("CENTRAL_ANALYZER_POST_INGEST_DELAY", 5*time.Minute),
+				AdvisoryTTL:            envDuration("CENTRAL_ANALYZER_ADVISORY_TTL", 30*24*time.Hour),
+			}
+			analyzer := central.NewAnalyzer(srv.Store(), completer, central.WithAnalyzerConfig(analyzerCfg))
+			srv.SetAnalyzer(analyzer)
+			analyzer.Start(context.Background())
+			defer analyzer.Stop()
+			slog.Info("analyzer started",
+				"gap_interval", analyzerCfg.GapScanInterval,
+				"pattern_interval", analyzerCfg.PatternInterval,
+				"scenario_interval", analyzerCfg.ScenarioHealthInterval,
+				"post_ingest_delay", analyzerCfg.PostIngestDelay)
+		} else {
+			slog.Info("analyzer disabled", "env", "CENTRAL_ANALYZER_ENABLED")
+		}
 	} else {
-		slog.Info("advisor/analyzer disabled: LLM_BASE_URL not set")
+		slog.Info("advisor/analyzer disabled: no LLM endpoint configured")
 	}
 
 	if err := srv.ListenAndServe(); err != nil {
@@ -54,6 +77,39 @@ func main() {
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if v := os.Getenv(key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			slog.Warn("invalid duration env, using fallback", "key", key, "value", v, "fallback", fallback)
+			return fallback
+		}
+		return parsed
+	}
+	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			slog.Warn("invalid bool env, using fallback", "key", key, "value", v, "fallback", fallback)
+			return fallback
+		}
+		return parsed
 	}
 	return fallback
 }
