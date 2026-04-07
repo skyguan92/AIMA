@@ -46,7 +46,7 @@ var profileIncludes = map[Profile][]string{
 	},
 	ProfileExplorer: {
 		"deploy.apply", "deploy.approve", "deploy.dry_run", "deploy.status", "deploy.list", "deploy.logs",
-		"benchmark.", "explore.", "tuning.",
+		"benchmark.", "explore.", "tuning.", "explorer.",
 		"knowledge.resolve", "knowledge.search_configs", "knowledge.promote",
 		"knowledge.save", "knowledge.validate",
 		"hardware.detect", "hardware.metrics",
@@ -256,4 +256,5 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	registerSystemTools(s, deps)
 	registerAgentTools(s, deps)
 	registerIntegrationTools(s, deps)
+	registerExplorerTools(s, deps)
 }
