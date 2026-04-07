@@ -26,7 +26,17 @@ func (p *LLMPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, 
 	if err != nil {
 		return nil, fmt.Errorf("LLM plan generation: %w", err)
 	}
-	return parsePlanResponse(resp.Content)
+	plan, err := parsePlanResponse(resp.Content)
+	if err != nil {
+		return nil, err
+	}
+	defaultHardware := firstTaskHardware(input.Hardware.Profile, input.Hardware.GPUArch)
+	for i := range plan.Tasks {
+		if plan.Tasks[i].Hardware == "" {
+			plan.Tasks[i].Hardware = defaultHardware
+		}
+	}
+	return plan, nil
 }
 
 const llmPlannerSystemPrompt = `You are an AI inference optimization planner. Given device hardware info, knowledge gaps, and deployment state, generate an exploration plan as JSON.

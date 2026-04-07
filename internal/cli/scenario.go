@@ -91,7 +91,8 @@ func newScenarioGenerateCmd(app *App) *cobra.Command {
 		Use:   "generate --hardware <profile> --models <model1,model2,...>",
 		Short: "Generate a multi-model deployment scenario via central AI advisor",
 		Long: `Request the central server to generate an AI-powered deployment scenario
-for the given hardware and model set. Requires central.endpoint to be configured.
+for the given hardware and model set. The response is normalized to the edge-facing
+v2 scenario shape when possible. Requires central.endpoint to be configured.
 
 Examples:
   aima scenario generate --hardware nvidia-gb10-arm64 --models qwen3-8b,glm-4.7-flash
@@ -129,7 +130,9 @@ func newScenarioListCentralCmd(app *App) *cobra.Command {
 		Use:   "list-central",
 		Short: "List deployment scenarios from the central server",
 		Long: `List AI-generated or manually uploaded deployment scenarios from the central
-knowledge server. Requires central.endpoint to be configured.
+knowledge server. The edge client normalizes the result shape and applies the
+source filter locally if the central server does not support it yet.
+Requires central.endpoint to be configured.
 
 Examples:
   aima scenario list-central

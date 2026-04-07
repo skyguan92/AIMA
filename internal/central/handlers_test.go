@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func setupTestServer(t *testing.T) (*Server, *httptest.Server) {
@@ -127,11 +128,17 @@ func TestHandleListAdvisories(t *testing.T) {
 
 	// Seed an advisory
 	_ = srv.Store().InsertAdvisory(context.Background(), Advisory{
-		ID: "adv-h1", Type: "recommendation", Severity: "info",
-		Title: "Test", CreatedAt: "2026-01-01T00:00:00Z",
+		ID:             "adv-h1",
+		Type:           AdvisoryTypeConfigRecommend,
+		Status:         AdvisoryStatusPending,
+		Severity:       "info",
+		TargetHardware: "nvidia-rtx4090",
+		Title:          "Test",
+		ContentJSON:    []byte(`{"engine":"vllm"}`),
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	})
 
-	resp := doRequest(t, "GET", httpSrv.URL+"/api/v1/advisories?type=recommendation", nil, "test-key")
+	resp := doRequest(t, "GET", httpSrv.URL+"/api/v1/advisories?type=config_recommend&status=pending", nil, "test-key")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -145,19 +152,28 @@ func TestHandleListAdvisories(t *testing.T) {
 	if len(advs) != 1 {
 		t.Fatalf("advisories = %d, want 1", len(advs))
 	}
+	if advs[0].Status != AdvisoryStatusDelivered {
+		t.Fatalf("status = %q, want delivered after pull", advs[0].Status)
+	}
 }
 
 func TestHandleAdvisoryFeedback(t *testing.T) {
 	srv, httpSrv := setupTestServer(t)
 
 	_ = srv.Store().InsertAdvisory(context.Background(), Advisory{
-		ID: "adv-fb1", Type: "recommendation", Severity: "info",
-		Title: "Test", CreatedAt: "2026-01-01T00:00:00Z",
+		ID:             "adv-fb1",
+		Type:           AdvisoryTypeConfigRecommend,
+		Status:         AdvisoryStatusDelivered,
+		Severity:       "info",
+		TargetHardware: "nvidia-rtx4090",
+		Title:          "Test",
+		ContentJSON:    []byte(`{"engine":"vllm"}`),
+		CreatedAt:      "2026-01-01T00:00:00Z",
 	})
 
 	resp := doRequest(t, "POST", httpSrv.URL+"/api/v1/advisories/adv-fb1/feedback", map[string]any{
+		"status":   "validated",
 		"feedback": "very helpful",
-		"accepted": true,
 	}, "test-key")
 	defer resp.Body.Close()
 
@@ -169,7 +185,7 @@ func TestHandleAdvisoryFeedback(t *testing.T) {
 	advs, _ := srv.Store().ListAdvisories(context.Background(), AdvisoryFilter{})
 	found := false
 	for _, a := range advs {
-		if a.ID == "adv-fb1" && a.Feedback == "very helpful" && a.Accepted {
+		if a.ID == "adv-fb1" && a.Feedback == "very helpful" && a.Accepted && a.Status == AdvisoryStatusValidated {
 			found = true
 		}
 	}
@@ -181,8 +197,10 @@ func TestHandleAdvisoryFeedback(t *testing.T) {
 func TestHandleAdvisoryFeedbackNotFound(t *testing.T) {
 	_, httpSrv := setupTestServer(t)
 
-	resp := doRequest(t, "POST", httpSrv.URL+"/api/v1/advisories/nonexistent/feedback", map[string]any{
-		"feedback": "test",
+	resp := doRequest(t, "POST", httpSrv.URL+"/api/v1/advisory/feedback", map[string]any{
+		"advisory_id": "nonexistent",
+		"status":      "rejected",
+		"feedback":    "test",
 	}, "test-key")
 	defer resp.Body.Close()
 
@@ -220,11 +238,17 @@ func TestHandleListScenarios(t *testing.T) {
 	srv, httpSrv := setupTestServer(t)
 
 	_ = srv.Store().InsertScenario(context.Background(), Scenario{
-		ID: "scn-h1", Name: "test", Hardware: "nvidia-rtx4090",
-		Models: "[]", Config: "{}", CreatedAt: "2026-01-01T00:00:00Z",
+		ID:              "scn-h1",
+		Name:            "test",
+		HardwareProfile: "nvidia-rtx4090",
+		ScenarioYAML:    "deployments: []",
+		Source:          "generated",
+		Version:         1,
+		CreatedAt:       "2026-01-01T00:00:00Z",
+		UpdatedAt:       "2026-01-01T00:00:00Z",
 	})
 
-	resp := doRequest(t, "GET", httpSrv.URL+"/api/v1/scenarios?hardware=nvidia-rtx4090", nil, "test-key")
+	resp := doRequest(t, "GET", httpSrv.URL+"/api/v1/scenarios?hardware=nvidia-rtx4090&source=generated", nil, "test-key")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -244,8 +268,12 @@ func TestHandleListAnalysis(t *testing.T) {
 	srv, httpSrv := setupTestServer(t)
 
 	_ = srv.Store().InsertAnalysisRun(context.Background(), AnalysisRun{
-		ID: "run-h1", Type: "gap_scan", Status: "completed",
-		Summary: "test", CreatedAt: "2026-01-01T00:00:00Z",
+		ID:        "run-h1",
+		Type:      AnalysisTypeGapScan,
+		Status:    AnalysisStatusCompleted,
+		Summary:   "test",
+		StartedAt: "2026-01-01T00:00:00Z",
+		CreatedAt: "2026-01-01T00:00:00Z",
 	})
 
 	resp := doRequest(t, "GET", httpSrv.URL+"/api/v1/analysis", nil, "test-key")

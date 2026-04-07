@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -422,10 +423,106 @@ func run() error {
 	)
 
 	// 9h. Explorer subsystem (v0.4) with advisory feedback bridge
-	explorer := agent.NewExplorer(agent.ExplorerConfig{
-		Schedule: agent.DefaultScheduleConfig(),
-		Enabled:  true,
-	}, goAgent, explorationMgr, db, eventBus,
+	explorer := agent.NewExplorer(loadExplorerConfig(ctx, db), goAgent, explorationMgr, db, eventBus,
+		agent.WithGatherHardware(func(ctx context.Context) (agent.HardwareInfo, error) {
+			hw := buildHardwareInfo(ctx, cat, rt.Name())
+			return agent.HardwareInfo{
+				Profile:  hw.HardwareProfile,
+				GPUArch:  hw.GPUArch,
+				GPUCount: hw.GPUCount,
+				VRAMMiB:  hw.GPUVRAMMiB,
+			}, nil
+		}),
+		agent.WithGatherGaps(func(ctx context.Context) ([]agent.GapEntry, error) {
+			hw := buildHardwareInfo(ctx, cat, rt.Name())
+			if hw.HardwareProfile == "" {
+				return nil, nil
+			}
+			gaps, err := knowledgeStore.Gaps(ctx, knowledge.GapsParams{
+				Hardware:      hw.HardwareProfile,
+				MinBenchmarks: 3,
+			})
+			if err != nil {
+				return nil, err
+			}
+			entries := make([]agent.GapEntry, 0, len(gaps))
+			for _, gap := range gaps {
+				entries = append(entries, agent.GapEntry{
+					Model:          gap.ModelID,
+					Engine:         gap.EngineType,
+					Hardware:       gap.HardwareID,
+					BenchmarkCount: gap.BenchmarkCount,
+				})
+			}
+			return entries, nil
+		}),
+		agent.WithGatherDeploys(func(ctx context.Context) ([]agent.DeployStatus, error) {
+			if deps.DeployList == nil {
+				return nil, nil
+			}
+			data, err := deps.DeployList(ctx)
+			if err != nil {
+				return nil, err
+			}
+			var deployments []runtime.DeploymentStatus
+			if err := json.Unmarshal(data, &deployments); err != nil {
+				return nil, fmt.Errorf("parse deploy list for explorer: %w", err)
+			}
+			statuses := make([]agent.DeployStatus, 0, len(deployments))
+			for _, deployment := range deployments {
+				modelName := deployment.Labels["aima.dev/model"]
+				engineType := deployment.Labels["aima.dev/engine"]
+				if modelName == "" || engineType == "" {
+					continue
+				}
+				statuses = append(statuses, agent.DeployStatus{
+					Model:  modelName,
+					Engine: engineType,
+					Status: deployment.Phase,
+				})
+			}
+			return statuses, nil
+		}),
+		agent.WithGatherOpenQuestions(func(ctx context.Context) ([]agent.OpenQuestion, error) {
+			rows, err := db.ListOpenQuestions(ctx, "untested")
+			if err != nil {
+				return nil, err
+			}
+			questions := make([]agent.OpenQuestion, 0, len(rows))
+			for _, row := range rows {
+				modelName := firstNonEmpty(stringField(row, "model"), stringField(row, "target_model"))
+				engineType := firstNonEmpty(stringField(row, "engine"), stringField(row, "target_engine"))
+				if modelName == "" {
+					continue
+				}
+				questions = append(questions, agent.OpenQuestion{
+					ID:       stringField(row, "id"),
+					Hardware: stringField(row, "hardware"),
+					Model:    modelName,
+					Engine:   engineType,
+					Question: stringField(row, "question"),
+					Status:   firstNonEmpty(stringField(row, "status"), "untested"),
+				})
+			}
+			return questions, nil
+		}),
+		agent.WithExplorerSaveNote(func(ctx context.Context, title, content, hardware, model, engine string) error {
+			return db.InsertNote(ctx, &state.KnowledgeNote{
+				Title:           title,
+				HardwareProfile: hardware,
+				Model:           model,
+				Engine:          engine,
+				Content:         content,
+				Confidence:      "medium",
+			})
+		}),
+		agent.WithExplorerSyncPush(func(ctx context.Context) error {
+			if deps.SyncPush == nil {
+				return nil
+			}
+			_, err := deps.SyncPush(ctx)
+			return err
+		}),
 		agent.WithAdvisoryFeedback(func(ctx context.Context, advisoryID, status, reason string) error {
 			if deps.AdvisoryFeedback == nil {
 				return nil
@@ -443,14 +540,28 @@ func run() error {
 	deps.ExplorerConfig = func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
 		var p struct {
 			Action string `json:"action"`
+			Key    string `json:"key"`
+			Value  string `json:"value"`
 		}
 		if len(params) > 0 {
-			_ = json.Unmarshal(params, &p)
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, fmt.Errorf("parse explorer config params: %w", err)
+			}
 		}
 		if p.Action == "get" || p.Action == "" {
-			return json.Marshal(explorer.Status().Schedule)
+			return json.Marshal(explorerConfigResponse(explorer))
 		}
-		return json.Marshal(map[string]string{"status": "updated"})
+		if p.Action != "set" {
+			return nil, fmt.Errorf("unsupported explorer config action %q", p.Action)
+		}
+		normalized, err := explorer.UpdateConfig(p.Key, p.Value)
+		if err != nil {
+			return nil, err
+		}
+		if err := db.SetConfig(ctx, explorerConfigStorageKey(p.Key), normalized); err != nil {
+			return nil, err
+		}
+		return json.Marshal(explorerConfigResponse(explorer))
 	}
 	deps.ExplorerTrigger = func(ctx context.Context) (json.RawMessage, error) {
 		explorer.Trigger()
@@ -483,6 +594,93 @@ func run() error {
 		rootCmd.SetArgs(args)
 	}
 	return rootCmd.ExecuteContext(ctx)
+}
+
+func loadExplorerConfig(ctx context.Context, db *state.DB) agent.ExplorerConfig {
+	config := agent.ExplorerConfig{
+		Schedule: agent.DefaultScheduleConfig(),
+		Enabled:  true,
+	}
+	if db == nil {
+		return config
+	}
+	for _, key := range []string{
+		"gap_scan_interval",
+		"sync_interval",
+		"full_audit_interval",
+		"quiet_start",
+		"quiet_end",
+		"max_concurrent_runs",
+		"enabled",
+	} {
+		value, err := db.GetConfig(ctx, explorerConfigStorageKey(key))
+		if err != nil || strings.TrimSpace(value) == "" {
+			continue
+		}
+		switch key {
+		case "gap_scan_interval":
+			if duration, parseErr := time.ParseDuration(value); parseErr == nil {
+				config.Schedule.GapScanInterval = duration
+			} else {
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
+			}
+		case "sync_interval":
+			if duration, parseErr := time.ParseDuration(value); parseErr == nil {
+				config.Schedule.SyncInterval = duration
+			} else {
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
+			}
+		case "full_audit_interval":
+			if duration, parseErr := time.ParseDuration(value); parseErr == nil {
+				config.Schedule.FullAuditInterval = duration
+			} else {
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
+			}
+		case "quiet_start":
+			if hour, parseErr := strconv.Atoi(value); parseErr == nil {
+				config.Schedule.QuietStart = hour
+			} else {
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
+			}
+		case "quiet_end":
+			if hour, parseErr := strconv.Atoi(value); parseErr == nil {
+				config.Schedule.QuietEnd = hour
+			} else {
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
+			}
+		case "max_concurrent_runs":
+			if maxRuns, parseErr := strconv.Atoi(value); parseErr == nil {
+				config.Schedule.MaxConcurrentRuns = maxRuns
+			} else {
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
+			}
+		case "enabled":
+			if enabled, parseErr := strconv.ParseBool(value); parseErr == nil {
+				config.Enabled = enabled
+			} else {
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
+			}
+		}
+	}
+	return config
+}
+
+func explorerConfigResponse(explorer *agent.Explorer) map[string]any {
+	status := explorer.Status()
+	config := status.Schedule
+	return map[string]any{
+		"enabled":             status.Enabled,
+		"gap_scan_interval":   config.GapScanInterval.String(),
+		"sync_interval":       config.SyncInterval.String(),
+		"full_audit_interval": config.FullAuditInterval.String(),
+		"quiet_start":         config.QuietStart,
+		"quiet_end":           config.QuietEnd,
+		"max_concurrent_runs": config.MaxConcurrentRuns,
+	}
+}
+
+func explorerConfigStorageKey(key string) string {
+	return "explorer." + key
 }
 
 // buildToolDeps wires all ToolDeps fields to real implementations.

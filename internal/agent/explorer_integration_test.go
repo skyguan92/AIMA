@@ -59,12 +59,18 @@ func TestExplorer_WithAgentDetectsTier(t *testing.T) {
 
 func TestExplorer_BuildPlanInputGathersData(t *testing.T) {
 	bus := NewEventBus()
+	hardwareCalled := false
 	gapsCalled := false
 	deploysCalled := false
+	openQuestionsCalled := false
 
 	e := NewExplorer(ExplorerConfig{
 		Schedule: DefaultScheduleConfig(),
 	}, nil, nil, nil, bus,
+		WithGatherHardware(func(ctx context.Context) (HardwareInfo, error) {
+			hardwareCalled = true
+			return HardwareInfo{Profile: "nvidia-gb10-arm64", GPUArch: "blackwell"}, nil
+		}),
 		WithGatherGaps(func(ctx context.Context) ([]GapEntry, error) {
 			gapsCalled = true
 			return []GapEntry{{Model: "test-model", Engine: "vllm"}}, nil
@@ -72,6 +78,10 @@ func TestExplorer_BuildPlanInputGathersData(t *testing.T) {
 		WithGatherDeploys(func(ctx context.Context) ([]DeployStatus, error) {
 			deploysCalled = true
 			return []DeployStatus{{Model: "test-model", Engine: "vllm", Status: "running"}}, nil
+		}),
+		WithGatherOpenQuestions(func(ctx context.Context) ([]OpenQuestion, error) {
+			openQuestionsCalled = true
+			return []OpenQuestion{{ID: "oq-1", Model: "test-model", Status: "untested"}}, nil
 		}),
 	)
 
@@ -81,17 +91,29 @@ func TestExplorer_BuildPlanInputGathersData(t *testing.T) {
 		t.Fatalf("buildPlanInput: %v", err)
 	}
 
+	if !hardwareCalled {
+		t.Error("gatherHardware not called")
+	}
 	if !gapsCalled {
 		t.Error("gatherGaps not called")
 	}
 	if !deploysCalled {
 		t.Error("gatherDeploys not called")
 	}
+	if !openQuestionsCalled {
+		t.Error("gatherOpenQuestions not called")
+	}
+	if input.Hardware.Profile != "nvidia-gb10-arm64" {
+		t.Errorf("hardware profile = %q, want nvidia-gb10-arm64", input.Hardware.Profile)
+	}
 	if len(input.Gaps) != 1 {
 		t.Errorf("gaps = %d, want 1", len(input.Gaps))
 	}
 	if len(input.ActiveDeploys) != 1 {
 		t.Errorf("deploys = %d, want 1", len(input.ActiveDeploys))
+	}
+	if len(input.OpenQuestions) != 1 {
+		t.Errorf("open questions = %d, want 1", len(input.OpenQuestions))
 	}
 	if input.Event.Type != EventScheduledGapScan {
 		t.Errorf("event type = %q, want %q", input.Event.Type, EventScheduledGapScan)

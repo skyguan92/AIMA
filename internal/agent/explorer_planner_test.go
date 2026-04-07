@@ -28,6 +28,9 @@ func TestRulePlanner_DeployedWithoutBenchmark(t *testing.T) {
 	if plan.Tasks[0].Model != "qwen3-8b" {
 		t.Errorf("first task model = %q, want qwen3-8b", plan.Tasks[0].Model)
 	}
+	if plan.Tasks[0].Hardware != "" {
+		t.Errorf("unexpected hardware without hardware input: %q", plan.Tasks[0].Hardware)
+	}
 	if plan.Tier != 1 {
 		t.Errorf("tier = %d, want 1", plan.Tier)
 	}
@@ -36,8 +39,9 @@ func TestRulePlanner_DeployedWithoutBenchmark(t *testing.T) {
 func TestRulePlanner_AdvisoryPriority(t *testing.T) {
 	p := &RulePlanner{}
 	plan, err := p.Plan(context.Background(), PlanInput{
+		Hardware: HardwareInfo{Profile: "nvidia-gb10-arm64"},
 		Advisories: []Advisory{
-			{ID: "adv-1", TargetModel: "qwen3-30b", TargetEngine: "vllm", Config: map[string]any{"gpu_memory_utilization": 0.78}},
+			{ID: "adv-1", TargetHardware: "nvidia-gb10-arm64", TargetModel: "qwen3-30b", TargetEngine: "vllm", Config: map[string]any{"gpu_memory_utilization": 0.78}},
 		},
 	})
 	if err != nil {
@@ -49,6 +53,9 @@ func TestRulePlanner_AdvisoryPriority(t *testing.T) {
 	found := false
 	for _, task := range plan.Tasks {
 		if task.Model == "qwen3-30b" && task.Kind == "validate" {
+			if task.Hardware != "nvidia-gb10-arm64" {
+				t.Fatalf("hardware = %q, want nvidia-gb10-arm64", task.Hardware)
+			}
 			found = true
 			break
 		}
@@ -104,6 +111,9 @@ func TestRulePlanner_OpenQuestions(t *testing.T) {
 	found := false
 	for _, task := range plan.Tasks {
 		if task.Kind == "open_question" {
+			if task.SourceRef != "q-1" {
+				t.Fatalf("source_ref = %q, want q-1", task.SourceRef)
+			}
 			found = true
 			break
 		}

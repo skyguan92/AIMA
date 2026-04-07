@@ -106,17 +106,20 @@ func TestAdvisoryLifecycle_EndToEnd(t *testing.T) {
 	}
 
 	// Step 5: send feedback
-	err = store.UpdateAdvisoryFeedback(ctx, advisory.ID,
-		"validated: 42.5 tok/s, stable", true)
+	err = store.UpdateAdvisoryStatus(ctx, advisory.ID, AdvisoryStatusUpdate{
+		Status:      AdvisoryStatusValidated,
+		Feedback:    "validated: 42.5 tok/s, stable",
+		ValidatedAt: time.Now().UTC().Format(time.RFC3339),
+	})
 	if err != nil {
-		t.Fatalf("update feedback: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 
 	// Step 6: verify feedback was recorded
 	advs, _ = store.ListAdvisories(ctx, AdvisoryFilter{})
 	for _, a := range advs {
 		if a.ID == advisory.ID {
-			if !a.Accepted {
+			if !a.Accepted || a.Status != AdvisoryStatusValidated {
 				t.Error("advisory should be accepted")
 			}
 			if a.Feedback == "" {
@@ -173,11 +176,11 @@ func TestGapScan_GeneratesAdvisories(t *testing.T) {
 	}
 
 	adv := result.Advisories[0]
-	if adv.Type != "gap" {
-		t.Errorf("advisory type = %q, want gap", adv.Type)
+	if adv.Type != AdvisoryTypeGapAlert {
+		t.Errorf("advisory type = %q, want %s", adv.Type, AdvisoryTypeGapAlert)
 	}
-	if adv.Hardware != "nvidia-gb10-arm64" {
-		t.Errorf("advisory hardware = %q, want nvidia-gb10-arm64", adv.Hardware)
+	if adv.TargetHardware != "nvidia-gb10-arm64" {
+		t.Errorf("advisory hardware = %q, want nvidia-gb10-arm64", adv.TargetHardware)
 	}
 	if adv.Severity != "warning" {
 		t.Errorf("advisory severity = %q, want warning (high priority)", adv.Severity)
@@ -239,6 +242,9 @@ func TestScenarioGeneration_EndToEnd(t *testing.T) {
 	if scenario == nil || scenario.ID == "" {
 		t.Fatal("scenario should be stored with an ID")
 	}
+	if scenario.ScenarioYAML == "" {
+		t.Fatal("scenario yaml should be populated")
+	}
 
 	// Verify scenario was persisted
 	scenarios, err := store.ListScenarios(ctx, ScenarioFilter{Hardware: "nvidia-rtx4090-x86"})
@@ -256,17 +262,18 @@ func TestSyncPullAdvisories_JSONShape(t *testing.T) {
 
 	// Insert an advisory directly
 	_ = store.InsertAdvisory(ctx, Advisory{
-		ID:         "adv-test-1",
-		Type:       "recommendation",
-		Severity:   "info",
-		Hardware:   "nvidia-gb10-arm64",
-		Model:      "qwen3-8b",
-		Engine:     "vllm",
-		Title:      "Test Advisory",
-		Summary:    "Test summary",
-		Details:    `{"engine":"vllm"}`,
-		Confidence: "high",
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+		ID:             "adv-test-1",
+		Type:           AdvisoryTypeConfigRecommend,
+		Status:         AdvisoryStatusPending,
+		Severity:       "info",
+		TargetHardware: "nvidia-gb10-arm64",
+		TargetModel:    "qwen3-8b",
+		TargetEngine:   "vllm",
+		Title:          "Test Advisory",
+		Reasoning:      "Test summary",
+		ContentJSON:    []byte(`{"engine":"vllm"}`),
+		Confidence:     "high",
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	})
 
 	// List advisories (mirrors what the edge pulls)
@@ -290,7 +297,7 @@ func TestSyncPullAdvisories_JSONShape(t *testing.T) {
 	if decoded[0].ID != "adv-test-1" {
 		t.Errorf("advisory ID = %q, want adv-test-1", decoded[0].ID)
 	}
-	if decoded[0].Model != "qwen3-8b" {
-		t.Errorf("advisory model = %q, want qwen3-8b", decoded[0].Model)
+	if decoded[0].TargetModel != "qwen3-8b" {
+		t.Errorf("advisory model = %q, want qwen3-8b", decoded[0].TargetModel)
 	}
 }

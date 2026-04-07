@@ -59,12 +59,15 @@ func TestAdvisorRecommend(t *testing.T) {
 	if adv == nil {
 		t.Fatal("advisory should not be nil")
 	}
-	if adv.Type != "recommendation" {
-		t.Fatalf("advisory type = %q, want recommendation", adv.Type)
+	if adv.Type != AdvisoryTypeConfigRecommend {
+		t.Fatalf("advisory type = %q, want %s", adv.Type, AdvisoryTypeConfigRecommend)
+	}
+	if adv.Status != AdvisoryStatusPending {
+		t.Fatalf("status = %q, want pending", adv.Status)
 	}
 
 	// Verify advisory was stored
-	advs, err := store.ListAdvisories(context.Background(), AdvisoryFilter{Type: "recommendation"})
+	advs, err := store.ListAdvisories(context.Background(), AdvisoryFilter{Type: AdvisoryTypeConfigRecommend})
 	if err != nil {
 		t.Fatalf("ListAdvisories: %v", err)
 	}
@@ -97,8 +100,8 @@ func TestAdvisorOptimize(t *testing.T) {
 	if len(resp.Optimizations) != 1 {
 		t.Fatalf("optimizations = %d, want 1", len(resp.Optimizations))
 	}
-	if adv.Type != "optimization" {
-		t.Fatalf("advisory type = %q, want optimization", adv.Type)
+	if adv.Type != AdvisoryTypeScenarioOptimization {
+		t.Fatalf("advisory type = %q, want %s", adv.Type, AdvisoryTypeScenarioOptimization)
 	}
 }
 
@@ -136,6 +139,9 @@ func TestAdvisorGenerateScenario(t *testing.T) {
 	}
 	if len(scenarios) != 1 {
 		t.Fatalf("scenarios = %d, want 1", len(scenarios))
+	}
+	if scenarios[0].ScenarioYAML == "" {
+		t.Fatal("scenario yaml should not be empty")
 	}
 }
 

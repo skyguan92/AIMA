@@ -57,3 +57,28 @@ func TestHarvester_ShouldPromote(t *testing.T) {
 		})
 	}
 }
+
+func TestHarvester_SaveNoteIncludesHardware(t *testing.T) {
+	var gotHardware string
+	h := NewHarvester(1, WithSaveNote(func(ctx context.Context, title, content, hardware, model, engine string) error {
+		gotHardware = hardware
+		return nil
+	}))
+
+	h.Harvest(context.Background(), HarvestInput{
+		Task: PlanTask{
+			Hardware: "nvidia-gb10-arm64",
+			Model:    "qwen3-8b",
+			Engine:   "vllm",
+		},
+		Result: HarvestResult{
+			Success:    true,
+			Throughput: 42,
+			TTFTP95:    200,
+		},
+	})
+
+	if gotHardware != "nvidia-gb10-arm64" {
+		t.Fatalf("hardware = %q, want nvidia-gb10-arm64", gotHardware)
+	}
+}

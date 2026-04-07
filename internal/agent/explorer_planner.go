@@ -47,17 +47,19 @@ type GapEntry struct {
 }
 
 type Advisory struct {
-	ID           string
-	Type         string
-	TargetModel  string
-	TargetEngine string
-	Config       map[string]any
-	Confidence   string
-	Reasoning    string
+	ID             string
+	Type           string
+	TargetHardware string
+	TargetModel    string
+	TargetEngine   string
+	Config         map[string]any
+	Confidence     string
+	Reasoning      string
 }
 
 type OpenQuestion struct {
 	ID       string
+	Hardware string
 	Model    string
 	Engine   string
 	Question string
@@ -75,9 +77,11 @@ type ExplorerPlan struct {
 
 // PlanTask is a single exploration unit.
 type PlanTask struct {
-	Kind      string         `json:"kind"`      // "validate", "tune", "open_question", "compare"
+	Kind      string         `json:"kind"` // "validate", "tune", "open_question", "compare"
+	Hardware  string         `json:"hardware,omitempty"`
 	Model     string         `json:"model"`
 	Engine    string         `json:"engine"`
+	SourceRef string         `json:"source_ref,omitempty"`
 	Params    map[string]any `json:"params,omitempty"`
 	Reason    string         `json:"reason"`
 	Priority  int            `json:"priority"`
@@ -89,6 +93,7 @@ type RulePlanner struct{}
 
 func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, error) {
 	var tasks []PlanTask
+	defaultHardware := firstTaskHardware(input.Hardware.Profile, input.Hardware.GPUArch)
 
 	// Rule 1: deployed models without benchmarks -- highest priority
 	for _, d := range input.ActiveDeploys {
@@ -98,6 +103,7 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 		if !hasHistoryFor(input.History, d.Model, d.Engine) {
 			tasks = append(tasks, PlanTask{
 				Kind:     "validate",
+				Hardware: defaultHardware,
 				Model:    d.Model,
 				Engine:   d.Engine,
 				Priority: 0,
@@ -109,12 +115,14 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 	// Rule 2: central advisories -- verify recommended configs
 	for _, adv := range input.Advisories {
 		tasks = append(tasks, PlanTask{
-			Kind:     "validate",
-			Model:    adv.TargetModel,
-			Engine:   adv.TargetEngine,
-			Params:   adv.Config,
-			Priority: 1,
-			Reason:   fmt.Sprintf("verify central advisory %s", adv.ID),
+			Kind:      "validate",
+			Hardware:  firstTaskHardware(adv.TargetHardware, defaultHardware),
+			Model:     adv.TargetModel,
+			Engine:    adv.TargetEngine,
+			Params:    adv.Config,
+			SourceRef: adv.ID,
+			Priority:  1,
+			Reason:    fmt.Sprintf("verify central advisory %s", adv.ID),
 		})
 	}
 
@@ -128,6 +136,7 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 		}
 		tasks = append(tasks, PlanTask{
 			Kind:     "validate",
+			Hardware: firstTaskHardware(gap.Hardware, defaultHardware),
 			Model:    gap.Model,
 			Engine:   gap.Engine,
 			Priority: 2 + i,
@@ -141,11 +150,13 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 			continue
 		}
 		tasks = append(tasks, PlanTask{
-			Kind:     "open_question",
-			Model:    q.Model,
-			Engine:   q.Engine,
-			Priority: 5,
-			Reason:   fmt.Sprintf("open question %s", q.ID),
+			Kind:      "open_question",
+			Hardware:  firstTaskHardware(q.Hardware, defaultHardware),
+			Model:     q.Model,
+			Engine:    q.Engine,
+			SourceRef: q.ID,
+			Priority:  5,
+			Reason:    fmt.Sprintf("open question %s", q.ID),
 		})
 	}
 
@@ -168,6 +179,15 @@ func hasHistoryFor(history []ExplorationRun, model, engine string) bool {
 		}
 	}
 	return false
+}
+
+func firstTaskHardware(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // ExplorationRun is re-exported from state for plan input convenience.

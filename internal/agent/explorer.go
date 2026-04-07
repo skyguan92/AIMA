@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -19,11 +20,12 @@ type ExplorerConfig struct {
 
 // ExplorerStatus reports the Explorer's current state.
 type ExplorerStatus struct {
-	Running    bool            `json:"running"`
-	Tier       int             `json:"tier"`
-	ActivePlan *ExplorerPlan   `json:"active_plan,omitempty"`
-	Schedule   ScheduleConfig  `json:"schedule"`
-	LastRun    time.Time       `json:"last_run,omitempty"`
+	Running    bool           `json:"running"`
+	Enabled    bool           `json:"enabled"`
+	Tier       int            `json:"tier"`
+	ActivePlan *ExplorerPlan  `json:"active_plan,omitempty"`
+	Schedule   ScheduleConfig `json:"schedule"`
+	LastRun    time.Time      `json:"last_run,omitempty"`
 }
 
 // Explorer orchestrates autonomous knowledge discovery on edge devices.
@@ -38,18 +40,26 @@ type Explorer struct {
 	harvester *Harvester
 
 	// Data gathering functions, wired via options or buildToolDeps.
-	gatherGaps    func(ctx context.Context) ([]GapEntry, error)
-	gatherDeploys func(ctx context.Context) ([]DeployStatus, error)
+	gatherHardware      func(ctx context.Context) (HardwareInfo, error)
+	gatherGaps          func(ctx context.Context) ([]GapEntry, error)
+	gatherDeploys       func(ctx context.Context) ([]DeployStatus, error)
+	gatherOpenQuestions func(ctx context.Context) ([]OpenQuestion, error)
+
+	// Harvester callbacks, wired via options or buildToolDeps.
+	syncPush func(ctx context.Context) error
+	saveNote func(ctx context.Context, title, content, hardware, model, engine string) error
 
 	// Advisory feedback callback, wired via WithAdvisoryFeedback.
 	advisoryFeedback func(ctx context.Context, advisoryID, status, reason string) error
 
-	mu         sync.RWMutex
-	running    bool
-	tier       int
-	activePlan *ExplorerPlan
-	lastRun    time.Time
-	cancel     context.CancelFunc
+	mu               sync.RWMutex
+	running          bool
+	tier             int
+	activePlan       *ExplorerPlan
+	lastRun          time.Time
+	cancel           context.CancelFunc
+	activeExecutions int
+	slotWaiters      chan struct{}
 }
 
 // ExplorerOption configures the Explorer.
@@ -60,9 +70,29 @@ func WithGatherGaps(fn func(ctx context.Context) ([]GapEntry, error)) ExplorerOp
 	return func(e *Explorer) { e.gatherGaps = fn }
 }
 
+// WithGatherHardware sets the function to gather hardware context.
+func WithGatherHardware(fn func(ctx context.Context) (HardwareInfo, error)) ExplorerOption {
+	return func(e *Explorer) { e.gatherHardware = fn }
+}
+
 // WithGatherDeploys sets the function to gather active deployments.
 func WithGatherDeploys(fn func(ctx context.Context) ([]DeployStatus, error)) ExplorerOption {
 	return func(e *Explorer) { e.gatherDeploys = fn }
+}
+
+// WithGatherOpenQuestions sets the function to gather open questions.
+func WithGatherOpenQuestions(fn func(ctx context.Context) ([]OpenQuestion, error)) ExplorerOption {
+	return func(e *Explorer) { e.gatherOpenQuestions = fn }
+}
+
+// WithExplorerSyncPush sets the callback for sync push after successful harvest.
+func WithExplorerSyncPush(fn func(ctx context.Context) error) ExplorerOption {
+	return func(e *Explorer) { e.syncPush = fn }
+}
+
+// WithExplorerSaveNote sets the callback for durable knowledge-note persistence.
+func WithExplorerSaveNote(fn func(ctx context.Context, title, content, hardware, model, engine string) error) ExplorerOption {
+	return func(e *Explorer) { e.saveNote = fn }
 }
 
 // WithAdvisoryFeedback sets the callback for sending advisory feedback to central.
@@ -72,19 +102,22 @@ func WithAdvisoryFeedback(fn func(ctx context.Context, advisoryID, status, reaso
 
 func NewExplorer(config ExplorerConfig, agent *Agent, explMgr *ExplorationManager, db *state.DB, bus *EventBus, opts ...ExplorerOption) *Explorer {
 	e := &Explorer{
-		config:  config,
-		agent:   agent,
-		explMgr: explMgr,
-		db:      db,
-		bus:     bus,
+		config:      config,
+		agent:       agent,
+		explMgr:     explMgr,
+		db:          db,
+		bus:         bus,
+		slotWaiters: make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(e)
 	}
+	e.config.Schedule = normalizeScheduleConfig(e.config.Schedule)
 	e.tier = e.detectTier()
-	e.scheduler = NewScheduler(config.Schedule, bus)
-	e.setupPlanner()
-	e.harvester = NewHarvester(e.tier)
+	e.scheduler = NewScheduler(e.config.Schedule, bus)
+	e.config.Schedule = e.scheduler.Config()
+	e.setupPlannerLocked()
+	e.harvester = e.buildHarvesterLocked()
 	return e
 }
 
@@ -99,7 +132,7 @@ func (e *Explorer) detectTier() int {
 	return 1 // context_only or unknown
 }
 
-func (e *Explorer) setupPlanner() {
+func (e *Explorer) setupPlannerLocked() {
 	if e.tier >= 2 && e.agent != nil {
 		e.planner = NewLLMPlanner(e.agent)
 	} else {
@@ -107,12 +140,22 @@ func (e *Explorer) setupPlanner() {
 	}
 }
 
+func (e *Explorer) buildHarvesterLocked() *Harvester {
+	opts := make([]HarvesterOption, 0, 3)
+	if e.tier >= 2 && e.agent != nil && e.agent.llm != nil {
+		opts = append(opts, WithHarvesterLLM(e.agent.llm))
+	}
+	if e.syncPush != nil {
+		opts = append(opts, WithSyncPush(e.syncPush))
+	}
+	if e.saveNote != nil {
+		opts = append(opts, WithSaveNote(e.saveNote))
+	}
+	return NewHarvester(e.tier, opts...)
+}
+
 // Start begins the Explorer's background loops.
 func (e *Explorer) Start(ctx context.Context) {
-	if !e.config.Enabled {
-		slog.Info("explorer disabled")
-		return
-	}
 	e.mu.Lock()
 	if e.running {
 		e.mu.Unlock()
@@ -121,8 +164,20 @@ func (e *Explorer) Start(ctx context.Context) {
 	ctx, e.cancel = context.WithCancel(ctx)
 	e.running = true
 	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.running = false
+		if e.activeExecutions == 0 {
+			e.activePlan = nil
+		}
+		e.mu.Unlock()
+	}()
 
-	slog.Info("explorer started", "tier", e.tier)
+	if e.isEnabled() {
+		slog.Info("explorer started", "tier", e.tier)
+	} else {
+		slog.Info("explorer started in disabled mode", "tier", e.tier)
+	}
 
 	// Start scheduler (emits timed events)
 	e.scheduler.StartAll(ctx)
@@ -155,11 +210,30 @@ func (e *Explorer) Status() ExplorerStatus {
 	defer e.mu.RUnlock()
 	return ExplorerStatus{
 		Running:    e.running,
+		Enabled:    e.config.Enabled,
 		Tier:       e.tier,
 		ActivePlan: e.activePlan,
 		Schedule:   e.config.Schedule,
 		LastRun:    e.lastRun,
 	}
+}
+
+func (e *Explorer) isEnabled() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.config.Enabled
+}
+
+func (e *Explorer) currentPlanner() Planner {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.planner
+}
+
+func (e *Explorer) currentHarvester() *Harvester {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.harvester
 }
 
 // Trigger manually triggers a gap scan exploration cycle.
@@ -171,17 +245,19 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	slog.Debug("explorer event", "type", ev.Type)
 
 	// Re-detect tier periodically (LLM may have come online/offline)
-	newTier := e.detectTier()
-	if newTier != e.tier {
-		slog.Info("explorer tier changed", "old", e.tier, "new", newTier)
-		e.mu.Lock()
-		e.tier = newTier
-		e.mu.Unlock()
-		e.setupPlanner()
-		e.harvester = NewHarvester(newTier)
+	if e.refreshTier() {
+		e.mu.RLock()
+		currentTier := e.tier
+		e.mu.RUnlock()
+		slog.Info("explorer tier changed", "new", currentTier)
 	}
 
-	// Handle central advisory/scenario events directly (even at tier 0)
+	if !e.isEnabled() {
+		slog.Debug("explorer disabled, skipping event", "type", ev.Type)
+		return
+	}
+
+	// Handle central advisory/scenario events directly (even when normal planning is skipped)
 	switch ev.Type {
 	case EventCentralAdvisory:
 		e.handleAdvisory(ctx, ev)
@@ -191,7 +267,10 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		return
 	}
 
-	if e.tier == 0 {
+	e.mu.RLock()
+	tier := e.tier
+	e.mu.RUnlock()
+	if tier == 0 {
 		slog.Debug("explorer: tier 0, skipping event", "type", ev.Type)
 		return
 	}
@@ -204,11 +283,12 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	}
 
 	// Generate exploration plan
-	plan, err := e.planner.Plan(ctx, *input)
+	planner := e.currentPlanner()
+	plan, err := planner.Plan(ctx, *input)
 	if err != nil {
 		slog.Warn("explorer: plan generation failed", "error", err)
 		// If LLM planner failed, try rule planner fallback
-		if e.tier >= 2 {
+		if tier >= 2 {
 			slog.Info("explorer: falling back to RulePlanner")
 			rp := &RulePlanner{}
 			plan, err = rp.Plan(ctx, *input)
@@ -245,8 +325,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		})
 	}
 
-	// Execute plan tasks sequentially
-	e.executePlan(ctx, plan)
+	go e.runPlan(ctx, plan)
 }
 
 // handleAdvisory processes a central advisory event: parse advisory,
@@ -257,53 +336,47 @@ func (e *Explorer) handleAdvisory(ctx context.Context, ev ExplorerEvent) {
 		return
 	}
 
-	var adv struct {
-		ID       string `json:"id"`
-		Model    string `json:"model"`
-		Engine   string `json:"engine"`
-		Hardware string `json:"hardware"`
-		Type     string `json:"type"`
-		Title    string `json:"title"`
-		Details  string `json:"details"`
+	defaultHardware := ""
+	if hw, err := e.currentHardware(ctx); err == nil {
+		defaultHardware = firstTaskHardware(hw.Profile, hw.GPUArch)
 	}
-	if err := json.Unmarshal(ev.Advisory, &adv); err != nil {
+	advisory, task, err := parseAdvisoryTask(ev.Advisory, defaultHardware)
+	if err != nil {
 		slog.Warn("explorer: parse advisory", "error", err)
 		return
 	}
 
 	slog.Info("explorer: received central advisory",
-		"id", adv.ID, "type", adv.Type, "model", adv.Model, "engine", adv.Engine)
+		"id", advisory.ID, "type", advisory.Type, "model", task.Model, "engine", task.Engine)
 
 	// If no exploration manager, just log and send feedback that we can't validate
 	if e.explMgr == nil || e.tier == 0 {
 		slog.Info("explorer: cannot validate advisory (no exploration manager or tier 0)")
-		e.sendAdvisoryFeedback(ctx, adv.ID, "deferred", "no exploration capability on this device")
+		e.sendAdvisoryFeedback(ctx, advisory.ID, "deferred", "no exploration capability on this device")
 		return
 	}
 
-	// Create and execute a validation task
-	task := PlanTask{
-		Kind:   "validate",
-		Model:  adv.Model,
-		Engine: adv.Engine,
-		Reason: fmt.Sprintf("validate central advisory %s", adv.ID),
-	}
+	harvester := e.currentHarvester()
+	go func() {
+		if err := e.acquireExecutionSlot(ctx); err != nil {
+			return
+		}
+		defer e.releaseExecutionSlot()
 
-	result := e.executeTask(ctx, task)
+		result := e.executeTask(ctx, task)
 
-	// Send feedback based on result
-	if result.Success {
-		reason := fmt.Sprintf("validated: %.1f tok/s, TTFT P95 %.0fms", result.Throughput, result.TTFTP95)
-		e.sendAdvisoryFeedback(ctx, adv.ID, "accepted", reason)
-	} else {
-		e.sendAdvisoryFeedback(ctx, adv.ID, "rejected", "validation failed: "+result.Error)
-	}
+		if result.Success {
+			reason := fmt.Sprintf("validated: %.1f tok/s, TTFT P95 %.0fms", result.Throughput, result.TTFTP95)
+			e.sendAdvisoryFeedback(ctx, advisory.ID, "accepted", reason)
+		} else {
+			e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", "validation failed: "+result.Error)
+		}
 
-	// Harvest results as usual
-	actions := e.harvester.Harvest(ctx, HarvestInput{Task: task, Result: result})
-	for _, a := range actions {
-		slog.Info("explorer: advisory harvest action", "type", a.Type, "detail", a.Detail)
-	}
+		actions := harvester.Harvest(ctx, HarvestInput{Task: task, Result: result})
+		for _, a := range actions {
+			slog.Info("explorer: advisory harvest action", "type", a.Type, "detail", a.Detail)
+		}
+	}()
 }
 
 // handleScenario processes a central scenario event. Currently logs and defers.
@@ -337,6 +410,7 @@ func (e *Explorer) sendAdvisoryFeedback(ctx context.Context, advisoryID, status,
 }
 
 func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
+	harvester := e.currentHarvester()
 	for i, task := range plan.Tasks {
 		select {
 		case <-ctx.Done():
@@ -351,7 +425,7 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 		result := e.executeTask(ctx, task)
 
 		// Harvest results
-		actions := e.harvester.Harvest(ctx, HarvestInput{Task: task, Result: result})
+		actions := harvester.Harvest(ctx, HarvestInput{Task: task, Result: result})
 		for _, a := range actions {
 			slog.Info("explorer: harvest action", "type", a.Type, "detail", a.Detail)
 		}
@@ -367,9 +441,6 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 	}
 
 	// Mark plan completed
-	e.mu.Lock()
-	e.activePlan = nil
-	e.mu.Unlock()
 	if e.db != nil {
 		now := time.Now()
 		_ = e.db.UpdateExplorationPlan(ctx, &state.ExplorationPlanRow{
@@ -396,8 +467,13 @@ func (e *Explorer) executeTask(ctx context.Context, task PlanTask) HarvestResult
 	}
 
 	req := ExplorationStart{
-		Kind:   task.Kind,
-		Target: ExplorationTarget{Model: task.Model, Engine: task.Engine},
+		Kind:      task.Kind,
+		SourceRef: task.SourceRef,
+		Target: ExplorationTarget{
+			Hardware: task.Hardware,
+			Model:    task.Model,
+			Engine:   task.Engine,
+		},
 	}
 	if searchSpace != nil {
 		req.SearchSpace = searchSpace
@@ -413,7 +489,14 @@ func (e *Explorer) executeTask(ctx context.Context, task PlanTask) HarvestResult
 	}
 
 	// Parse benchmark results from exploration summary
-	return e.parseExplorationResult(status)
+	result := e.parseExplorationResult(status)
+	if len(task.Params) > 0 {
+		result.Config = make(map[string]any, len(task.Params))
+		for key, value := range task.Params {
+			result.Config[key] = value
+		}
+	}
+	return result
 }
 
 func (e *Explorer) parseExplorationResult(status *ExplorationStatus) HarvestResult {
@@ -422,11 +505,12 @@ func (e *Explorer) parseExplorationResult(status *ExplorationStatus) HarvestResu
 	if status.Run.SummaryJSON != "" {
 		var summary map[string]any
 		if err := json.Unmarshal([]byte(status.Run.SummaryJSON), &summary); err == nil {
-			if tp, ok := summary["throughput_tps"].(float64); ok {
-				result.Throughput = tp
+			readBenchmarkMetrics(summary, &result)
+			if nested, ok := summary["result"].(map[string]any); ok {
+				readBenchmarkMetrics(nested, &result)
 			}
-			if ttft, ok := summary["ttft_p95_ms"].(float64); ok {
-				result.TTFTP95 = ttft
+			if promoted, ok := summary["auto_promoted"].(bool); ok {
+				result.Promoted = promoted
 			}
 		}
 	}
@@ -435,6 +519,13 @@ func (e *Explorer) parseExplorationResult(status *ExplorationStatus) HarvestResu
 
 func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*PlanInput, error) {
 	input := &PlanInput{Event: ev}
+
+	if e.gatherHardware != nil {
+		hardware, err := e.gatherHardware(ctx)
+		if err == nil {
+			input.Hardware = hardware
+		}
+	}
 
 	// Gather gaps via knowledge.gaps tool
 	if e.gatherGaps != nil {
@@ -452,6 +543,13 @@ func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*Plan
 		}
 	}
 
+	if e.gatherOpenQuestions != nil {
+		openQuestions, err := e.gatherOpenQuestions(ctx)
+		if err == nil {
+			input.OpenQuestions = openQuestions
+		}
+	}
+
 	// Recent exploration history
 	if e.db != nil {
 		runs, _ := e.db.ListExplorationRuns(ctx, "", 10)
@@ -461,4 +559,246 @@ func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*Plan
 	}
 
 	return input, nil
+}
+
+func (e *Explorer) runPlan(ctx context.Context, plan *ExplorerPlan) {
+	if err := e.acquireExecutionSlot(ctx); err != nil {
+		if e.db != nil {
+			_ = e.db.UpdateExplorationPlan(ctx, &state.ExplorationPlanRow{
+				ID:     plan.ID,
+				Status: "cancelled",
+			})
+		}
+		return
+	}
+	defer e.releaseExecutionSlot()
+
+	e.executePlan(ctx, plan)
+}
+
+func (e *Explorer) acquireExecutionSlot(ctx context.Context) error {
+	for {
+		e.mu.Lock()
+		maxRuns := e.config.Schedule.MaxConcurrentRuns
+		if maxRuns <= 0 {
+			maxRuns = 1
+		}
+		if e.activeExecutions < maxRuns {
+			e.activeExecutions++
+			e.mu.Unlock()
+			return nil
+		}
+		wait := e.slotWaiters
+		e.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-wait:
+		}
+	}
+}
+
+func (e *Explorer) releaseExecutionSlot() {
+	e.mu.Lock()
+	if e.activeExecutions > 0 {
+		e.activeExecutions--
+	}
+	if e.activeExecutions == 0 {
+		e.activePlan = nil
+	}
+	e.notifySlotWaitersLocked()
+	e.mu.Unlock()
+}
+
+func (e *Explorer) notifySlotWaitersLocked() {
+	old := e.slotWaiters
+	e.slotWaiters = make(chan struct{})
+	close(old)
+}
+
+func (e *Explorer) refreshTier() bool {
+	newTier := e.detectTier()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if newTier == e.tier {
+		return false
+	}
+	e.tier = newTier
+	e.setupPlannerLocked()
+	e.harvester = e.buildHarvesterLocked()
+	return true
+}
+
+func (e *Explorer) currentHardware(ctx context.Context) (HardwareInfo, error) {
+	if e.gatherHardware == nil {
+		return HardwareInfo{}, fmt.Errorf("hardware gatherer not configured")
+	}
+	return e.gatherHardware(ctx)
+}
+
+func (e *Explorer) UpdateConfig(key, value string) (string, error) {
+	e.mu.Lock()
+	switch key {
+	case "gap_scan_interval":
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			e.mu.Unlock()
+			return "", fmt.Errorf("parse gap_scan_interval: %w", err)
+		}
+		e.config.Schedule.GapScanInterval = duration
+	case "sync_interval":
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			e.mu.Unlock()
+			return "", fmt.Errorf("parse sync_interval: %w", err)
+		}
+		e.config.Schedule.SyncInterval = duration
+	case "full_audit_interval":
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			e.mu.Unlock()
+			return "", fmt.Errorf("parse full_audit_interval: %w", err)
+		}
+		e.config.Schedule.FullAuditInterval = duration
+	case "quiet_start":
+		hour, err := strconv.Atoi(value)
+		if err != nil || hour < 0 || hour > 23 {
+			e.mu.Unlock()
+			return "", fmt.Errorf("quiet_start must be an integer between 0 and 23")
+		}
+		e.config.Schedule.QuietStart = hour
+	case "quiet_end":
+		hour, err := strconv.Atoi(value)
+		if err != nil || hour < 0 || hour > 23 {
+			e.mu.Unlock()
+			return "", fmt.Errorf("quiet_end must be an integer between 0 and 23")
+		}
+		e.config.Schedule.QuietEnd = hour
+	case "max_concurrent_runs":
+		maxRuns, err := strconv.Atoi(value)
+		if err != nil || maxRuns <= 0 {
+			e.mu.Unlock()
+			return "", fmt.Errorf("max_concurrent_runs must be a positive integer")
+		}
+		e.config.Schedule.MaxConcurrentRuns = maxRuns
+	case "enabled":
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			e.mu.Unlock()
+			return "", fmt.Errorf("parse enabled: %w", err)
+		}
+		e.config.Enabled = enabled
+	default:
+		e.mu.Unlock()
+		return "", fmt.Errorf("unknown explorer config key %q", key)
+	}
+
+	e.config.Schedule = normalizeScheduleConfig(e.config.Schedule)
+	schedule := e.config.Schedule
+	normalized := e.configValueLocked(key)
+	e.notifySlotWaitersLocked()
+	e.mu.Unlock()
+
+	e.scheduler.SetConfig(schedule)
+	return normalized, nil
+}
+
+func (e *Explorer) configValueLocked(key string) string {
+	switch key {
+	case "gap_scan_interval":
+		return e.config.Schedule.GapScanInterval.String()
+	case "sync_interval":
+		return e.config.Schedule.SyncInterval.String()
+	case "full_audit_interval":
+		return e.config.Schedule.FullAuditInterval.String()
+	case "quiet_start":
+		return strconv.Itoa(e.config.Schedule.QuietStart)
+	case "quiet_end":
+		return strconv.Itoa(e.config.Schedule.QuietEnd)
+	case "max_concurrent_runs":
+		return strconv.Itoa(e.config.Schedule.MaxConcurrentRuns)
+	case "enabled":
+		return strconv.FormatBool(e.config.Enabled)
+	default:
+		return ""
+	}
+}
+
+type advisoryTask struct {
+	ID   string
+	Type string
+}
+
+func parseAdvisoryTask(payload json.RawMessage, defaultHardware string) (advisoryTask, PlanTask, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return advisoryTask{}, PlanTask{}, err
+	}
+
+	config := extractAdvisoryConfig(raw)
+	model := firstNonEmptyJSON(raw, "target_model", "model")
+	engine := firstNonEmptyJSON(raw, "target_engine", "engine")
+	hardware := firstTaskHardware(firstNonEmptyJSON(raw, "target_hardware", "hardware"), defaultHardware)
+	id := firstNonEmptyJSON(raw, "id")
+	task := PlanTask{
+		Kind:      "validate",
+		Hardware:  hardware,
+		Model:     model,
+		Engine:    engine,
+		SourceRef: id,
+		Params:    config,
+		Reason:    fmt.Sprintf("validate central advisory %s", id),
+	}
+	if task.Model == "" {
+		return advisoryTask{}, PlanTask{}, fmt.Errorf("advisory missing target model")
+	}
+	return advisoryTask{
+		ID:   id,
+		Type: firstNonEmptyJSON(raw, "type"),
+	}, task, nil
+}
+
+func extractAdvisoryConfig(payload map[string]any) map[string]any {
+	for _, key := range []string{"config", "recommended_config", "content_json", "content", "params"} {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case map[string]any:
+			return typed
+		case string:
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(typed), &parsed); err == nil {
+				return parsed
+			}
+		}
+	}
+	return nil
+}
+
+func firstNonEmptyJSON(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		if str, ok := value.(string); ok && str != "" {
+			return str
+		}
+	}
+	return ""
+}
+
+func readBenchmarkMetrics(summary map[string]any, result *HarvestResult) {
+	if tp, ok := summary["throughput_tps"].(float64); ok {
+		result.Throughput = tp
+	}
+	if ttft, ok := summary["ttft_p95_ms"].(float64); ok {
+		result.TTFTP95 = ttft
+	}
+	if vram, ok := summary["vram_usage_mib"].(float64); ok {
+		result.VRAMMiB = vram
+	}
 }

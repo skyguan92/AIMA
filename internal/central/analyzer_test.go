@@ -3,6 +3,7 @@ package central
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestAnalyzerGapScan(t *testing.T) {
@@ -40,8 +41,8 @@ func TestAnalyzerGapScan(t *testing.T) {
 	if len(result.Advisories) != 1 {
 		t.Fatalf("advisories = %d, want 1", len(result.Advisories))
 	}
-	if result.Advisories[0].Type != "gap" {
-		t.Fatalf("advisory type = %q, want gap", result.Advisories[0].Type)
+	if result.Advisories[0].Type != AdvisoryTypeGapAlert {
+		t.Fatalf("advisory type = %q, want %s", result.Advisories[0].Type, AdvisoryTypeGapAlert)
 	}
 	if result.Advisories[0].Severity != "warning" {
 		t.Fatalf("severity = %q, want warning (high priority)", result.Advisories[0].Severity)
@@ -60,7 +61,7 @@ func TestAnalyzerGapScanLLMFailure(t *testing.T) {
 	if result == nil {
 		t.Fatal("result should not be nil on LLM failure")
 	}
-	if result.AnalysisRun.Status != "failed" {
+	if result.AnalysisRun.Status != AnalysisStatusFailed {
 		t.Fatalf("status = %q, want failed", result.AnalysisRun.Status)
 	}
 }
@@ -74,7 +75,7 @@ func TestAnalyzerPatternDiscoveryNoBenchmarks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunPatternDiscovery: %v", err)
 	}
-	if result.AnalysisRun.Status != "completed" {
+	if result.AnalysisRun.Status != AnalysisStatusCompleted {
 		t.Fatalf("status = %q, want completed", result.AnalysisRun.Status)
 	}
 	if result.AnalysisRun.Summary != "No benchmark data to analyze" {
@@ -113,6 +114,13 @@ func TestAnalyzerPatternDiscoveryWithData(t *testing.T) {
 	if len(result.Advisories) != 1 {
 		t.Fatalf("advisories = %d, want 1", len(result.Advisories))
 	}
+	runs, err := store.ListAnalysisRuns(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListAnalysisRuns: %v", err)
+	}
+	if len(runs) == 0 || runs[0].CompletedAt == "" {
+		t.Fatalf("expected completed analysis run, got %+v", runs)
+	}
 }
 
 func TestAnalyzerStartStop(t *testing.T) {
@@ -130,12 +138,70 @@ func TestAnalyzerStartStop(t *testing.T) {
 func TestAnalyzerOnIngest(t *testing.T) {
 	store := newTestStore(t)
 	llm := &mockLLM{response: `[]`}
-	analyzer := NewAnalyzer(store, llm)
+	analyzer := NewAnalyzer(store, llm, WithAnalyzerConfig(AnalyzerConfig{
+		InitialDelay:           0,
+		GapScanInterval:        0,
+		PatternInterval:        0,
+		ScenarioHealthInterval: 0,
+		PostIngestDelay:        10 * time.Millisecond,
+		AdvisoryTTL:            0,
+	}))
+	ctx := context.Background()
+	analyzer.Start(ctx)
+	defer analyzer.Stop()
 
 	// Should not panic with empty payload
-	analyzer.OnIngest(context.Background(), IngestPayload{})
-	// Should not panic with data
-	analyzer.OnIngest(context.Background(), IngestPayload{
+	analyzer.OnIngest(ctx, IngestPayload{})
+	// Should schedule with data
+	analyzer.OnIngest(ctx, IngestPayload{
 		Configurations: []IngestConfig{{ID: "cfg-1"}},
 	})
+	time.Sleep(50 * time.Millisecond)
+	runs, err := store.ListAnalysisRuns(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListAnalysisRuns: %v", err)
+	}
+	if len(runs) == 0 {
+		t.Fatal("expected delayed analysis run after ingest")
+	}
+}
+
+func TestAnalyzerScenarioHealth(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	_ = store.InsertScenario(ctx, Scenario{
+		ID:              "scn-1",
+		Name:            "dual-model",
+		HardwareProfile: "nvidia-rtx4090",
+		ScenarioYAML:    "deployments:\n  - model: qwen3-8b",
+		Source:          "generated",
+		Version:         1,
+		CreatedAt:       "2026-01-01T00:00:00Z",
+		UpdatedAt:       "2026-01-01T00:00:00Z",
+	})
+
+	llm := &mockLLM{response: `[
+		{
+			"scenario": "dual-model",
+			"hardware": "nvidia-rtx4090",
+			"priority": "medium",
+			"reasoning": "This scenario should be revalidated with newer configs",
+			"suggested_action": "Benchmark the scenario again"
+		}
+	]`}
+
+	analyzer := NewAnalyzer(store, llm)
+	result, err := analyzer.RunScenarioHealth(ctx)
+	if err != nil {
+		t.Fatalf("RunScenarioHealth: %v", err)
+	}
+	if result.AnalysisRun.Status != AnalysisStatusCompleted {
+		t.Fatalf("status = %q, want completed", result.AnalysisRun.Status)
+	}
+	if len(result.Advisories) != 1 {
+		t.Fatalf("advisories = %d, want 1", len(result.Advisories))
+	}
+	if result.Advisories[0].Type != AdvisoryTypeScenarioOptimization {
+		t.Fatalf("type = %q, want %s", result.Advisories[0].Type, AdvisoryTypeScenarioOptimization)
+	}
 }

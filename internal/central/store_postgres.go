@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -112,46 +113,102 @@ CREATE TABLE IF NOT EXISTS knowledge_notes (
 CREATE TABLE IF NOT EXISTS advisories (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
     severity TEXT NOT NULL DEFAULT 'info',
+    target_hardware TEXT,
+    target_model TEXT,
+    target_engine TEXT,
+    content_json JSONB,
+    reasoning TEXT,
+    based_on_json JSONB,
     hardware TEXT,
     model TEXT,
     engine TEXT,
-    title TEXT NOT NULL,
+    title TEXT,
     summary TEXT,
     details TEXT,
     confidence TEXT,
     analysis_id TEXT,
     feedback TEXT,
     accepted BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    delivered_at TIMESTAMPTZ,
+    validated_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_advisory_type ON advisories(type);
+CREATE INDEX IF NOT EXISTS idx_advisory_status ON advisories(status);
+CREATE INDEX IF NOT EXISTS idx_advisory_target_hw ON advisories(target_hardware);
 
 CREATE TABLE IF NOT EXISTS analysis_runs (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'running',
     summary TEXT,
+    input_json JSONB,
+    output_json JSONB,
+    advisories JSONB,
     advisory_count INTEGER DEFAULT 0,
     duration_ms INTEGER DEFAULT 0,
     error TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    started_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS scenarios (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT,
+    hardware_profile TEXT,
+    scenario_yaml TEXT,
+    advisory_id TEXT,
+    version INTEGER DEFAULT 1,
     hardware TEXT,
     models TEXT,
     config JSONB,
     source TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_scenario_hw ON scenarios(hardware);`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scenario_name ON scenarios(name);
+CREATE INDEX IF NOT EXISTS idx_scenario_hw ON scenarios(hardware);
+CREATE INDEX IF NOT EXISTS idx_scenario_hw_profile ON scenarios(hardware_profile);`
 
-	_, err := p.db.ExecContext(ctx, ddl)
-	return err
+	if _, err := p.db.ExecContext(ctx, ddl); err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE advisories ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'`,
+		`ALTER TABLE advisories ADD COLUMN IF NOT EXISTS target_hardware TEXT`,
+		`ALTER TABLE advisories ADD COLUMN IF NOT EXISTS target_model TEXT`,
+		`ALTER TABLE advisories ADD COLUMN IF NOT EXISTS target_engine TEXT`,
+		`ALTER TABLE advisories ADD COLUMN IF NOT EXISTS content_json JSONB`,
+		`ALTER TABLE advisories ADD COLUMN IF NOT EXISTS reasoning TEXT`,
+		`ALTER TABLE advisories ADD COLUMN IF NOT EXISTS based_on_json JSONB`,
+		`ALTER TABLE advisories ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ`,
+		`ALTER TABLE advisories ADD COLUMN IF NOT EXISTS validated_at TIMESTAMPTZ`,
+		`ALTER TABLE analysis_runs ADD COLUMN IF NOT EXISTS input_json JSONB`,
+		`ALTER TABLE analysis_runs ADD COLUMN IF NOT EXISTS output_json JSONB`,
+		`ALTER TABLE analysis_runs ADD COLUMN IF NOT EXISTS advisories JSONB`,
+		`ALTER TABLE analysis_runs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ`,
+		`ALTER TABLE analysis_runs ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`,
+		`ALTER TABLE analysis_runs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`,
+		`ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS hardware_profile TEXT`,
+		`ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS scenario_yaml TEXT`,
+		`ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS advisory_id TEXT`,
+		`ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1`,
+		`ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`,
+		`CREATE INDEX IF NOT EXISTS idx_advisory_status ON advisories(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_advisory_target_hw ON advisories(target_hardware)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_scenario_name ON scenarios(name)`,
+		`CREATE INDEX IF NOT EXISTS idx_scenario_hw_profile ON scenarios(hardware_profile)`,
+	} {
+		if _, err := p.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // --- Devices ---
@@ -455,23 +512,46 @@ func (p *PostgresCentralStore) ListKnowledgeNotes(ctx context.Context) ([]Knowle
 // --- Advisories ---
 
 func (p *PostgresCentralStore) InsertAdvisory(ctx context.Context, a Advisory) error {
+	a = normalizeAdvisory(a)
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO advisories (id, type, severity, hardware, model, engine, title, summary, details, confidence, analysis_id, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		a.ID, a.Type, a.Severity, a.Hardware, a.Model, a.Engine, a.Title, a.Summary, a.Details, a.Confidence, a.AnalysisID, a.CreatedAt)
+		`INSERT INTO advisories (
+		 id, type, status, severity, target_hardware, target_model, target_engine,
+		 content_json, reasoning, based_on_json, hardware, model, engine,
+		 title, summary, details, confidence, analysis_id, feedback, accepted,
+		 created_at, delivered_at, validated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::jsonb, $9, NULLIF($10, '')::jsonb, $11, $12, $13,
+		          $14, $15, $16, $17, $18, $19, $20, $21, NULLIF($22, '')::timestamptz, NULLIF($23, '')::timestamptz)`,
+		a.ID, a.Type, a.Status, a.Severity, a.TargetHardware, a.TargetModel, a.TargetEngine,
+		string(a.ContentJSON), a.Reasoning, string(a.BasedOnJSON), a.Hardware, a.Model, a.Engine,
+		a.Title, a.Summary, a.Details, a.Confidence, a.AnalysisID, a.Feedback, a.Accepted,
+		a.CreatedAt, a.DeliveredAt, a.ValidatedAt)
 	return err
 }
 
 func (p *PostgresCentralStore) ListAdvisories(ctx context.Context, f AdvisoryFilter) ([]Advisory, error) {
-	query := `SELECT id, type, severity, COALESCE(hardware,''), COALESCE(model,''), COALESCE(engine,''),
-	           title, COALESCE(summary,''), COALESCE(details,''), COALESCE(confidence,''),
-	           COALESCE(analysis_id,''), COALESCE(feedback,''), COALESCE(accepted,false), COALESCE(created_at::text,'')
+	query := `SELECT id, type, COALESCE(status,''), COALESCE(severity,''),
+	           COALESCE(target_hardware, hardware, ''), COALESCE(target_model, model, ''), COALESCE(target_engine, engine, ''),
+	           COALESCE(content_json::text, details, ''), COALESCE(reasoning, summary, ''), COALESCE(confidence, ''),
+	           COALESCE(based_on_json::text, '[]'), COALESCE(analysis_id, ''), COALESCE(created_at::text, ''),
+	           COALESCE(delivered_at::text, ''), COALESCE(validated_at::text, ''),
+	           COALESCE(title, ''), COALESCE(summary, ''), COALESCE(hardware, ''), COALESCE(model, ''),
+	           COALESCE(engine, ''), COALESCE(details, ''), COALESCE(feedback, ''), COALESCE(accepted, false)
 	          FROM advisories WHERE 1=1`
 	var args []any
 	n := 1
+	if f.ID != "" {
+		query += fmt.Sprintf(` AND id = $%d`, n)
+		args = append(args, f.ID)
+		n++
+	}
 	if f.Type != "" {
 		query += fmt.Sprintf(` AND type = $%d`, n)
 		args = append(args, f.Type)
+		n++
+	}
+	if f.Status != "" {
+		query += fmt.Sprintf(` AND status = $%d`, n)
+		args = append(args, f.Status)
 		n++
 	}
 	if f.Severity != "" {
@@ -480,8 +560,18 @@ func (p *PostgresCentralStore) ListAdvisories(ctx context.Context, f AdvisoryFil
 		n++
 	}
 	if f.Hardware != "" {
-		query += fmt.Sprintf(` AND hardware = $%d`, n)
+		query += fmt.Sprintf(` AND COALESCE(target_hardware, hardware, '') = $%d`, n)
 		args = append(args, f.Hardware)
+		n++
+	}
+	if f.Model != "" {
+		query += fmt.Sprintf(` AND COALESCE(target_model, model, '') = $%d`, n)
+		args = append(args, f.Model)
+		n++
+	}
+	if f.Engine != "" {
+		query += fmt.Sprintf(` AND COALESCE(target_engine, engine, '') = $%d`, n)
+		args = append(args, f.Engine)
 		n++
 	}
 	limit := f.Limit
@@ -499,19 +589,70 @@ func (p *PostgresCentralStore) ListAdvisories(ctx context.Context, f AdvisoryFil
 	var advs []Advisory
 	for rows.Next() {
 		var a Advisory
-		if err := rows.Scan(&a.ID, &a.Type, &a.Severity, &a.Hardware, &a.Model, &a.Engine,
-			&a.Title, &a.Summary, &a.Details, &a.Confidence, &a.AnalysisID, &a.Feedback, &a.Accepted, &a.CreatedAt); err != nil {
+		var contentJSON string
+		var basedOnJSON string
+		if err := rows.Scan(
+			&a.ID, &a.Type, &a.Status, &a.Severity,
+			&a.TargetHardware, &a.TargetModel, &a.TargetEngine,
+			&contentJSON, &a.Reasoning, &a.Confidence,
+			&basedOnJSON, &a.AnalysisID, &a.CreatedAt,
+			&a.DeliveredAt, &a.ValidatedAt,
+			&a.Title, &a.Summary, &a.Hardware, &a.Model,
+			&a.Engine, &a.Details, &a.Feedback, &a.Accepted,
+		); err != nil {
 			return nil, err
 		}
-		advs = append(advs, a)
+		if contentJSON != "" {
+			a.ContentJSON = []byte(contentJSON)
+		}
+		if basedOnJSON != "" {
+			a.BasedOnJSON = []byte(basedOnJSON)
+		}
+		advs = append(advs, normalizeAdvisory(a))
 	}
 	return advs, rows.Err()
 }
 
-func (p *PostgresCentralStore) UpdateAdvisoryFeedback(ctx context.Context, id string, feedback string, accepted bool) error {
+func (p *PostgresCentralStore) UpdateAdvisoryStatus(ctx context.Context, id string, update AdvisoryStatusUpdate) error {
+	current, err := p.getAdvisory(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !advisoryTransitionAllowed(current.Status, update.Status) {
+		return fmt.Errorf("advisory %q cannot transition from %s to %s", id, current.Status, update.Status)
+	}
+
+	status := current.Status
+	if update.Status != "" {
+		status = update.Status
+	}
+	feedback := current.Feedback
+	if update.Feedback != "" {
+		feedback = update.Feedback
+	}
+	deliveredAt := current.DeliveredAt
+	if update.DeliveredAt != "" {
+		deliveredAt = update.DeliveredAt
+	}
+	validatedAt := current.ValidatedAt
+	if update.ValidatedAt != "" {
+		validatedAt = update.ValidatedAt
+	}
+	if status == AdvisoryStatusDelivered && deliveredAt == "" {
+		deliveredAt = nowRFC3339()
+	}
+	if (status == AdvisoryStatusValidated || status == AdvisoryStatusRejected) && validatedAt == "" {
+		validatedAt = nowRFC3339()
+	}
+	accepted := status == AdvisoryStatusValidated
+
 	res, err := p.db.ExecContext(ctx,
-		`UPDATE advisories SET feedback = $1, accepted = $2 WHERE id = $3`,
-		feedback, accepted, id)
+		`UPDATE advisories
+		    SET status = $1, feedback = $2, accepted = $3,
+		        delivered_at = NULLIF($4, '')::timestamptz,
+		        validated_at = NULLIF($5, '')::timestamptz
+		  WHERE id = $6`,
+		status, feedback, accepted, deliveredAt, validatedAt, id)
 	if err != nil {
 		return err
 	}
@@ -522,14 +663,90 @@ func (p *PostgresCentralStore) UpdateAdvisoryFeedback(ctx context.Context, id st
 	return nil
 }
 
+func (p *PostgresCentralStore) ExpireAdvisories(ctx context.Context, before time.Time) (int, error) {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE advisories
+		    SET status = $1
+		  WHERE status IN ($2, $3)
+		    AND created_at < $4`,
+		AdvisoryStatusExpired, AdvisoryStatusPending, AdvisoryStatusDelivered, before.UTC())
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // --- Analysis Runs ---
 
 func (p *PostgresCentralStore) InsertAnalysisRun(ctx context.Context, r AnalysisRun) error {
+	r = normalizeAnalysisRun(r)
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO analysis_runs (id, type, status, summary, advisory_count, duration_ms, error, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		r.ID, r.Type, r.Status, r.Summary, r.AdvisoryCount, r.DurationMs, r.Error, r.CreatedAt)
+		`INSERT INTO analysis_runs (
+		 id, type, status, summary, input_json, output_json, advisories,
+		 advisory_count, duration_ms, error, started_at, completed_at, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, NULLIF($5, '')::jsonb, NULLIF($6, '')::jsonb, NULLIF($7, '')::jsonb,
+		          $8, $9, $10, $11, NULLIF($12, '')::timestamptz, $13, $14)`,
+		r.ID, r.Type, r.Status, r.Summary, string(r.InputJSON), string(r.OutputJSON), string(r.Advisories),
+		r.AdvisoryCount, r.DurationMs, r.Error, r.StartedAt, r.CompletedAt, r.CreatedAt, r.UpdatedAt)
 	return err
+}
+
+func (p *PostgresCentralStore) UpdateAnalysisRun(ctx context.Context, id string, update AnalysisRunUpdate) error {
+	current, err := p.getAnalysisRun(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	if update.Status != "" {
+		current.Status = update.Status
+	}
+	if update.Summary != "" {
+		current.Summary = update.Summary
+	}
+	if len(update.InputJSON) > 0 {
+		current.InputJSON = update.InputJSON
+	}
+	if len(update.OutputJSON) > 0 {
+		current.OutputJSON = update.OutputJSON
+	}
+	if len(update.Advisories) > 0 {
+		current.Advisories = update.Advisories
+	}
+	if update.AdvisoryCount != 0 || len(current.Advisories) == 0 {
+		current.AdvisoryCount = update.AdvisoryCount
+	}
+	if update.DurationMs != 0 {
+		current.DurationMs = update.DurationMs
+	}
+	if update.Error != "" {
+		current.Error = update.Error
+	}
+	if update.StartedAt != "" {
+		current.StartedAt = update.StartedAt
+	}
+	if update.CompletedAt != "" {
+		current.CompletedAt = update.CompletedAt
+	}
+	current.UpdatedAt = nowRFC3339()
+	current = normalizeAnalysisRun(current)
+
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE analysis_runs
+		    SET status = $1, summary = $2, input_json = NULLIF($3, '')::jsonb, output_json = NULLIF($4, '')::jsonb,
+		        advisories = NULLIF($5, '')::jsonb, advisory_count = $6, duration_ms = $7, error = $8,
+		        started_at = $9, completed_at = NULLIF($10, '')::timestamptz, updated_at = $11
+		  WHERE id = $12`,
+		current.Status, current.Summary, string(current.InputJSON), string(current.OutputJSON), string(current.Advisories),
+		current.AdvisoryCount, current.DurationMs, current.Error, current.StartedAt, current.CompletedAt, current.UpdatedAt, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("analysis run %q not found", id)
+	}
+	return nil
 }
 
 func (p *PostgresCentralStore) ListAnalysisRuns(ctx context.Context, limit int) ([]AnalysisRun, error) {
@@ -537,9 +754,10 @@ func (p *PostgresCentralStore) ListAnalysisRuns(ctx context.Context, limit int) 
 		limit = 20
 	}
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT id, type, status, COALESCE(summary,''), COALESCE(advisory_count,0),
-		 COALESCE(duration_ms,0), COALESCE(error,''), COALESCE(created_at::text,'')
-		 FROM analysis_runs ORDER BY created_at DESC LIMIT $1`, limit)
+		`SELECT id, type, status, COALESCE(summary,''), COALESCE(input_json::text,''), COALESCE(output_json::text,''),
+		 COALESCE(advisories::text,''), COALESCE(advisory_count,0), COALESCE(duration_ms,0), COALESCE(error,''),
+		 COALESCE(started_at::text, created_at::text, ''), COALESCE(completed_at::text, ''), COALESCE(created_at::text, ''), COALESCE(updated_at::text, '')
+		 FROM analysis_runs ORDER BY COALESCE(started_at, created_at) DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -547,10 +765,23 @@ func (p *PostgresCentralStore) ListAnalysisRuns(ctx context.Context, limit int) 
 	var runs []AnalysisRun
 	for rows.Next() {
 		var r AnalysisRun
-		if err := rows.Scan(&r.ID, &r.Type, &r.Status, &r.Summary, &r.AdvisoryCount, &r.DurationMs, &r.Error, &r.CreatedAt); err != nil {
+		var inputJSON string
+		var outputJSON string
+		var advisories string
+		if err := rows.Scan(&r.ID, &r.Type, &r.Status, &r.Summary, &inputJSON, &outputJSON, &advisories,
+			&r.AdvisoryCount, &r.DurationMs, &r.Error, &r.StartedAt, &r.CompletedAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
-		runs = append(runs, r)
+		if inputJSON != "" {
+			r.InputJSON = []byte(inputJSON)
+		}
+		if outputJSON != "" {
+			r.OutputJSON = []byte(outputJSON)
+		}
+		if advisories != "" {
+			r.Advisories = []byte(advisories)
+		}
+		runs = append(runs, normalizeAnalysisRun(r))
 	}
 	return runs, rows.Err()
 }
@@ -558,29 +789,61 @@ func (p *PostgresCentralStore) ListAnalysisRuns(ctx context.Context, limit int) 
 // --- Scenarios ---
 
 func (p *PostgresCentralStore) InsertScenario(ctx context.Context, s Scenario) error {
+	s = normalizeScenario(s)
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO scenarios (id, name, description, hardware, models, config, source, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		s.ID, s.Name, s.Description, s.Hardware, s.Models, s.Config, s.Source, s.CreatedAt)
+		`INSERT INTO scenarios (
+		 id, name, description, hardware_profile, scenario_yaml, source, advisory_id,
+		 version, created_at, updated_at, hardware, models, config
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULLIF($13, '')::jsonb)
+		ON CONFLICT(name) DO UPDATE SET
+		 description = EXCLUDED.description,
+		 hardware_profile = EXCLUDED.hardware_profile,
+		 scenario_yaml = EXCLUDED.scenario_yaml,
+		 source = EXCLUDED.source,
+		 advisory_id = EXCLUDED.advisory_id,
+		 version = EXCLUDED.version,
+		 updated_at = EXCLUDED.updated_at,
+		 hardware = EXCLUDED.hardware,
+		 models = EXCLUDED.models,
+		 config = EXCLUDED.config`,
+		s.ID, s.Name, s.Description, s.HardwareProfile, s.ScenarioYAML, s.Source, s.AdvisoryID,
+		s.Version, s.CreatedAt, s.UpdatedAt, s.Hardware, s.Models, s.Config)
 	return err
 }
 
 func (p *PostgresCentralStore) ListScenarios(ctx context.Context, f ScenarioFilter) ([]Scenario, error) {
-	query := `SELECT id, name, COALESCE(description,''), COALESCE(hardware,''),
-	           COALESCE(models,''), COALESCE(config::text,''), COALESCE(source,''), COALESCE(created_at::text,'')
+	query := `SELECT id, name, COALESCE(description,''), COALESCE(hardware_profile, hardware, ''),
+	           COALESCE(scenario_yaml, config::text, ''), COALESCE(source,''), COALESCE(advisory_id,''),
+	           COALESCE(version, 1), COALESCE(created_at::text,''), COALESCE(updated_at::text, created_at::text, ''),
+	           COALESCE(hardware,''), COALESCE(models,''), COALESCE(config::text,'')
 	          FROM scenarios WHERE 1=1`
 	var args []any
 	n := 1
+	if f.Name != "" {
+		query += fmt.Sprintf(` AND name = $%d`, n)
+		args = append(args, f.Name)
+		n++
+	}
 	if f.Hardware != "" {
-		query += fmt.Sprintf(` AND hardware = $%d`, n)
+		query += fmt.Sprintf(` AND COALESCE(hardware_profile, hardware, '') = $%d`, n)
 		args = append(args, f.Hardware)
+		n++
+	}
+	if f.Source != "" {
+		query += fmt.Sprintf(` AND source = $%d`, n)
+		args = append(args, f.Source)
+		n++
+	}
+	if f.AdvisoryID != "" {
+		query += fmt.Sprintf(` AND advisory_id = $%d`, n)
+		args = append(args, f.AdvisoryID)
 		n++
 	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
 	}
-	query += fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d`, n)
+	query += fmt.Sprintf(` ORDER BY COALESCE(updated_at, created_at) DESC LIMIT $%d`, n)
 	args = append(args, limit)
 
 	rows, err := p.db.QueryContext(ctx, query, args...)
@@ -591,12 +854,56 @@ func (p *PostgresCentralStore) ListScenarios(ctx context.Context, f ScenarioFilt
 	var scenarios []Scenario
 	for rows.Next() {
 		var sc Scenario
-		if err := rows.Scan(&sc.ID, &sc.Name, &sc.Description, &sc.Hardware, &sc.Models, &sc.Config, &sc.Source, &sc.CreatedAt); err != nil {
+		if err := rows.Scan(&sc.ID, &sc.Name, &sc.Description, &sc.HardwareProfile,
+			&sc.ScenarioYAML, &sc.Source, &sc.AdvisoryID, &sc.Version,
+			&sc.CreatedAt, &sc.UpdatedAt, &sc.Hardware, &sc.Models, &sc.Config); err != nil {
 			return nil, err
 		}
-		scenarios = append(scenarios, sc)
+		scenarios = append(scenarios, normalizeScenario(sc))
 	}
 	return scenarios, rows.Err()
+}
+
+func (p *PostgresCentralStore) getAdvisory(ctx context.Context, id string) (Advisory, error) {
+	advs, err := p.ListAdvisories(ctx, AdvisoryFilter{ID: id, Limit: 1})
+	if err != nil {
+		return Advisory{}, err
+	}
+	if len(advs) == 0 {
+		return Advisory{}, fmt.Errorf("advisory %q not found", id)
+	}
+	return advs[0], nil
+}
+
+func (p *PostgresCentralStore) getAnalysisRun(ctx context.Context, id string) (AnalysisRun, error) {
+	row := p.db.QueryRowContext(ctx,
+		`SELECT id, type, status, COALESCE(summary,''), COALESCE(input_json::text,''), COALESCE(output_json::text,''),
+		 COALESCE(advisories::text,''), COALESCE(advisory_count,0), COALESCE(duration_ms,0), COALESCE(error,''),
+		 COALESCE(started_at::text, created_at::text, ''), COALESCE(completed_at::text, ''), COALESCE(created_at::text, ''), COALESCE(updated_at::text, '')
+		 FROM analysis_runs WHERE id = $1`, id)
+
+	var run AnalysisRun
+	var inputJSON string
+	var outputJSON string
+	var advisories string
+	if err := row.Scan(&run.ID, &run.Type, &run.Status, &run.Summary, &inputJSON, &outputJSON,
+		&advisories, &run.AdvisoryCount, &run.DurationMs, &run.Error, &run.StartedAt,
+		&run.CompletedAt, &run.CreatedAt, &run.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return AnalysisRun{}, fmt.Errorf("analysis run %q not found", id)
+		}
+		return AnalysisRun{}, err
+	}
+	if inputJSON != "" {
+		run.InputJSON = []byte(inputJSON)
+	}
+	if outputJSON != "" {
+		run.OutputJSON = []byte(outputJSON)
+	}
+	if advisories != "" {
+		run.Advisories = []byte(advisories)
+	}
+	return normalizeAnalysisRun(run), nil
 }
 
 // --- Stats ---
