@@ -164,6 +164,13 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 
 		slog.Info("tuning: testing config", "progress", fmt.Sprintf("%d/%d", i+1, session.Total), "config", candidate)
 
+		// Delete existing deployment before redeploying with new config.
+		deleteArgs, _ := json.Marshal(map[string]string{"name": session.Config.Model})
+		if _, delErr := t.tools.ExecuteTool(ctx, "deploy.delete", deleteArgs); delErr != nil {
+			slog.Debug("tuning: pre-delete (may not exist)", "model", session.Config.Model, "error", delErr)
+		}
+		time.Sleep(3 * time.Second) // GPU memory release grace period
+
 		// Deploy with this config and benchmark the ready endpoint returned by deploy.run.
 		deployArgs, _ := json.Marshal(map[string]any{
 			"model":   session.Config.Model,

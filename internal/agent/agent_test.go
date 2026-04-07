@@ -1073,6 +1073,8 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 	tools := &mockTools{
 		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
 			switch name {
+			case "deploy.delete":
+				return &ToolResult{Content: `{"status":"deleted"}`}, nil
 			case "deploy.run":
 				var payload map[string]any
 				if err := json.Unmarshal(arguments, &payload); err != nil {
@@ -1107,7 +1109,7 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		current := tuner.CurrentSession()
 		if current != nil && current.Status != "running" {
@@ -1165,6 +1167,8 @@ func TestExplorationManagerTunePersistsRun(t *testing.T) {
 	tools := &mockTools{
 		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
 			switch name {
+			case "deploy.delete":
+				return &ToolResult{Content: `{"status":"deleted"}`}, nil
 			case "deploy.run":
 				return &ToolResult{Content: `{"status":"ready","address":"127.0.0.1:30000","config":{"gpu_memory_utilization":0.8}}`}, nil
 			case "benchmark.run":
@@ -1200,7 +1204,7 @@ func TestExplorationManagerTunePersistsRun(t *testing.T) {
 	}
 
 	var status *ExplorationStatus
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		status, err = manager.Result(ctx, run.ID)
 		if err != nil {
@@ -1303,7 +1307,7 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 	}
 
 	var status *ExplorationStatus
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		status, err = manager.Result(ctx, run.ID)
 		if err != nil {
@@ -1379,7 +1383,7 @@ func TestExplorationManagerOpenQuestionAutoResolves(t *testing.T) {
 	}
 
 	var status *ExplorationStatus
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		status, err = manager.Result(ctx, run.ID)
 		if err != nil {

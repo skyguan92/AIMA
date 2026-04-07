@@ -198,6 +198,7 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 					"status":  status,
 					"phase":   existing.Phase,
 					"runtime": runtimeName,
+					"config":  resolved.Config,
 				}
 				if existing.Address != "" {
 					result["address"] = existing.Address
@@ -318,6 +319,7 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 			"model": modelName, "engine": resolved.Engine,
 			"slot": resolved.Slot, "status": "deploying",
 			"runtime": activeRt.Name(),
+			"config": resolved.Config,
 		}
 		return json.Marshal(result)
 	}
