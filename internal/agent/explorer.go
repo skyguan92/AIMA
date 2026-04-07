@@ -45,6 +45,8 @@ type Explorer struct {
 	gatherDeploys       func(ctx context.Context) ([]DeployStatus, error)
 	gatherOpenQuestions func(ctx context.Context) ([]OpenQuestion, error)
 	gatherAdvisories    func(ctx context.Context) ([]Advisory, error)
+	gatherLocalModels   func(ctx context.Context) ([]LocalModel, error)
+	gatherLocalEngines  func(ctx context.Context) ([]LocalEngine, error)
 
 	// Harvester callbacks, wired via options or buildToolDeps.
 	syncPush func(ctx context.Context) error
@@ -99,6 +101,16 @@ func WithExplorerSaveNote(fn func(ctx context.Context, title, content, hardware,
 // WithGatherAdvisories sets the function to gather pending advisories from central.
 func WithGatherAdvisories(fn func(ctx context.Context) ([]Advisory, error)) ExplorerOption {
 	return func(e *Explorer) { e.gatherAdvisories = fn }
+}
+
+// WithGatherLocalModels sets the function to list locally available models.
+func WithGatherLocalModels(fn func(ctx context.Context) ([]LocalModel, error)) ExplorerOption {
+	return func(e *Explorer) { e.gatherLocalModels = fn }
+}
+
+// WithGatherLocalEngines sets the function to list locally installed engines with metadata.
+func WithGatherLocalEngines(fn func(ctx context.Context) ([]LocalEngine, error)) ExplorerOption {
+	return func(e *Explorer) { e.gatherLocalEngines = fn }
 }
 
 // WithAdvisoryFeedback sets the callback for sending advisory feedback to central.
@@ -596,6 +608,20 @@ func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*Plan
 		advisories, err := e.gatherAdvisories(ctx)
 		if err == nil {
 			input.Advisories = advisories
+		}
+	}
+
+	if e.gatherLocalModels != nil {
+		models, err := e.gatherLocalModels(ctx)
+		if err == nil {
+			input.LocalModels = models
+		}
+	}
+
+	if e.gatherLocalEngines != nil {
+		engines, err := e.gatherLocalEngines(ctx)
+		if err == nil {
+			input.LocalEngines = engines
 		}
 	}
 

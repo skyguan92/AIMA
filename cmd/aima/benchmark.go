@@ -141,8 +141,13 @@ func refreshPerfVectors(ctx context.Context, kStore *knowledge.Store) {
 
 // saveBenchmarkResult saves a benchmark result and its configuration to the DB.
 // Returns (benchmarkID, configID) or error.
+// B12: Skip saving when throughput is zero — indicates no real inference happened.
 func saveBenchmarkResult(ctx context.Context, db *state.DB, hardware, engineID, model string,
 	result *benchpkg.RunResult, concurrency, inputTokens, maxTokens int, notes string) (string, string, error) {
+
+	if result.ThroughputTPS <= 0 {
+		return "", "", fmt.Errorf("zero throughput — no inference service responded; benchmark not saved")
+	}
 
 	configJSON, _ := json.Marshal(map[string]any{
 		"concurrency":  concurrency,

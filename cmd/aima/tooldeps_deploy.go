@@ -45,6 +45,13 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 
 	deps.DeployApply = func(ctx context.Context, engineType, modelName, slot string, configOverrides map[string]any) (json.RawMessage, error) {
 		allowAutoPull := deployAutoPullAllowed(ctx)
+		// Internal flag: _auto_pull=false disables model/engine auto-download.
+		if v, ok := configOverrides["_auto_pull"]; ok {
+			if b, isBool := v.(bool); isBool && !b {
+				allowAutoPull = false
+			}
+			delete(configOverrides, "_auto_pull")
+		}
 		hwInfo := buildHardwareInfo(ctx, cat, rt.Name())
 		rd, err := resolveDeployment(ctx, cat, db, kStore, hwInfo, modelName, engineType, slot, configOverrides, dataDir)
 		if err != nil {

@@ -556,6 +556,74 @@ func run() error {
 			_, err := deps.AdvisoryFeedback(ctx, advisoryID, status, reason)
 			return err
 		}),
+		agent.WithGatherLocalModels(func(ctx context.Context) ([]agent.LocalModel, error) {
+			if deps.ScanModels == nil {
+				return nil, nil
+			}
+			data, err := deps.ScanModels(ctx)
+			if err != nil {
+				return nil, err
+			}
+			var models []struct {
+				Name   string `json:"name"`
+				Format string `json:"format"`
+			}
+			if err := json.Unmarshal(data, &models); err != nil {
+				return nil, nil
+			}
+			result := make([]agent.LocalModel, 0, len(models))
+			for _, m := range models {
+				if m.Name != "" {
+					result = append(result, agent.LocalModel{Name: m.Name, Format: m.Format})
+				}
+			}
+			return result, nil
+		}),
+		agent.WithGatherLocalEngines(func(ctx context.Context) ([]agent.LocalEngine, error) {
+			if deps.ListEngines == nil {
+				return nil, nil
+			}
+			data, err := deps.ListEngines(ctx)
+			if err != nil {
+				return nil, err
+			}
+			var engines []struct {
+				Type    string `json:"type"`
+				Name    string `json:"name"`
+				Runtime string `json:"runtime"`
+			}
+			if err := json.Unmarshal(data, &engines); err != nil {
+				return nil, nil
+			}
+			hwInfo := buildHardwareInfo(ctx, cat, rt.Name())
+			result := make([]agent.LocalEngine, 0, len(engines))
+			seen := make(map[string]bool)
+			for _, e := range engines {
+				engineType := e.Type
+				if engineType == "" {
+					engineType = e.Name
+				}
+				if seen[engineType] {
+					continue
+				}
+				seen[engineType] = true
+				le := agent.LocalEngine{
+					Name:    e.Name,
+					Type:    engineType,
+					Runtime: e.Runtime,
+				}
+				// Enrich from catalog YAML
+				if asset := cat.FindEngineByName(engineType, knowledge.HardwareInfo{
+					GPUArch: hwInfo.GPUArch,
+				}); asset != nil {
+					le.Features = asset.Amplifier.Features
+					le.Notes = asset.Amplifier.PerformanceGain
+					le.TunableParams = asset.Startup.DefaultArgs
+				}
+				result = append(result, le)
+			}
+			return result, nil
+		}),
 	)
 	go explorer.Start(context.Background())
 

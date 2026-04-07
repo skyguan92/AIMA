@@ -16,7 +16,8 @@ func registerDeployTools(s *Server, deps *ToolDeps) {
 				`"engine":{"type":"string","description":"Engine type, e.g. 'vllm', 'llamacpp'. Omit to auto-select the best engine for this hardware."},`+
 				`"slot":{"type":"string","description":"Partition slot for multi-model deployment, e.g. 'slot-0'. Omit for default full-device allocation."},`+
 				`"config":{"type":"object","description":"Engine config overrides, e.g. {\"gpu_memory_utilization\": 0.9, \"max_model_len\": 131072, \"tensor_parallel_size\": 2}"},`+
-				`"max_cold_start_s":{"type":"integer","description":"Maximum acceptable cold start time in seconds. Engines exceeding this are excluded from auto-selection. 0 or omitted means no constraint."}`,
+				`"max_cold_start_s":{"type":"integer","description":"Maximum acceptable cold start time in seconds. Engines exceeding this are excluded from auto-selection. 0 or omitted means no constraint."},`+
+				`"auto_pull":{"type":"boolean","description":"Whether to auto-download missing models/engine images. Defaults to true. Set false to fail fast if resources are not locally available."}`,
 			"model"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.DeployApply == nil {
@@ -28,6 +29,7 @@ func registerDeployTools(s *Server, deps *ToolDeps) {
 				Slot          string         `json:"slot"`
 				Config        map[string]any `json:"config"`
 				MaxColdStartS int            `json:"max_cold_start_s"`
+				AutoPull      *bool          `json:"auto_pull"`
 			}
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
@@ -40,6 +42,12 @@ func registerDeployTools(s *Server, deps *ToolDeps) {
 					p.Config = map[string]any{}
 				}
 				p.Config["max_cold_start_s"] = p.MaxColdStartS
+			}
+			if p.AutoPull != nil && !*p.AutoPull {
+				if p.Config == nil {
+					p.Config = map[string]any{}
+				}
+				p.Config["_auto_pull"] = false
 			}
 			data, err := deps.DeployApply(ctx, p.Engine, p.Model, p.Slot, p.Config)
 			if err != nil {

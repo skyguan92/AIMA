@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -389,6 +390,16 @@ func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.Exp
 	run.StartedAt = time.Now()
 	_ = m.db.UpdateExplorationRun(context.Background(), run)
 
+	// Pre-flight: ensure the model is deployed before benchmarking.
+	// Without this, benchmark.run hits an empty endpoint and gets 0 tok/s.
+	if err := m.ensureDeployed(ctx, run, plan); err != nil {
+		run.Status = "failed"
+		run.Error = fmt.Sprintf("pre-flight deploy: %s", err)
+		run.CompletedAt = time.Now()
+		_ = m.db.UpdateExplorationRun(context.Background(), run)
+		return
+	}
+
 	stepResult, err := m.executeBenchmarkStep(ctx, run, plan, "validate", 0)
 	if err != nil {
 		run.Status = "failed"
@@ -402,6 +413,118 @@ func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.Exp
 	run.CompletedAt = time.Now()
 	run.SummaryJSON = stepResult.ResponseJSON
 	_ = m.db.UpdateExplorationRun(context.Background(), run)
+}
+
+// ensureDeployed deploys the target model+engine with config if not already running.
+// For validate tasks, config comes from SearchSpace (single-value entries).
+// For tune tasks, the Tuner handles deploy internally, so this is typically a no-config baseline.
+func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.ExplorationRun, plan ExplorationPlan) error {
+	if m.tools == nil {
+		return fmt.Errorf("no tool executor")
+	}
+
+	args := map[string]any{
+		"model":     plan.Target.Model,
+		"engine":    plan.Target.Engine,
+		"auto_pull": false, // Explorer must never download — only use locally available resources.
+	}
+	// Flatten SearchSpace into config overrides for deploy.
+	// SearchSpace from PlanTask.Params has single-value arrays; extract the first value.
+	if len(plan.SearchSpace) > 0 {
+		config := make(map[string]any, len(plan.SearchSpace))
+		for k, vals := range plan.SearchSpace {
+			if len(vals) > 0 {
+				config[k] = vals[0]
+			}
+		}
+		if len(config) > 0 {
+			args["config"] = config
+		}
+	}
+	deployArgs, _ := json.Marshal(args)
+
+	_ = m.db.InsertExplorationEvent(context.Background(), &state.ExplorationEvent{
+		RunID:       run.ID,
+		StepIndex:   0,
+		StepKind:    "deploy",
+		Status:      "running",
+		ToolName:    "deploy.apply",
+		RequestJSON: string(deployArgs),
+	})
+
+	result, err := m.tools.ExecuteTool(ctx, "deploy.apply", deployArgs)
+	if err == nil {
+		err = toolResultError(result)
+	}
+	if err != nil {
+		responseJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
+		_ = m.db.InsertExplorationEvent(context.Background(), &state.ExplorationEvent{
+			RunID:        run.ID,
+			StepIndex:    0,
+			StepKind:     "deploy",
+			Status:       "failed",
+			ToolName:     "deploy.apply",
+			RequestJSON:  string(deployArgs),
+			ResponseJSON: string(responseJSON),
+		})
+		return fmt.Errorf("deploy %s on %s: %w", plan.Target.Model, plan.Target.Engine, err)
+	}
+
+	responseJSON := ""
+	if result != nil {
+		responseJSON = result.Content
+	}
+	_ = m.db.InsertExplorationEvent(context.Background(), &state.ExplorationEvent{
+		RunID:        run.ID,
+		StepIndex:    0,
+		StepKind:     "deploy",
+		Status:       "completed",
+		ToolName:     "deploy.apply",
+		ResponseJSON: responseJSON,
+	})
+
+	slog.Info("exploration: model deployed for validation",
+		"model", plan.Target.Model, "engine", plan.Target.Engine)
+
+	// B14: Wait for the service to become ready before benchmarking.
+	// Without this, the benchmark hits an unloaded model and gets 0 tok/s.
+	if err := m.waitForReady(ctx, plan.Target.Model); err != nil {
+		slog.Warn("exploration: readiness check failed, proceeding anyway",
+			"model", plan.Target.Model, "error", err)
+	}
+	return nil
+}
+
+// waitForReady polls deploy.status until the deployment reports ready, or timeout.
+func (m *ExplorationManager) waitForReady(ctx context.Context, model string) error {
+	if m.tools == nil {
+		return nil
+	}
+	const (
+		pollInterval = 5 * time.Second
+		maxWait      = 5 * time.Minute
+	)
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		statusArgs, _ := json.Marshal(map[string]string{"name": model})
+		result, err := m.tools.ExecuteTool(ctx, "deploy.status", statusArgs)
+		if err == nil && result != nil {
+			var status struct {
+				Phase string `json:"phase"`
+				Ready bool   `json:"ready"`
+			}
+			if json.Unmarshal([]byte(result.Content), &status) == nil && status.Ready {
+				slog.Info("exploration: service ready", "model", model)
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
+	return fmt.Errorf("timeout waiting for %s to become ready after %v", model, maxWait)
 }
 
 func (m *ExplorationManager) executeOpenQuestion(ctx context.Context, run *state.ExplorationRun) {
@@ -448,6 +571,15 @@ func (m *ExplorationManager) executeOpenQuestion(ctx context.Context, run *state
 	run.Status = "running"
 	run.StartedAt = time.Now()
 	_ = m.db.UpdateExplorationRun(context.Background(), run)
+
+	// Pre-flight: ensure the model is deployed before benchmarking.
+	if err := m.ensureDeployed(ctx, run, plan); err != nil {
+		run.Status = "failed"
+		run.Error = fmt.Sprintf("pre-flight deploy: %s", err)
+		run.CompletedAt = time.Now()
+		_ = m.db.UpdateExplorationRun(context.Background(), run)
+		return
+	}
 
 	stepResult, err := m.executeBenchmarkStep(ctx, run, plan, "resolve_open_question", 0)
 	if err != nil {
