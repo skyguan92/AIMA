@@ -178,6 +178,19 @@ type ExplorationEvent struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+type ExplorationPlanRow struct {
+	ID          string
+	Tier        int
+	Trigger     string
+	Status      string // "active", "paused", "completed", "archived"
+	PlanJSON    string
+	Progress    int
+	Total       int
+	CreatedAt   time.Time
+	CompletedAt *time.Time
+	SummaryJSON string
+}
+
 func Open(ctx context.Context, dbPath string) (*DB, error) {
 	sqlDB, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -303,6 +316,10 @@ func (d *DB) migrate(ctx context.Context) error {
 	// v11: performance indexes for knowledge_notes, patrol_alerts, open_questions
 	if err := d.migrateV11(ctx); err != nil {
 		return fmt.Errorf("migrate v11: %w", err)
+	}
+	// v12: exploration_plans table for Explorer subsystem
+	if err := d.migrateV12(ctx); err != nil {
+		return fmt.Errorf("migrate v12: %w", err)
 	}
 	if _, err := d.db.ExecContext(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
@@ -981,6 +998,85 @@ CREATE INDEX IF NOT EXISTS idx_questions_status ON open_questions(status);`
 		return fmt.Errorf("set schema version: %w", err)
 	}
 	return nil
+}
+
+func (d *DB) migrateV12(ctx context.Context) error {
+	var version int
+	_ = d.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	if version >= 12 {
+		return nil
+	}
+
+	ddl := `
+CREATE TABLE IF NOT EXISTS exploration_plans (
+    id            TEXT PRIMARY KEY,
+    tier          INTEGER NOT NULL,
+    trigger       TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'active',
+    plan_json     TEXT NOT NULL,
+    progress      INTEGER DEFAULT 0,
+    total         INTEGER DEFAULT 0,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at  DATETIME,
+    summary_json  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_plans_status ON exploration_plans(status);`
+	if _, err := d.db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create exploration_plans table: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, "PRAGMA user_version = 12"); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) InsertExplorationPlan(ctx context.Context, plan *ExplorationPlanRow) error {
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO exploration_plans (id, tier, trigger, status, plan_json, progress, total, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		plan.ID, plan.Tier, plan.Trigger, plan.Status, plan.PlanJSON,
+		plan.Progress, plan.Total, plan.CreatedAt)
+	return err
+}
+
+func (d *DB) UpdateExplorationPlan(ctx context.Context, plan *ExplorationPlanRow) error {
+	_, err := d.db.ExecContext(ctx,
+		`UPDATE exploration_plans SET status=?, progress=?, completed_at=?, summary_json=? WHERE id=?`,
+		plan.Status, plan.Progress, plan.CompletedAt, plan.SummaryJSON, plan.ID)
+	return err
+}
+
+func (d *DB) ListExplorationPlans(ctx context.Context, status string) ([]*ExplorationPlanRow, error) {
+	query := `SELECT id, tier, trigger, status, plan_json, progress, total, created_at, completed_at, summary_json FROM exploration_plans`
+	var args []any
+	if status != "" {
+		query += ` WHERE status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC LIMIT 50`
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var plans []*ExplorationPlanRow
+	for rows.Next() {
+		p := &ExplorationPlanRow{}
+		var completedAt sql.NullTime
+		var summaryJSON sql.NullString
+		if err := rows.Scan(&p.ID, &p.Tier, &p.Trigger, &p.Status, &p.PlanJSON,
+			&p.Progress, &p.Total, &p.CreatedAt, &completedAt, &summaryJSON); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			p.CompletedAt = &completedAt.Time
+		}
+		if summaryJSON.Valid {
+			p.SummaryJSON = summaryJSON.String
+		}
+		plans = append(plans, p)
+	}
+	return plans, rows.Err()
 }
 
 // InsertPatrolAlert persists a patrol alert.
