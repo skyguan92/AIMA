@@ -163,4 +163,9 @@ type ToolDeps struct {
 	ScenarioList  func(ctx context.Context) (json.RawMessage, error)
 	ScenarioShow  func(ctx context.Context, name string) (json.RawMessage, error)
 	ScenarioApply func(ctx context.Context, name string, dryRun bool) (json.RawMessage, error)
+
+	// Explorer
+	ExplorerStatus  func(ctx context.Context) (json.RawMessage, error)
+	ExplorerConfig  func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
+	ExplorerTrigger func(ctx context.Context) (json.RawMessage, error)
 }
