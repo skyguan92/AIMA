@@ -1231,6 +1231,8 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 					t.Fatalf("engine = %v, want vllm", args["engine"])
 				}
 				return &ToolResult{Content: `{"result":{"throughput_tps":51.2},"saved":true,"benchmark_id":"bench-001","config_id":"cfg-001"}`}, nil
+			case "catalog.override":
+				return &ToolResult{Content: `{"path":"/tmp/test.yaml","action":"created"}`}, nil
 			default:
 				return nil, fmt.Errorf("unexpected tool: %s", name)
 			}
