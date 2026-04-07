@@ -62,7 +62,7 @@ func (c *OpenAICompleter) Complete(ctx context.Context, systemPrompt, userPrompt
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := c.baseURL + "/v1/chat/completions"
+	url := c.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)

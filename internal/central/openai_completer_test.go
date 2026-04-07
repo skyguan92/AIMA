@@ -48,7 +48,7 @@ func TestOpenAICompleter(t *testing.T) {
 	}))
 	defer mock.Close()
 
-	completer := NewOpenAICompleter(mock.URL, "test-api-key", WithOpenAIModel("test-model"))
+	completer := NewOpenAICompleter(mock.URL+"/v1", "test-api-key", WithOpenAIModel("test-model"))
 
 	result, err := completer.Complete(context.Background(), "system prompt", "user prompt")
 	if err != nil {
@@ -74,7 +74,7 @@ func TestOpenAICompleterError(t *testing.T) {
 	}))
 	defer mock.Close()
 
-	completer := NewOpenAICompleter(mock.URL, "key")
+	completer := NewOpenAICompleter(mock.URL+"/v1", "key")
 	_, err := completer.Complete(context.Background(), "sys", "user")
 	if err == nil {
 		t.Fatal("expected error on 429")
@@ -88,7 +88,7 @@ func TestOpenAICompleterNoChoices(t *testing.T) {
 	}))
 	defer mock.Close()
 
-	completer := NewOpenAICompleter(mock.URL, "key")
+	completer := NewOpenAICompleter(mock.URL+"/v1", "key")
 	_, err := completer.Complete(context.Background(), "sys", "user")
 	if err == nil {
 		t.Fatal("expected error on empty choices")

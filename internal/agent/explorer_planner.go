@@ -23,7 +23,27 @@ type PlanInput struct {
 	Advisories    []Advisory
 	History       []ExplorationRun
 	OpenQuestions []OpenQuestion
+	LocalModels   []LocalModel  // models physically present on this device
+	LocalEngines  []LocalEngine // engines installed on this device
 	Event         *ExplorerEvent
+}
+
+// LocalModel describes a model installed on this device.
+type LocalModel struct {
+	Name   string `json:"name"`
+	Format string `json:"format"` // "safetensors", "gguf"
+}
+
+// LocalEngine describes an engine installed on this device with catalog metadata.
+// The TunableParams field exposes startup.default_args from the engine YAML so
+// that planners (especially LLM) know exactly which knobs can be adjusted.
+type LocalEngine struct {
+	Name          string         `json:"name"`
+	Type          string         `json:"type"`
+	Runtime       string         `json:"runtime"` // "native", "container"
+	Features      []string       `json:"features,omitempty"`
+	Notes         string         `json:"notes,omitempty"`         // e.g. "CPU+GPU hybrid MoE inference"
+	TunableParams map[string]any `json:"tunable_params,omitempty"` // startup.default_args from engine YAML
 }
 
 type HardwareInfo struct {
@@ -95,6 +115,9 @@ type RulePlanner struct{}
 func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, error) {
 	var tasks []PlanTask
 	defaultHardware := firstTaskHardware(input.Hardware.Profile, input.Hardware.GPUArch)
+	localModels := toSet(input.LocalModels)
+	localEngineTypes := localEngineTypeSet(input.LocalEngines)
+	modelFormats := localModelFormatMap(input.LocalModels)
 
 	// Rule 1: deployed models without benchmarks -- highest priority
 	for _, d := range input.ActiveDeploys {
@@ -128,12 +151,19 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 	}
 
 	// Rule 3: knowledge gaps -- max 3 per cycle, filtered to local hardware,
-	// sorted by model name (stable)
+	// filtered to locally available model+engine combos + format compatibility
 	var localGaps []GapEntry
 	for _, g := range input.Gaps {
-		if g.Hardware == defaultHardware || g.Hardware == "" {
-			localGaps = append(localGaps, g)
+		if g.Hardware != defaultHardware && g.Hardware != "" {
+			continue
 		}
+		if !isLocallyAvailable(g.Model, g.Engine, localModels, localEngineTypes) {
+			continue
+		}
+		if !engineFormatCompatible(g.Engine, modelFormats[g.Model]) {
+			continue
+		}
+		localGaps = append(localGaps, g)
 	}
 	sort.Slice(localGaps, func(i, j int) bool { return localGaps[i].Model < localGaps[j].Model })
 	for i, gap := range localGaps {
@@ -146,13 +176,16 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 			Model:    gap.Model,
 			Engine:   gap.Engine,
 			Priority: 2 + i,
-			Reason:   "knowledge gap",
+			Reason:   "knowledge gap (locally available)",
 		})
 	}
 
-	// Rule 4: untested open questions
+	// Rule 4: untested open questions (only if model+engine available locally)
 	for _, q := range input.OpenQuestions {
 		if q.Status != "untested" {
+			continue
+		}
+		if !isLocallyAvailable(q.Model, q.Engine, localModels, localEngineTypes) {
 			continue
 		}
 		tasks = append(tasks, PlanTask{
@@ -165,6 +198,9 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 			Reason:    fmt.Sprintf("open question %s", q.ID),
 		})
 	}
+
+	// B11: Dedup against completed history
+	tasks = deduplicateTasks(tasks, input.History)
 
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].Priority < tasks[j].Priority })
 
@@ -187,6 +223,22 @@ func hasHistoryFor(history []ExplorationRun, model, engine string) bool {
 	return false
 }
 
+// deduplicateTasks removes tasks whose model+engine already has a completed
+// exploration run in history (B11 fix).
+func deduplicateTasks(tasks []PlanTask, history []ExplorationRun) []PlanTask {
+	if len(history) == 0 {
+		return tasks
+	}
+	filtered := tasks[:0]
+	for _, t := range tasks {
+		// Advisories (with SourceRef) always pass — central asked us to re-validate.
+		if t.SourceRef != "" || !hasHistoryFor(history, t.Model, t.Engine) {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
 func firstTaskHardware(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -194,6 +246,60 @@ func firstTaskHardware(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func toSet(items []LocalModel) map[string]bool {
+	s := make(map[string]bool, len(items))
+	for _, item := range items {
+		s[item.Name] = true
+	}
+	return s
+}
+
+// localModelFormatMap builds a name→format map for format compatibility checks.
+func localModelFormatMap(models []LocalModel) map[string]string {
+	m := make(map[string]string, len(models))
+	for _, model := range models {
+		m[model.Name] = model.Format
+	}
+	return m
+}
+
+// engineFormatCompatible returns true if a model's format is compatible with an engine type.
+// llamacpp needs GGUF; vllm/sglang/sglang-kt need safetensors.
+func engineFormatCompatible(engineType, modelFormat string) bool {
+	if modelFormat == "" || engineType == "" {
+		return true // unknown format — allow (best-effort)
+	}
+	switch engineType {
+	case "llamacpp":
+		return modelFormat == "gguf"
+	case "vllm", "sglang", "sglang-kt":
+		return modelFormat == "safetensors"
+	default:
+		return true // unknown engine — allow
+	}
+}
+
+func localEngineTypeSet(engines []LocalEngine) map[string]bool {
+	s := make(map[string]bool, len(engines))
+	for _, e := range engines {
+		s[e.Type] = true
+		s[e.Name] = true
+	}
+	return s
+}
+
+// isLocallyAvailable checks if the model and engine are present on this device.
+// Empty local sets mean "no constraint" (backwards-compatible for tests).
+func isLocallyAvailable(model, engine string, localModels, localEngines map[string]bool) bool {
+	if len(localModels) > 0 && !localModels[model] {
+		return false
+	}
+	if len(localEngines) > 0 && engine != "" && !localEngines[engine] {
+		return false
+	}
+	return true
 }
 
 // ExplorationRun is re-exported from state for plan input convenience.

@@ -36,31 +36,48 @@ func (p *LLMPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, 
 		return nil, err
 	}
 	defaultHardware := firstTaskHardware(input.Hardware.Profile, input.Hardware.GPUArch)
+	localModels := toSet(input.LocalModels)
+	localEngineTypes := localEngineTypeSet(input.LocalEngines)
+	modelFormats := localModelFormatMap(input.LocalModels)
 	for i := range plan.Tasks {
 		if plan.Tasks[i].Hardware == "" {
 			plan.Tasks[i].Hardware = defaultHardware
 		}
 	}
+	// Post-filter: remove tasks referencing models/engines not on this device + format check
+	plan.Tasks = filterLocalTasks(plan.Tasks, localModels, localEngineTypes, modelFormats)
+	// B11: dedup against completed history
+	plan.Tasks = deduplicateTasks(plan.Tasks, input.History)
 	return plan, nil
 }
 
 const (
-	maxLLMGaps          = 20
-	maxLLMOpenQuestions  = 10
-	maxLLMHistory       = 5
+	maxLLMGaps         = 20
+	maxLLMOpenQuestions = 10
+	maxLLMHistory      = 5
 )
 
 // filterPlanInput reduces PlanInput to a size suitable for LLM prompts.
-// Only gaps matching local hardware are kept; collections are capped.
+// Only gaps matching local hardware and locally available resources are kept.
 func filterPlanInput(input PlanInput) PlanInput {
 	localHW := firstTaskHardware(input.Hardware.Profile, input.Hardware.GPUArch)
+	localModels := toSet(input.LocalModels)
+	localEngineTypes := localEngineTypeSet(input.LocalEngines)
+	modelFormats := localModelFormatMap(input.LocalModels)
 
-	// Filter gaps to local hardware only
+	// Filter gaps to local hardware AND locally available resources AND format compatibility
 	var localGaps []GapEntry
 	for _, g := range input.Gaps {
-		if g.Hardware == localHW || g.Hardware == "" {
-			localGaps = append(localGaps, g)
+		if g.Hardware != localHW && g.Hardware != "" {
+			continue
 		}
+		if !isLocallyAvailable(g.Model, g.Engine, localModels, localEngineTypes) {
+			continue
+		}
+		if !engineFormatCompatible(g.Engine, modelFormats[g.Model]) {
+			continue
+		}
+		localGaps = append(localGaps, g)
 	}
 	if len(localGaps) > maxLLMGaps {
 		localGaps = localGaps[:maxLLMGaps]
@@ -85,37 +102,56 @@ func filterPlanInput(input PlanInput) PlanInput {
 		Advisories:    input.Advisories,
 		History:       hist,
 		OpenQuestions:  oq,
+		LocalModels:   input.LocalModels,
+		LocalEngines:  input.LocalEngines,
 		Event:         input.Event,
 	}
 }
 
-const llmPlannerSystemPrompt = `You are an AI inference optimization planner. Given device hardware info, knowledge gaps, and deployment state, generate an exploration plan as JSON.
+const llmPlannerSystemPrompt = `You are an AI inference optimization planner for edge devices. Given device hardware info, locally available models/engines, knowledge gaps, and deployment state, generate an exploration plan as JSON.
+
+CRITICAL CONSTRAINTS:
+- You can ONLY use models listed in "local_models" — these are physically present on the device.
+- You can ONLY use engines listed in "local_engines" — these are installed and ready to run on the device.
+- Do NOT suggest downloading new models or engines. Everything must already be available locally.
+- Do NOT plan tasks for model+engine combos that are not locally available.
+- Model-engine format compatibility: llamacpp requires GGUF format models; vllm/sglang/sglang-kt use safetensors format. Check the model's "format" field and only pair with compatible engines.
 
 Output format:
 {"tasks":[{"kind":"validate|tune|open_question","model":"...","engine":"...","params":{},"reason":"...","priority":0}]}
 
 Task kinds:
 - validate: benchmark a model+engine config to establish baseline performance
-- tune: search parameter space (quantization, batch_size, tp_size) to optimize performance
+- tune: adjust engine-specific parameters to optimize performance. Use ONLY parameters from the engine's "tunable_params" field. Each param value in "params" must be a single value, not an array.
 - open_question: test a specific hypothesis from the open questions list
+
+Engine metadata:
+- Each engine in "local_engines" includes "tunable_params" (the knobs you can adjust) and "features" (capabilities like cpu_gpu_hybrid_moe).
+- For tune tasks, choose parameters from tunable_params and suggest specific values based on the hardware (VRAM, GPU count, CPU cores).
+- Pay attention to engine "features" and "notes" — they describe the engine's architecture (e.g., CPU+GPU hybrid means some params control CPU offloading).
 
 Rules:
 - Prioritize deployed models without benchmarks (kind=validate)
-- For tune tasks, suggest specific parameter ranges based on hardware VRAM
+- For tune tasks, suggest specific parameter values (not ranges) from the engine's tunable_params
 - Consider central advisories and validate them
 - Max 5 tasks per plan
 - Only use task kinds listed above
+- Skip model+engine combos that already appear in "history" with status "completed" unless you have a specific new config to test
 - Be specific about WHY each task matters`
 
 func buildPlannerPrompt(input PlanInput) string {
-	data, _ := json.MarshalIndent(map[string]any{
+	promptData := map[string]any{
 		"hardware":       input.Hardware,
 		"gaps":           input.Gaps,
 		"active_deploys": input.ActiveDeploys,
 		"advisories":     input.Advisories,
 		"open_questions": input.OpenQuestions,
+		"local_models":   input.LocalModels,
+		"local_engines":  input.LocalEngines,
+		"history":        input.History,
 		"event":          input.Event,
-	}, "", "  ")
+	}
+	data, _ := json.MarshalIndent(promptData, "", "  ")
 	return string(data)
 }
 
@@ -143,4 +179,23 @@ func parsePlanResponse(content string) (*ExplorerPlan, error) {
 		Tasks:     parsed.Tasks,
 		Reasoning: trimmed, // O6: use stripped version, not raw content with code fences
 	}, nil
+}
+
+// filterLocalTasks removes tasks whose model or engine is not locally available
+// or where the model format is incompatible with the engine type.
+func filterLocalTasks(tasks []PlanTask, localModels, localEngines map[string]bool, modelFormats map[string]string) []PlanTask {
+	if len(localModels) == 0 && len(localEngines) == 0 {
+		return tasks
+	}
+	filtered := tasks[:0]
+	for _, t := range tasks {
+		if !isLocallyAvailable(t.Model, t.Engine, localModels, localEngines) {
+			continue
+		}
+		if !engineFormatCompatible(t.Engine, modelFormats[t.Model]) {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	return filtered
 }
