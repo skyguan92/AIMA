@@ -81,6 +81,11 @@ func WithActionCallback(fn func(ctx context.Context, action PatrolAction)) Patro
 	return func(p *Patrol) { p.onAction = fn }
 }
 
+// WithEventBus connects the patrol loop to the Explorer's event bus.
+func WithEventBus(bus *EventBus) PatrolOption {
+	return func(p *Patrol) { p.eventBus = bus }
+}
+
 // Patrol runs periodic device inspections.
 type Patrol struct {
 	config       PatrolConfig
@@ -88,6 +93,7 @@ type Patrol struct {
 	persist      AlertPersister
 	healer       *Healer
 	onAction     func(ctx context.Context, action PatrolAction)
+	eventBus     *EventBus
 	mu           sync.RWMutex
 	alerts       []Alert
 	actions      []PatrolAction
@@ -200,6 +206,11 @@ func (p *Patrol) RunOnce(ctx context.Context) []Alert {
 				slog.Warn("patrol: failed to persist alert", "error", err)
 			}
 		}
+	}
+
+	// Emit events to EventBus for Explorer consumption
+	for _, alert := range newAlerts {
+		p.emitEvent(alert)
 	}
 
 	// Automated response to alerts
@@ -432,6 +443,25 @@ func (p *Patrol) RecentActions(limit int) []PatrolAction {
 	result := make([]PatrolAction, limit)
 	copy(result, p.actions[start:])
 	return result
+}
+
+func (p *Patrol) emitEvent(alert Alert) {
+	if p.eventBus == nil {
+		return
+	}
+	var eventType string
+	switch alert.Type {
+	case "deploy_crash":
+		eventType = EventPatrolOOM // OOM is the most common crash cause
+	case "gpu_idle":
+		eventType = EventPatrolIdle
+	default:
+		return // not all alerts trigger exploration
+	}
+	p.eventBus.Publish(ExplorerEvent{
+		Type:    eventType,
+		AlertID: alert.ID,
+	})
 }
 
 func (p *Patrol) reactToAlerts(ctx context.Context, alerts []Alert) {
