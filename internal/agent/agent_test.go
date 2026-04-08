@@ -308,11 +308,11 @@ func TestAgent_SystemPrompt(t *testing.T) {
 	if !contains(sysPrompt, "# AIMA Agent") {
 		t.Error("system prompt missing embedded core prompt header")
 	}
-	if !contains(sysPrompt, "agent.guide") {
-		t.Error("system prompt missing agent.guide pointer")
+	if !contains(sysPrompt, "hardware.detect") {
+		t.Error("system prompt missing hardware.detect tool reference")
 	}
-	if !contains(sysPrompt, "## When to Use Which Tool") {
-		t.Error("system prompt missing tool decision boundaries section")
+	if !contains(sysPrompt, "deploy.apply") {
+		t.Error("system prompt missing deploy.apply tool reference")
 	}
 }
 
