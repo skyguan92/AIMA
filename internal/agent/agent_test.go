@@ -1090,6 +1090,7 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 	}
 
 	tuner := NewTuner(tools)
+	tuner.gpuReleaseSleep = 0 // skip GPU release delay in tests
 	session, err := tuner.Start(context.Background(), TuningConfig{
 		Model:      "qwen3-8b",
 		Engine:     "vllm",
@@ -1103,7 +1104,7 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		current := tuner.CurrentSession()
 		if current != nil && current.Status != "running" {
@@ -1162,6 +1163,7 @@ func TestExplorationManagerTunePersistsRun(t *testing.T) {
 	}
 
 	tuner := NewTuner(tools)
+	tuner.gpuReleaseSleep = 0
 	manager := NewExplorationManager(db, tuner, tools)
 	run, err := manager.Start(ctx, ExplorationStart{
 		Kind: "tune",
@@ -1182,7 +1184,7 @@ func TestExplorationManagerTunePersistsRun(t *testing.T) {
 	}
 
 	var status *ExplorationStatus
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		status, err = manager.Result(ctx, run.ID)
 		if err != nil {
@@ -1261,7 +1263,7 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 	}
 
 	var status *ExplorationStatus
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		status, err = manager.Result(ctx, run.ID)
 		if err != nil {
@@ -1331,7 +1333,7 @@ func TestExplorationManagerOpenQuestionAutoResolves(t *testing.T) {
 	}
 
 	var status *ExplorationStatus
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		status, err = manager.Result(ctx, run.ID)
 		if err != nil {
