@@ -52,6 +52,29 @@ type mockCommandRunner struct {
 	pipe      func(context.Context, []string, []string) error
 }
 
+type onboardingManifestDoc struct {
+	Locales map[string]*onboardingLocaleDoc `json:"locales"`
+}
+
+type onboardingLocaleDoc struct {
+	FullCommands onboardingFullCommandsDoc `json:"full_commands"`
+}
+
+type onboardingFullCommandsDoc struct {
+	Groups []onboardingGroupDoc `json:"groups"`
+}
+
+type onboardingGroupDoc struct {
+	ID    string                 `json:"id"`
+	Items []onboardingCommandDoc `json:"items"`
+}
+
+type onboardingCommandDoc struct {
+	ID          string `json:"id"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
 func (m *mockCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	if m.run != nil {
 		return m.run(ctx, name, args...)
@@ -116,28 +139,13 @@ func TestBuildOnboardingManifestJSON_IncludesAllTopLevelCommands(t *testing.T) {
 		t.Fatalf("build onboarding manifest: %v", err)
 	}
 
-	var manifest onboardingManifest
-	if err := json.Unmarshal(raw, &manifest); err != nil {
-		t.Fatalf("unmarshal onboarding manifest: %v", err)
-	}
-
+	manifest := decodeOnboardingManifest(t, raw)
 	zh, ok := manifest.Locales["zh"]
 	if !ok || zh == nil {
 		t.Fatalf("zh locale missing: %#v", manifest.Locales)
 	}
 
-	var topLevel onboardingGroup
-	found := false
-	for _, group := range zh.FullCommands.Groups {
-		if group.ID == "top_level_commands" {
-			topLevel = group
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("top_level_commands group missing: %#v", zh.FullCommands.Groups)
-	}
+	topLevel := findOnboardingGroup(t, zh.FullCommands.Groups, "top_level_commands")
 
 	root := cli.NewRootCmd(&cli.App{})
 	root.InitDefaultHelpCmd()
@@ -209,19 +217,54 @@ func TestBuildOnboardingManifestJSON_MarksSampleModelExamplesAsReplaceable(t *te
 	}
 }
 
-func TestBuildOnboardingManifestJSON_LocalizesTopLevelCommandDescriptions(t *testing.T) {
+func TestBuildOnboardingManifestJSON_UsesLocalizedTemplates(t *testing.T) {
 	t.Parallel()
 
-	raw, err := buildOnboardingManifestJSON(&knowledge.Catalog{})
+	sourceRaw, err := catalog.FS.ReadFile("ui-onboarding.json")
+	if err != nil {
+		t.Fatalf("read embedded onboarding manifest: %v", err)
+	}
+
+	source := decodeOnboardingManifest(t, sourceRaw)
+	zhSource, ok := source.Locales["zh"]
+	if !ok || zhSource == nil {
+		t.Fatalf("source zh locale missing: %#v", source.Locales)
+	}
+	enSource, ok := source.Locales["en"]
+	if !ok || enSource == nil {
+		t.Fatalf("source en locale missing: %#v", source.Locales)
+	}
+
+	zhTemplates := findOnboardingGroup(t, zhSource.FullCommands.Groups, "top_level_commands")
+	enTemplates := findOnboardingGroup(t, enSource.FullCommands.Groups, "top_level_commands")
+	zhHelpTemplate := findOnboardingCommandByID(t, zhTemplates.Items, "help")
+	zhModelTemplate := findOnboardingCommandByID(t, zhTemplates.Items, "model")
+	zhDeployTemplate := findOnboardingCommandByID(t, zhTemplates.Items, "deploy")
+	enHelpTemplate := findOnboardingCommandByID(t, enTemplates.Items, "help")
+
+	for _, template := range []onboardingCommandDoc{zhHelpTemplate, zhModelTemplate, zhDeployTemplate, enHelpTemplate} {
+		if strings.TrimSpace(template.Description) == "" {
+			t.Fatalf("top_level_commands template missing description: %#v", template)
+		}
+	}
+
+	raw, err := buildOnboardingManifestJSON(&knowledge.Catalog{
+		ModelAssets: []knowledge.ModelAsset{
+			{
+				Metadata: knowledge.ModelMetadata{
+					Name:           "demo-llm",
+					Type:           "llm",
+					Family:         "demo",
+					ParameterCount: "1B",
+				},
+			},
+		},
+	})
 	if err != nil {
 		t.Fatalf("build onboarding manifest: %v", err)
 	}
 
-	var manifest onboardingManifest
-	if err := json.Unmarshal(raw, &manifest); err != nil {
-		t.Fatalf("unmarshal onboarding manifest: %v", err)
-	}
-
+	manifest := decodeOnboardingManifest(t, raw)
 	zh := manifest.Locales["zh"]
 	en := manifest.Locales["en"]
 	if zh == nil || en == nil {
@@ -229,62 +272,91 @@ func TestBuildOnboardingManifestJSON_LocalizesTopLevelCommandDescriptions(t *tes
 	}
 
 	zhHelp := findOnboardingCommandDescription(t, zh.FullCommands.Groups, "top_level_commands", "/cli help")
-	enHelp := findOnboardingCommandDescription(t, en.FullCommands.Groups, "top_level_commands", "/cli help")
-	if zhHelp != "查看任意命令帮助。可直接执行，例如 /cli help；查看 model 的帮助可用 /cli help model。" {
-		t.Fatalf("zh /cli help description = %q, want %q", zhHelp, "查看任意命令帮助。可直接执行，例如 /cli help；查看 model 的帮助可用 /cli help model。")
+	if want := replaceSampleModelPlaceholder(zhHelpTemplate.Description, "demo-llm"); zhHelp != want {
+		t.Fatalf("zh /cli help description = %q, want %q", zhHelp, want)
 	}
-	if enHelp != "View help for any command. You can run it directly, for example /cli help; for model help use /cli help model." {
-		t.Fatalf("en /cli help description = %q, want %q", enHelp, "View help for any command. You can run it directly, for example /cli help; for model help use /cli help model.")
+
+	enHelp := findOnboardingCommandDescription(t, en.FullCommands.Groups, "top_level_commands", "/cli help")
+	if want := replaceSampleModelPlaceholder(enHelpTemplate.Description, "demo-llm"); enHelp != want {
+		t.Fatalf("en /cli help description = %q, want %q", enHelp, want)
 	}
 
 	zhModel := findOnboardingCommandDescription(t, zh.FullCommands.Groups, "top_level_commands", "/cli model")
-	if zhModel != "管理模型。需要子命令，例如 /cli model list 或 /cli model pull qwen3-8b。" {
-		t.Fatalf("zh /cli model description = %q, want %q", zhModel, "管理模型。需要子命令，例如 /cli model list 或 /cli model pull qwen3-8b。")
+	if want := replaceSampleModelPlaceholder(zhModelTemplate.Description, "demo-llm"); zhModel != want {
+		t.Fatalf("zh /cli model description = %q, want %q", zhModel, want)
 	}
 
 	zhDeploy := findOnboardingCommandDescription(t, zh.FullCommands.Groups, "top_level_commands", "/cli deploy")
-	if zhDeploy != "部署推理服务。通常需要模型名，例如 /cli deploy qwen3-8b --dry-run；查看部署列表可用 /cli deploy list。" {
-		t.Fatalf("zh /cli deploy description = %q, want %q", zhDeploy, "部署推理服务。通常需要模型名，例如 /cli deploy qwen3-8b --dry-run；查看部署列表可用 /cli deploy list。")
+	if want := replaceSampleModelPlaceholder(zhDeployTemplate.Description, "demo-llm"); zhDeploy != want {
+		t.Fatalf("zh /cli deploy description = %q, want %q", zhDeploy, want)
 	}
 }
 
-func TestRewriteOnboardingCommands_DropsKnownCommandWhenCLICommandIsMissing(t *testing.T) {
+func TestBuildTopLevelOnboardingItems_FallsBackToCommandShort(t *testing.T) {
 	t.Parallel()
 
 	root := &cobra.Command{Use: "aima"}
-	items := []onboardingCommand{
-		{ID: "help", Command: "/cli help", Description: "show help"},
-		{ID: "custom", Command: "/cli custom", Description: "custom command"},
-	}
+	root.AddCommand(&cobra.Command{
+		Use:   "version",
+		Short: "Show version information",
+	})
 
-	got := rewriteOnboardingCommands(items, root, "demo-llm")
-	if len(got) != 1 {
-		t.Fatalf("rewriteOnboardingCommands() item count = %d, want 1 (%#v)", len(got), got)
+	items := buildTopLevelOnboardingItems(root, map[string]string{})
+	if len(items) != 1 {
+		t.Fatalf("buildTopLevelOnboardingItems() item count = %d, want 1", len(items))
 	}
-	if got[0].ID != "custom" {
-		t.Fatalf("rewriteOnboardingCommands() preserved wrong item: %#v", got)
-	}
-	if got[0].Command != "/cli custom" {
-		t.Fatalf("rewriteOnboardingCommands() command = %q, want /cli custom", got[0].Command)
+	if got := items[0]["description"]; got != "Show version information" {
+		t.Fatalf("buildTopLevelOnboardingItems() description = %#v, want %q", got, "Show version information")
 	}
 }
 
-func findOnboardingCommandDescription(t *testing.T, groups []onboardingGroup, groupID, command string) string {
+func decodeOnboardingManifest(t *testing.T, raw []byte) onboardingManifestDoc {
+	t.Helper()
+
+	var manifest onboardingManifestDoc
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("unmarshal onboarding manifest: %v", err)
+	}
+	return manifest
+}
+
+func findOnboardingGroup(t *testing.T, groups []onboardingGroupDoc, groupID string) onboardingGroupDoc {
 	t.Helper()
 
 	for _, group := range groups {
-		if group.ID != groupID {
-			continue
+		if group.ID == groupID {
+			return group
 		}
-		for _, item := range group.Items {
-			if item.Command == command {
-				return item.Description
-			}
-		}
-		t.Fatalf("command %q not found in group %q", command, groupID)
 	}
 
 	t.Fatalf("group %q not found", groupID)
+	return onboardingGroupDoc{}
+}
+
+func findOnboardingCommandByID(t *testing.T, items []onboardingCommandDoc, id string) onboardingCommandDoc {
+	t.Helper()
+
+	for _, item := range items {
+		if item.ID == id {
+			return item
+		}
+	}
+
+	t.Fatalf("command id %q not found", id)
+	return onboardingCommandDoc{}
+}
+
+func findOnboardingCommandDescription(t *testing.T, groups []onboardingGroupDoc, groupID, command string) string {
+	t.Helper()
+
+	group := findOnboardingGroup(t, groups, groupID)
+	for _, item := range group.Items {
+		if item.Command == command {
+			return item.Description
+		}
+	}
+
+	t.Fatalf("command %q not found in group %q", command, groupID)
 	return ""
 }
 
