@@ -150,7 +150,12 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 	defer func() {
 		t.mu.Lock()
 		if session.Status == "running" {
-			session.Status = "completed"
+			if len(session.Results) == 0 {
+				session.Status = "failed"
+				session.Error = "no tuning candidates produced a successful benchmark"
+			} else {
+				session.Status = "completed"
+			}
 		}
 		session.CompletedAt = time.Now()
 		t.mu.Unlock()
@@ -172,29 +177,40 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 		}
 		waitForGPURelease(ctx, t.tools, session.Config.Model, t.gpuReleaseSleep)
 
-		// Deploy with this config
+		// Deploy with this config and wait until the exact candidate is ready.
 		deployArgs, _ := json.Marshal(map[string]any{
-			"model":  session.Config.Model,
-			"engine": session.Config.Engine,
-			"config": candidate,
+			"model":   session.Config.Model,
+			"engine":  session.Config.Engine,
+			"config":  candidate,
+			"no_pull": true,
 		})
-		deployResult, err := t.tools.ExecuteTool(ctx, "deploy.apply", deployArgs)
-		if err == nil {
-			err = toolResultError(deployResult)
-		}
+		deployResult, err := deployLocalAndWait(ctx, t.tools, deployArgs)
 		if err != nil {
 			slog.Warn("tuning: deploy failed, skipping config", "error", err)
 			continue
 		}
 
 		// Benchmark
+		endpoint := session.Config.Endpoint
+		if endpoint == "" {
+			endpoint = deployResult.Endpoint
+		}
+		if endpoint == "" {
+			slog.Warn("tuning: deploy result missing ready endpoint, skipping config")
+			continue
+		}
+		deployConfig := deployResult.Config
+		if len(deployConfig) == 0 {
+			deployConfig = candidate
+		}
 		benchArgs, _ := json.Marshal(map[string]any{
-			"model":       session.Config.Model,
-			"endpoint":    session.Config.Endpoint,
-			"concurrency": session.Config.Concurrency,
-			"rounds":      session.Config.Rounds,
-			"hardware":    session.Config.Hardware,
-			"engine":      session.Config.Engine,
+			"model":         session.Config.Model,
+			"endpoint":      endpoint,
+			"concurrency":   session.Config.Concurrency,
+			"rounds":        session.Config.Rounds,
+			"hardware":      session.Config.Hardware,
+			"engine":        session.Config.Engine,
+			"deploy_config": deployConfig,
 		})
 		result, err := t.tools.ExecuteTool(ctx, "benchmark.run", benchArgs)
 		if err == nil {
@@ -249,14 +265,12 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 	// Redeploy best config as final state
 	if session.BestConfig != nil {
 		deployArgs, _ := json.Marshal(map[string]any{
-			"model":  session.Config.Model,
-			"engine": session.Config.Engine,
-			"config": session.BestConfig,
+			"model":   session.Config.Model,
+			"engine":  session.Config.Engine,
+			"config":  session.BestConfig,
+			"no_pull": true,
 		})
-		deployResult, err := t.tools.ExecuteTool(ctx, "deploy.apply", deployArgs)
-		if err == nil {
-			err = toolResultError(deployResult)
-		}
+		_, err := deployLocalAndWait(ctx, t.tools, deployArgs)
 		if err != nil {
 			slog.Warn("tuning: failed to deploy best config", "error", err)
 		} else {

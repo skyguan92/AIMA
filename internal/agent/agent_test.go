@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -650,7 +651,7 @@ func TestPatrolCrashAlertTriggersHealAttempt(t *testing.T) {
 		tools: []ToolDefinition{},
 		results: map[string]*ToolResult{
 			"device.metrics": {Content: `{"gpu":null}`},
-			"deploy.list":    {Content: `[{"name":"test-deploy","status":"CrashLoopBackOff"}]`},
+			"deploy.list":    {Content: `[{"name":"test-deploy","phase":"failed","status":"failed"}]`},
 			"deploy.logs":    {Content: `some log: CUDA out of memory`},
 		},
 	}
@@ -698,7 +699,7 @@ func TestPatrolWithoutHealerRecordsNotify(t *testing.T) {
 		tools: []ToolDefinition{},
 		results: map[string]*ToolResult{
 			"device.metrics": {Content: `{"gpu":null}`},
-			"deploy.list":    {Content: `[{"name":"broken","status":"Error"}]`},
+			"deploy.list":    {Content: `[{"name":"broken","phase":"failed","status":"failed"}]`},
 		},
 	}
 
@@ -720,7 +721,7 @@ func TestPatrolSelfHealDisabled(t *testing.T) {
 		tools: []ToolDefinition{},
 		results: map[string]*ToolResult{
 			"device.metrics": {Content: `{"gpu":null}`},
-			"deploy.list":    {Content: `[{"name":"broken","status":"CrashLoopBackOff"}]`},
+			"deploy.list":    {Content: `[{"name":"broken","phase":"failed","status":"failed"}]`},
 		},
 	}
 
@@ -889,7 +890,7 @@ func TestPatrolRecentActionsLimit(t *testing.T) {
 		tools: []ToolDefinition{},
 		results: map[string]*ToolResult{
 			"device.metrics": {Content: `{"gpu":null}`},
-			"deploy.list":    {Content: `[{"name":"d1","status":"Error"},{"name":"d2","status":"Failed"}]`},
+			"deploy.list":    {Content: `[{"name":"d1","phase":"failed","status":"failed"},{"name":"d2","phase":"failed","status":"failed"}]`},
 		},
 	}
 
@@ -961,8 +962,8 @@ func TestHealerHealOOMUsesMatchingDeployment(t *testing.T) {
 			switch name {
 			case "deploy.list":
 				return &ToolResult{Content: `[
-						{"name":"other-deploy","labels":{"aima.dev/model":"other-model","aima.dev/engine":"vllm"}},
-						{"name":"target-deploy","labels":{"aima.dev/model":"qwen3-8b","aima.dev/engine":"sglang","aima.dev/slot":"slot-b"}}
+						{"name":"other-deploy","model":"other-model","engine":"vllm"},
+						{"name":"target-deploy","model":"qwen3-8b","engine":"sglang","slot":"slot-b"}
 					]`}, nil
 			case "deploy.dry_run":
 				return &ToolResult{Content: `{"engine":"sglang","slot":"slot-b","config":{"mem_fraction_static":0.8,"max_running_requests":16}}`}, nil
@@ -1017,8 +1018,8 @@ func TestHealerLookupDeploymentRejectsAmbiguousModelName(t *testing.T) {
 				return nil, fmt.Errorf("unexpected tool: %s", name)
 			}
 			return &ToolResult{Content: `[
-				{"name":"qwen3-a","labels":{"aima.dev/model":"qwen3-8b","aima.dev/engine":"vllm","aima.dev/slot":"slot-a"}},
-				{"name":"qwen3-b","labels":{"aima.dev/model":"qwen3-8b","aima.dev/engine":"vllm","aima.dev/slot":"slot-b"}}
+				{"name":"qwen3-a","model":"qwen3-8b","engine":"vllm","slot":"slot-a"},
+				{"name":"qwen3-b","model":"qwen3-8b","engine":"vllm","slot":"slot-b"}
 			]`}, nil
 		},
 	}
@@ -1080,7 +1081,7 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 					t.Fatalf("unmarshal deploy args: %v", err)
 				}
 				deployArgs = append(deployArgs, payload)
-				return &ToolResult{Content: `{"status":"ok"}`}, nil
+				return &ToolResult{Content: `{"status":"ready","name":"qwen3-8b-vllm","address":"127.0.0.1:30000","config":{"gpu_memory_utilization":0.8}}`}, nil
 			case "benchmark.run":
 				return &ToolResult{Content: `{"result":{"throughput_tps":42.5,"ttft_p95_ms":123.4},"saved":true}`}, nil
 			default:
@@ -1126,8 +1127,8 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 	if session.Results[0].TTFTP95Ms != 123.4 {
 		t.Fatalf("ttft_p95 = %v, want 123.4", session.Results[0].TTFTP95Ms)
 	}
-	if len(deployArgs) != 2 {
-		t.Fatalf("deploy.apply calls = %d, want 2", len(deployArgs))
+	if len(deployArgs) != 1 {
+		t.Fatalf("deploy.apply calls = %d, want 1", len(deployArgs))
 	}
 	for _, payload := range deployArgs {
 		if _, ok := payload["config"]; !ok {
@@ -1136,6 +1137,96 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 		if _, ok := payload["config_overrides"]; ok {
 			t.Fatalf("deploy payload still uses config_overrides: %#v", payload)
 		}
+	}
+}
+
+func TestTunerRunNormalizesBooleanOverrideUsingResolvedConfig(t *testing.T) {
+	var deployConfig map[string]any
+
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "knowledge.resolve":
+				return &ToolResult{Content: `{"engine":"sglang-kt","config":{"kt_cpuinfer":40,"kt_threadpool_count":2}}`}, nil
+			case "deploy.delete":
+				return &ToolResult{Content: `{"status":"deleted"}`}, nil
+			case "deploy.apply":
+				var payload map[string]any
+				if err := json.Unmarshal(arguments, &payload); err != nil {
+					t.Fatalf("unmarshal deploy args: %v", err)
+				}
+				cfg, _ := payload["config"].(map[string]any)
+				deployConfig = cfg
+				return &ToolResult{Content: `{"status":"ready","name":"qwen3-30b-a3b","address":"127.0.0.1:30000","config":{"kt_cpuinfer":40,"kt_threadpool_count":16}}`}, nil
+			case "benchmark.run":
+				return &ToolResult{Content: `{"result":{"throughput_tps":38.0,"ttft_p95_ms":220.0},"saved":true}`}, nil
+			default:
+				return nil, fmt.Errorf("unexpected tool: %s", name)
+			}
+		},
+	}
+
+	tuner := NewTuner(tools)
+	tuner.gpuReleaseSleep = 0
+	session, err := tuner.Start(context.Background(), TuningConfig{
+		Model:      "qwen3-30b-a3b",
+		Engine:     "sglang-kt",
+		MaxConfigs: 1,
+		Parameters: []TunableParam{
+			{Key: "kt_cpuinfer", Values: []any{true}},
+			{Key: "kt_threadpool_count", Values: []any{16}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current := tuner.CurrentSession()
+		if current != nil && current.Status != "running" {
+			session = current
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if session.Status != "completed" {
+		t.Fatalf("session status = %q, want completed", session.Status)
+	}
+	want := map[string]any{
+		"kt_cpuinfer":         float64(40),
+		"kt_threadpool_count": float64(16),
+	}
+	if !reflect.DeepEqual(deployConfig, want) {
+		t.Fatalf("deploy config = %#v, want %#v", deployConfig, want)
+	}
+}
+
+func TestExplorerParseExplorationResultUsesBestTuningResult(t *testing.T) {
+	explorer := &Explorer{}
+	status := &ExplorationStatus{
+		Run: &state.ExplorationRun{
+			SummaryJSON: `{"best_config":{"tp_size":2,"mem_fraction_static":0.85},"results":[{"config_overrides":{"tp_size":2,"mem_fraction_static":0.85},"throughput_tps":38.07,"ttft_p95_ms":217.97,"score":38.07}]}`,
+		},
+	}
+
+	result := explorer.parseExplorationResult(status)
+	if !result.Success {
+		t.Fatal("expected success result")
+	}
+	if math.Abs(result.Throughput-38.07) > 0.001 {
+		t.Fatalf("throughput = %v, want 38.07", result.Throughput)
+	}
+	if math.Abs(result.TTFTP95-217.97) > 0.001 {
+		t.Fatalf("ttft_p95 = %v, want 217.97", result.TTFTP95)
+	}
+	wantConfig := map[string]any{
+		"tp_size":             float64(2),
+		"mem_fraction_static": 0.85,
+	}
+	if !reflect.DeepEqual(result.Config, wantConfig) {
+		t.Fatalf("config = %#v, want %#v", result.Config, wantConfig)
 	}
 }
 
@@ -1153,7 +1244,7 @@ func TestExplorationManagerTunePersistsRun(t *testing.T) {
 			case "deploy.delete":
 				return &ToolResult{Content: `{"status":"deleted"}`}, nil
 			case "deploy.apply":
-				return &ToolResult{Content: `{"status":"ok"}`}, nil
+				return &ToolResult{Content: `{"status":"ready","address":"127.0.0.1:30000","config":{"gpu_memory_utilization":0.8}}`}, nil
 			case "benchmark.run":
 				return &ToolResult{Content: `{"result":{"throughput_tps":42.5,"ttft_p95_ms":123.4},"saved":true}`}, nil
 			default:
@@ -1215,13 +1306,18 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 	}
 	defer db.Close()
 
+	statusCalls := 0
 	tools := &mockTools{
 		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
 			switch name {
 			case "deploy.apply":
-				return &ToolResult{Content: `{"name":"qwen3-8b-vllm"}`}, nil
+				return &ToolResult{Content: `{"name":"qwen3-8b-vllm","config":{"gpu_memory_utilization":0.8}}`}, nil
 			case "deploy.status":
-				return &ToolResult{Content: `{"phase":"Running","ready":true}`}, nil
+				statusCalls++
+				if statusCalls == 1 {
+					return &ToolResult{Content: `{"phase":"Pending","ready":false}`}, nil
+				}
+				return &ToolResult{Content: `{"phase":"Running","ready":true,"address":"127.0.0.1:30000","config":{"gpu_memory_utilization":0.8}}`}, nil
 			case "benchmark.run":
 				var args map[string]any
 				if err := json.Unmarshal(arguments, &args); err != nil {
@@ -1235,6 +1331,10 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 				}
 				if args["engine"] != "vllm" {
 					t.Fatalf("engine = %v, want vllm", args["engine"])
+				}
+				wantConfig := map[string]any{"gpu_memory_utilization": 0.8}
+				if !reflect.DeepEqual(args["deploy_config"], wantConfig) {
+					t.Fatalf("deploy_config = %#v, want %#v", args["deploy_config"], wantConfig)
 				}
 				return &ToolResult{Content: `{"result":{"throughput_tps":51.2},"saved":true,"benchmark_id":"bench-001","config_id":"cfg-001"}`}, nil
 			case "catalog.override":
@@ -1281,9 +1381,206 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 	if status.Run.SummaryJSON == "" {
 		t.Fatal("expected summary_json to be populated")
 	}
-	// 4 events: deploy running, deploy completed, benchmark running, benchmark completed
 	if len(status.Events) < 2 {
 		t.Fatalf("events = %d, want >= 2", len(status.Events))
+	}
+}
+
+func TestExplorationManagerValidatePassesExistingDeploymentConfigToBenchmark(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	deployApplyCalls := 0
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "deploy.apply":
+				deployApplyCalls++
+				return nil, fmt.Errorf("deploy.apply should not be called when deployment is already ready")
+			case "deploy.status":
+				return &ToolResult{Content: `{"phase":"running","ready":true,"address":"127.0.0.1:30000","config":{"mem_fraction_static":0.9,"max_running_requests":16}}`}, nil
+			case "benchmark.run":
+				var args map[string]any
+				if err := json.Unmarshal(arguments, &args); err != nil {
+					t.Fatalf("Unmarshal benchmark args: %v", err)
+				}
+				wantConfig := map[string]any{
+					"mem_fraction_static":  0.9,
+					"max_running_requests": float64(16),
+				}
+				if !reflect.DeepEqual(args["deploy_config"], wantConfig) {
+					t.Fatalf("deploy_config = %#v, want %#v", args["deploy_config"], wantConfig)
+				}
+				return &ToolResult{Content: `{"result":{"throughput_tps":61.5},"saved":true,"benchmark_id":"bench-ready-001","config_id":"cfg-ready-001"}`}, nil
+			case "catalog.override":
+				return &ToolResult{Content: `{"path":"/tmp/test.yaml","action":"created"}`}, nil
+			default:
+				return nil, fmt.Errorf("unexpected tool: %s", name)
+			}
+		},
+	}
+
+	manager := NewExplorationManager(db, nil, tools)
+	run, err := manager.Start(ctx, ExplorationStart{
+		Kind: "validate",
+		Target: ExplorationTarget{
+			Hardware: "nvidia-rtx4090-x86",
+			Model:    "qwen3-30b-a3b",
+			Engine:   "sglang-kt",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := manager.Result(ctx, run.ID)
+		if err != nil {
+			t.Fatalf("Result: %v", err)
+		}
+		if status.Run.Status == "completed" {
+			if deployApplyCalls != 0 {
+				t.Fatalf("deploy.apply calls = %d, want 0", deployApplyCalls)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("validate run did not complete")
+}
+
+func TestExplorerParseExplorationResultReadsBenchmarkProfileAndResources(t *testing.T) {
+	explorer := &Explorer{}
+	status := &ExplorationStatus{
+		Run: &state.ExplorationRun{
+			SummaryJSON: `{
+				"engine_version":"0.5.9-kt0.5.2",
+				"benchmark_profile":{"concurrency":1,"num_requests":10,"warmup_count":2,"rounds":1,"input_tokens":128,"max_tokens":256,"avg_input_tokens":134,"avg_output_tokens":256},
+				"resource_usage":{"vram_usage_mib":84424,"ram_usage_mib":32768,"cpu_usage_pct":61.5,"gpu_utilization_pct":58.0,"power_draw_watts":191.6},
+				"result":{"throughput_tps":37.47,"qps":0.14,"ttft_p95_ms":227.0,"tpot_p95_ms":28.5}
+			}`,
+		},
+	}
+
+	result := explorer.parseExplorationResult(status)
+	if !result.Success {
+		t.Fatal("expected success result")
+	}
+	if result.Concurrency != 1 || result.InputTokens != 128 || result.MaxTokens != 256 {
+		t.Fatalf("profile = %+v", result)
+	}
+	if result.AvgInputTokens != 134 || result.AvgOutputTokens != 256 {
+		t.Fatalf("avg tokens = (%d,%d), want (134,256)", result.AvgInputTokens, result.AvgOutputTokens)
+	}
+	if math.Abs(result.CPUUsagePct-61.5) > 0.001 || math.Abs(result.GPUUtilPct-58.0) > 0.001 {
+		t.Fatalf("utilization = cpu %.2f gpu %.2f", result.CPUUsagePct, result.GPUUtilPct)
+	}
+	if result.EngineVersion != "0.5.9-kt0.5.2" {
+		t.Fatalf("engine version = %q", result.EngineVersion)
+	}
+}
+
+func TestExplorationManagerValidateOverlayIncludesBenchmarkProfileAndHeterogeneousUsage(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.RawDB().ExecContext(ctx,
+		`INSERT INTO hardware_profiles (id, name, gpu_arch) VALUES ('nvidia-rtx4090-x86', 'RTX 4090', 'Ada')`); err != nil {
+		t.Fatalf("insert hardware profile: %v", err)
+	}
+	if _, err := db.RawDB().ExecContext(ctx,
+		`INSERT INTO engine_assets (id, type, version, image_name, image_tag)
+		 VALUES ('sglang-kt-ada', 'sglang-kt', '0.5.9-kt0.5.2', 'aima/sglang-kt', 'v0.5.9-kt0.5.2')`); err != nil {
+		t.Fatalf("insert engine asset: %v", err)
+	}
+	if _, err := db.RawDB().ExecContext(ctx,
+		`INSERT INTO engine_hardware_compat (engine_id, hardware_id) VALUES ('sglang-kt-ada', 'nvidia-rtx4090-x86')`); err != nil {
+		t.Fatalf("insert engine compat: %v", err)
+	}
+
+	var overrideContent string
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "deploy.status":
+				return &ToolResult{Content: `{"phase":"running","ready":true,"address":"127.0.0.1:30000","config":{"mem_fraction_static":0.9,"kt_cpuinfer":40,"kt_num_gpu_experts":6}}`}, nil
+			case "benchmark.run":
+				return &ToolResult{Content: `{
+						"saved":true,
+						"benchmark_id":"bench-kt-001",
+						"config_id":"cfg-kt-001",
+						"benchmark_profile":{"concurrency":1,"num_requests":10,"warmup_count":2,"rounds":1,"input_tokens":128,"max_tokens":256,"avg_input_tokens":134,"avg_output_tokens":256},
+						"resource_usage":{"vram_usage_mib":84424,"ram_usage_mib":32768,"cpu_usage_pct":61.5,"gpu_utilization_pct":58.0,"power_draw_watts":191.6},
+						"result":{"throughput_tps":37.47,"qps":0.14,"ttft_p50_ms":180.0,"ttft_p95_ms":227.0,"ttft_p99_ms":245.0,"tpot_p50_ms":22.0,"tpot_p95_ms":28.5,"error_rate":0,"total_requests":10,"successful_requests":10,"avg_input_tokens":134,"avg_output_tokens":256,"duration_ms":1000,"config":{"concurrency":1,"num_requests":10,"warmup_count":2,"rounds":1,"input_tokens":128,"max_tokens":256}}
+					}`}, nil
+			case "catalog.override":
+				var payload map[string]string
+				if err := json.Unmarshal(arguments, &payload); err != nil {
+					t.Fatalf("catalog.override args: %v", err)
+				}
+				overrideContent = payload["content"]
+				return &ToolResult{Content: `{"path":"/tmp/test.yaml","action":"created"}`}, nil
+			default:
+				return nil, fmt.Errorf("unexpected tool: %s", name)
+			}
+		},
+	}
+
+	manager := NewExplorationManager(db, nil, tools)
+	run, err := manager.Start(ctx, ExplorationStart{
+		Kind: "validate",
+		Target: ExplorationTarget{
+			Hardware: "nvidia-rtx4090-x86",
+			Model:    "qwen3-30b-a3b",
+			Engine:   "sglang-kt",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := manager.Result(ctx, run.ID)
+		if err != nil {
+			t.Fatalf("Result: %v", err)
+		}
+		if status.Run.Status == "completed" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if overrideContent == "" {
+		t.Fatal("expected knowledge overlay content")
+	}
+	for _, want := range []string{
+		"engine_version: 0.5.9-kt0.5.2",
+		"engine_image: aima/sglang-kt:v0.5.9-kt0.5.2",
+		"benchmark_profile:",
+		"input_tokens: 128",
+		"max_tokens: 256",
+		"resource_usage:",
+		"cpu_usage_pct: 61.5",
+		"ram_mib: 32768",
+		"gpu_arch: Ada",
+		"heterogeneous_observation:",
+		"kt_cpuinfer: 40",
+	} {
+		if !strings.Contains(overrideContent, want) {
+			t.Fatalf("overlay missing %q:\n%s", want, overrideContent)
+		}
+	}
+	if strings.Contains(overrideContent, "gpu_arch: nvidia-rtx4090-x86") {
+		t.Fatalf("overlay wrote hardware id into gpu_arch:\n%s", overrideContent)
 	}
 }
 
@@ -1299,14 +1596,27 @@ func TestExplorationManagerOpenQuestionAutoResolves(t *testing.T) {
 		t.Fatalf("UpsertOpenQuestion: %v", err)
 	}
 
+	statusCalls := 0
 	tools := &mockTools{
 		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
 			switch name {
 			case "deploy.apply":
-				return &ToolResult{Content: `{"name":"qwen3-8b-vllm"}`}, nil
+				return &ToolResult{Content: `{"name":"qwen3-8b-vllm","config":{"gpu_memory_utilization":0.82}}`}, nil
 			case "deploy.status":
-				return &ToolResult{Content: `{"phase":"Running","ready":true}`}, nil
+				statusCalls++
+				if statusCalls == 1 {
+					return &ToolResult{Content: `{"phase":"Pending","ready":false}`}, nil
+				}
+				return &ToolResult{Content: `{"phase":"Running","ready":true,"address":"127.0.0.1:30001","config":{"gpu_memory_utilization":0.82}}`}, nil
 			case "benchmark.run":
+				var args map[string]any
+				if err := json.Unmarshal(arguments, &args); err != nil {
+					t.Fatalf("Unmarshal benchmark args: %v", err)
+				}
+				wantConfig := map[string]any{"gpu_memory_utilization": 0.82}
+				if !reflect.DeepEqual(args["deploy_config"], wantConfig) {
+					t.Fatalf("deploy_config = %#v, want %#v", args["deploy_config"], wantConfig)
+				}
 				return &ToolResult{Content: `{"result":{"throughput_tps":48.9},"saved":true,"benchmark_id":"bench-oq-001","config_id":"cfg-oq-001"}`}, nil
 			default:
 				return nil, fmt.Errorf("unexpected tool: %s", name)

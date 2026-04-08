@@ -294,6 +294,10 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		slog.Debug("explorer: tier 0, skipping event", "type", ev.Type)
 		return
 	}
+	if e.hasPendingWork() {
+		slog.Debug("explorer: pending work in progress, skipping event", "type", ev.Type)
+		return
+	}
 
 	// Build plan input from current state
 	slog.Info("explorer: building plan input")
@@ -553,7 +557,7 @@ func (e *Explorer) executeTask(ctx context.Context, task PlanTask) HarvestResult
 
 	// Parse benchmark results from exploration summary
 	result := e.parseExplorationResult(status)
-	if len(task.Params) > 0 {
+	if len(result.Config) == 0 && len(task.Params) > 0 {
 		result.Config = make(map[string]any, len(task.Params))
 		for key, value := range task.Params {
 			result.Config[key] = value
@@ -572,6 +576,7 @@ func (e *Explorer) parseExplorationResult(status *ExplorationStatus) HarvestResu
 			if nested, ok := summary["result"].(map[string]any); ok {
 				readBenchmarkMetrics(nested, &result)
 			}
+			readTuningMetrics(summary, &result)
 			if promoted, ok := summary["auto_promoted"].(bool); ok {
 				result.Promoted = promoted
 			}
@@ -593,7 +598,7 @@ func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*Plan
 		}
 	}
 
-	// Gather gaps via knowledge.gaps tool
+	// Gather gaps via the consolidated knowledge analytics path.
 	if e.gatherGaps != nil {
 		gaps, err := e.gatherGaps(ctx)
 		if err == nil {
@@ -704,6 +709,12 @@ func (e *Explorer) notifySlotWaitersLocked() {
 	close(old)
 }
 
+func (e *Explorer) hasPendingWork() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.activePlan != nil || e.activeExecutions > 0
+}
+
 func (e *Explorer) refreshTier(ctx context.Context) bool {
 	// O4: If agent is available but tool mode is still unknown, probe it.
 	// This resolves the Tier 1→2 self-upgrade deadlock: LLMPlanner calls
@@ -712,7 +723,6 @@ func (e *Explorer) refreshTier(ctx context.Context) bool {
 	if e.agent != nil && e.agent.Available() && e.agent.ToolMode() == "unknown" {
 		e.agent.ProbeToolMode(ctx)
 	}
-
 	newTier := e.detectTier()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -887,13 +897,132 @@ func firstNonEmptyJSON(payload map[string]any, keys ...string) string {
 }
 
 func readBenchmarkMetrics(summary map[string]any, result *HarvestResult) {
+	if benchmarkID, ok := summary["benchmark_id"].(string); ok && benchmarkID != "" {
+		result.BenchmarkID = benchmarkID
+	}
+	if configID, ok := summary["config_id"].(string); ok && configID != "" {
+		result.ConfigID = configID
+	}
 	if tp, ok := summary["throughput_tps"].(float64); ok {
 		result.Throughput = tp
+	}
+	if qps, ok := summary["qps"].(float64); ok {
+		result.QPS = qps
 	}
 	if ttft, ok := summary["ttft_p95_ms"].(float64); ok {
 		result.TTFTP95 = ttft
 	}
+	if tpot, ok := summary["tpot_p95_ms"].(float64); ok {
+		result.TPOTP95 = tpot
+	}
 	if vram, ok := summary["vram_usage_mib"].(float64); ok {
 		result.VRAMMiB = vram
+	}
+	if ram, ok := summary["ram_usage_mib"].(float64); ok {
+		result.RAMMiB = ram
+	}
+	if cpu, ok := summary["cpu_usage_pct"].(float64); ok {
+		result.CPUUsagePct = cpu
+	}
+	if gpu, ok := summary["gpu_utilization_pct"].(float64); ok {
+		result.GPUUtilPct = gpu
+	}
+	if gpu, ok := summary["gpu_util_pct"].(float64); ok && result.GPUUtilPct == 0 {
+		result.GPUUtilPct = gpu
+	}
+	if power, ok := summary["power_draw_watts"].(float64); ok {
+		result.PowerWatts = power
+	}
+	if version, ok := summary["engine_version"].(string); ok && version != "" {
+		result.EngineVersion = version
+	}
+	if image, ok := summary["engine_image"].(string); ok && image != "" {
+		result.EngineImage = image
+	}
+	if cfg, ok := summary["config"].(map[string]any); ok {
+		readBenchmarkProfile(cfg, result)
+	}
+	if profile, ok := summary["benchmark_profile"].(map[string]any); ok {
+		readBenchmarkProfile(profile, result)
+	}
+	if saved, ok := summary["saved_benchmark"].(map[string]any); ok {
+		readBenchmarkMetrics(saved, result)
+	}
+	if resource, ok := summary["resource_usage"].(map[string]any); ok {
+		readBenchmarkMetrics(resource, result)
+	}
+	if hetero, ok := summary["heterogeneous_observation"].(map[string]any); ok {
+		if path, ok := hetero["path"].(string); ok && path != "" {
+			result.ExecutionPath = path
+		}
+	}
+}
+
+func readTuningMetrics(summary map[string]any, result *HarvestResult) {
+	if cfg, ok := summary["best_config"].(map[string]any); ok && len(cfg) > 0 {
+		result.Config = cloneJSONMap(cfg)
+	}
+	results, ok := summary["results"].([]any)
+	if !ok || len(results) == 0 {
+		return
+	}
+
+	var best map[string]any
+	bestScore := -1.0
+	for _, item := range results {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		score, _ := entry["score"].(float64)
+		if best == nil || score > bestScore {
+			best = entry
+			bestScore = score
+		}
+	}
+	if best == nil {
+		return
+	}
+	readBenchmarkMetrics(best, result)
+	if cfg, ok := best["config_overrides"].(map[string]any); ok && len(cfg) > 0 {
+		result.Config = cloneJSONMap(cfg)
+	}
+}
+
+func cloneJSONMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func readBenchmarkProfile(summary map[string]any, result *HarvestResult) {
+	if concurrency, ok := summary["concurrency"].(float64); ok {
+		result.Concurrency = int(concurrency)
+	}
+	if requests, ok := summary["num_requests"].(float64); ok {
+		result.NumRequests = int(requests)
+	}
+	if warmup, ok := summary["warmup_count"].(float64); ok {
+		result.WarmupCount = int(warmup)
+	}
+	if rounds, ok := summary["rounds"].(float64); ok {
+		result.Rounds = int(rounds)
+	}
+	if inputTokens, ok := summary["input_tokens"].(float64); ok {
+		result.InputTokens = int(inputTokens)
+	}
+	if maxTokens, ok := summary["max_tokens"].(float64); ok {
+		result.MaxTokens = int(maxTokens)
+	}
+	if avgInput, ok := summary["avg_input_tokens"].(float64); ok {
+		result.AvgInputTokens = int(avgInput)
+	}
+	if avgOutput, ok := summary["avg_output_tokens"].(float64); ok {
+		result.AvgOutputTokens = int(avgOutput)
 	}
 }

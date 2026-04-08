@@ -320,6 +320,55 @@ func TestEngineCompatibilityHelpers(t *testing.T) {
 	}
 }
 
+func TestInstalledEnginesContainResolvedAsset(t *testing.T) {
+	platform := "linux/amd64"
+
+	containerAsset := &knowledge.EngineAsset{
+		Metadata: knowledge.EngineMetadata{Name: "vllm", Type: "vllm"},
+		Image: knowledge.EngineImage{
+			Name:      "vllm/vllm-openai",
+			Tag:       "v0.8.5",
+			Platforms: []string{platform},
+		},
+		Runtime: knowledge.EngineRuntime{Default: "container"},
+	}
+	if installedEnginesContainResolvedAsset(containerAsset, []*state.Engine{{
+		Type:        "vllm",
+		Image:       "zhiwen-vllm",
+		Tag:         "v3.3.1",
+		RuntimeType: "container",
+		Available:   true,
+	}}, platform) {
+		t.Fatal("mismatched container image should not count as executable resolved asset")
+	}
+	if !installedEnginesContainResolvedAsset(containerAsset, []*state.Engine{{
+		Type:        "vllm",
+		Image:       "vllm/vllm-openai",
+		Tag:         "v0.8.5",
+		RuntimeType: "container",
+		Available:   true,
+	}}, platform) {
+		t.Fatal("exact container image+tag should count as executable resolved asset")
+	}
+
+	nativeAsset := &knowledge.EngineAsset{
+		Metadata: knowledge.EngineMetadata{Name: "sglang-kt", Type: "sglang-kt"},
+		Source: &knowledge.EngineSource{
+			Binary:    "sglang-kt",
+			Platforms: []string{platform},
+		},
+		Runtime: knowledge.EngineRuntime{Default: "native"},
+	}
+	if !installedEnginesContainResolvedAsset(nativeAsset, []*state.Engine{{
+		Type:        "sglang-kt",
+		RuntimeType: "native",
+		BinaryPath:  "/tmp/sglang-kt",
+		Available:   true,
+	}}, platform) {
+		t.Fatal("available native binary should count as executable resolved asset")
+	}
+}
+
 func TestRequiresRootImportForK3S(t *testing.T) {
 	if !requiresRootImportForK3S(false, true, false) {
 		t.Fatal("Docker-only image on non-root K3S host should require root import")
@@ -880,7 +929,7 @@ func TestApplyScenarioSkipsRemainingDeploymentsAndPostDeployAfterWaitFailure(t *
 
 	deployCalls := 0
 	deps := &mcp.ToolDeps{
-		DeployApply: func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error) {
+		DeployApply: func(ctx context.Context, engine, model, slot string, configOverrides map[string]any, noPull bool) (json.RawMessage, error) {
 			deployCalls++
 			if model != "model-a" {
 				t.Fatalf("unexpected DeployApply for %s", model)
@@ -945,7 +994,7 @@ func TestApplyScenarioWaitsOnLastStepBeforePostDeploy(t *testing.T) {
 	}
 
 	deps := &mcp.ToolDeps{
-		DeployApply: func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error) {
+		DeployApply: func(ctx context.Context, engine, model, slot string, configOverrides map[string]any, noPull bool) (json.RawMessage, error) {
 			return json.RawMessage(`{"name":"model-a-engine-a"}`), nil
 		},
 		DeployStatus: func(context.Context, string) (json.RawMessage, error) {
@@ -1057,6 +1106,34 @@ func TestMCPToolAdapter_BlocksHighRiskTool(t *testing.T) {
 	}
 	if called != 0 {
 		t.Fatalf("blocked tool should not execute, called=%d", called)
+	}
+}
+
+func TestAutomationToolAdapter_AllowsInternalDeployDelete(t *testing.T) {
+	s := mcp.NewServer()
+	called := 0
+	s.RegisterTool(&mcp.Tool{
+		Name:        "deploy.delete",
+		Description: "test delete",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Handler: func(ctx context.Context, params json.RawMessage) (*mcp.ToolResult, error) {
+			called++
+			return mcp.TextResult("deleted"), nil
+		},
+	})
+
+	base := &mcpToolAdapter{server: s}
+	automation := &automationToolAdapter{base: base}
+
+	result, err := automation.ExecuteTool(context.Background(), "deploy.delete", json.RawMessage(`{"name":"qwen3-30b-a3b"}`))
+	if err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected internal automation delete to be allowed, got error result %q", result.Content)
+	}
+	if called != 1 {
+		t.Fatalf("deploy.delete should execute once, called=%d", called)
 	}
 }
 
@@ -1621,11 +1698,32 @@ func TestLookupPredictedThroughputPrefersGoldenBenchmark(t *testing.T) {
 func TestUpdatePerfOverlayWritesObservationOutsideCatalog(t *testing.T) {
 	dir := t.TempDir()
 	updatePerfOverlay(dir, "qwen3-8b", "nvidia-gb10-arm64", "vllm-nightly", &benchpkg.RunResult{
-		ThroughputTPS: 42.5,
-		TTFTP50ms:     10,
-		TTFTP95ms:     20,
-		TPOTP50ms:     3,
-		QPS:           5,
+		ThroughputTPS:   42.5,
+		TTFTP50ms:       10,
+		TTFTP95ms:       20,
+		TTFTP99ms:       25,
+		TPOTP50ms:       3,
+		TPOTP95ms:       4,
+		QPS:             5,
+		AvgInputTokens:  128,
+		AvgOutputTokens: 256,
+		Config: benchpkg.RunConfig{
+			Concurrency: 1,
+			NumRequests: 10,
+			WarmupCount: 2,
+			Rounds:      1,
+			InputTokens: 128,
+			MaxTokens:   256,
+		},
+	}, &state.BenchmarkResult{
+		VRAMUsageMiB:   32768,
+		RAMUsageMiB:    8192,
+		CPUUsagePct:    61.5,
+		GPUUtilPct:     88,
+		PowerDrawWatts: 245.5,
+	}, "0.16.0", "vllm/vllm-openai:0.16.0", map[string]any{
+		"path":        "cpu+gpu",
+		"cpu_offload": true,
 	})
 
 	observationPath := filepath.Join(dir, "observations", "models", "qwen3-8b-perf.json")
