@@ -452,7 +452,11 @@ func (p *Patrol) emitEvent(alert Alert) {
 	var eventType string
 	switch alert.Type {
 	case "deploy_crash":
-		eventType = EventPatrolOOM // OOM is the most common crash cause
+		if !strings.Contains(strings.ToLower(alert.Message), "oom") &&
+			!strings.Contains(strings.ToLower(alert.Message), "out of memory") {
+			return
+		}
+		eventType = EventPatrolOOM
 	case "gpu_idle":
 		eventType = EventPatrolIdle
 	default:
