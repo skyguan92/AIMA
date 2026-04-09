@@ -38,6 +38,7 @@ type ExplorationBenchmarkProfile struct {
 	ConcurrencyLevels []int  `json:"concurrency_levels,omitempty"`
 	InputTokenLevels  []int  `json:"input_token_levels,omitempty"`
 	MaxTokenLevels    []int  `json:"max_token_levels,omitempty"`
+	Label             string `json:"label,omitempty"` // "latency", "throughput"
 }
 
 type ExplorationPlan struct {
@@ -943,8 +944,14 @@ func benchmarkMetadataComplete(concurrency, rounds, totalRequests int) bool {
 	return concurrency > 0 && rounds > 0 && totalRequests > 0
 }
 
+// Representative cell scoring: prefer concurrency=1 (heavily penalized via multiplier),
+// then prefer cells closest to typical mid-range usage (1024 tokens in/out).
+const (
+	repCellConcurrencyPenalty = 1000 // score penalty per unit of concurrency
+	repCellTargetTokens       = 1024 // target input/output token count
+)
+
 // extractRepresentativeCell picks the most representative benchmark cell for overlay YAML.
-// Preference: concurrency=1, input closest to 1024, output closest to 1024.
 func extractRepresentativeCell(matrixJSON string) (map[string]any, bool) {
 	var resp struct {
 		MatrixProfiles []json.RawMessage `json:"matrix_profiles"`
@@ -975,13 +982,13 @@ func extractRepresentativeCell(matrixJSON string) (map[string]any, bool) {
 			if c.Error != "" || c.Result == nil {
 				continue
 			}
-			score := c.Concurrency * 1000
-			if d := c.InputTokens - 1024; d < 0 {
+			score := c.Concurrency * repCellConcurrencyPenalty
+			if d := c.InputTokens - repCellTargetTokens; d < 0 {
 				score -= d
 			} else {
 				score += d
 			}
-			if d := c.MaxTokens - 1024; d < 0 {
+			if d := c.MaxTokens - repCellTargetTokens; d < 0 {
 				score -= d
 			} else {
 				score += d
@@ -1005,6 +1012,8 @@ func extractRepresentativeCell(matrixJSON string) (map[string]any, bool) {
 
 // internalEngineParam returns true for engine parameters that should not be written
 // into model overlay YAML (they are implementation details, not user-facing config).
+// TODO: migrate this list into engine YAML (e.g. `internal_params` field) so adding
+// a new engine doesn't require Go code changes (INV-1 compliance).
 func internalEngineParam(key string) bool {
 	switch key {
 	case "port", "watchdog_timeout", "kt_weight_path",
@@ -1338,9 +1347,9 @@ func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *st
 		}
 
 		requestJSON, _ := json.Marshal(matrixArgs)
-		profileLabel := "latency"
-		if i > 0 {
-			profileLabel = "throughput"
+		profileLabel := profile.Label
+		if profileLabel == "" {
+			profileLabel = "unknown"
 		}
 		_ = m.db.InsertExplorationEvent(context.Background(), &state.ExplorationEvent{
 			RunID:       run.ID,
@@ -1392,7 +1401,12 @@ func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *st
 			}
 		}
 
-		allCellsJSON = append(allCellsJSON, json.RawMessage(result.Content))
+		// Wrap profile response with label for downstream note generation
+		wrapped, _ := json.Marshal(map[string]any{
+			"label": profileLabel,
+			"cells": matrixResp.Cells,
+		})
+		allCellsJSON = append(allCellsJSON, json.RawMessage(wrapped))
 
 		_ = m.db.InsertExplorationEvent(context.Background(), &state.ExplorationEvent{
 			RunID:        run.ID,

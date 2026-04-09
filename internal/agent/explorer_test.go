@@ -239,3 +239,62 @@ func TestDefaultBenchmarkProfiles(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractRepresentativeCell(t *testing.T) {
+	tests := []struct {
+		name      string
+		json      string
+		wantOK    bool
+		wantInput int // expected input_tokens of chosen cell
+	}{
+		{
+			"prefers_conc1_near_1024",
+			`{"matrix_profiles":[{"label":"latency","cells":[
+				{"concurrency":1,"input_tokens":128,"max_tokens":256,"result":{"throughput_tps":170}},
+				{"concurrency":1,"input_tokens":1024,"max_tokens":1024,"result":{"throughput_tps":155}},
+				{"concurrency":4,"input_tokens":1024,"max_tokens":1024,"result":{"throughput_tps":520}}
+			]}]}`,
+			true, 1024,
+		},
+		{
+			"empty_matrix",
+			`{"matrix_profiles":[]}`,
+			false, 0,
+		},
+		{
+			"all_errors",
+			`{"matrix_profiles":[{"label":"latency","cells":[
+				{"concurrency":1,"input_tokens":1024,"max_tokens":1024,"error":"timeout"}
+			]}]}`,
+			false, 0,
+		},
+		{
+			"single_cell",
+			`{"matrix_profiles":[{"label":"latency","cells":[
+				{"concurrency":2,"input_tokens":512,"max_tokens":256,"result":{"throughput_tps":100}}
+			]}]}`,
+			true, 512,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cell, ok := extractRepresentativeCell(tc.json)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			var gotInput int
+			switch v := cell["input_tokens"].(type) {
+			case int:
+				gotInput = v
+			case float64:
+				gotInput = int(v)
+			}
+			if gotInput != tc.wantInput {
+				t.Errorf("input_tokens = %v, want %d", cell["input_tokens"], tc.wantInput)
+			}
+		})
+	}
+}

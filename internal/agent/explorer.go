@@ -739,6 +739,7 @@ func defaultBenchmarkProfiles(hw HardwareInfo) []ExplorationBenchmarkProfile {
 	switch {
 	case totalVRAM >= 40000:
 		profiles = append(profiles, ExplorationBenchmarkProfile{
+			Label:             "latency",
 			ConcurrencyLevels: []int{1},
 			InputTokenLevels:  []int{128, 512, 1024, 2048, 4096, 8192},
 			MaxTokenLevels:    []int{256, 1024},
@@ -746,6 +747,7 @@ func defaultBenchmarkProfiles(hw HardwareInfo) []ExplorationBenchmarkProfile {
 			Rounds:            1,
 		})
 		profiles = append(profiles, ExplorationBenchmarkProfile{
+			Label:             "throughput",
 			ConcurrencyLevels: []int{1, 2, 4, 8},
 			InputTokenLevels:  []int{512, 2048, 8192},
 			MaxTokenLevels:    []int{1024},
@@ -754,6 +756,7 @@ func defaultBenchmarkProfiles(hw HardwareInfo) []ExplorationBenchmarkProfile {
 		})
 	case totalVRAM >= 16000:
 		profiles = append(profiles, ExplorationBenchmarkProfile{
+			Label:             "latency",
 			ConcurrencyLevels: []int{1},
 			InputTokenLevels:  []int{128, 512, 1024, 2048, 4096, 8192},
 			MaxTokenLevels:    []int{256, 1024},
@@ -761,6 +764,7 @@ func defaultBenchmarkProfiles(hw HardwareInfo) []ExplorationBenchmarkProfile {
 			Rounds:            1,
 		})
 		profiles = append(profiles, ExplorationBenchmarkProfile{
+			Label:             "throughput",
 			ConcurrencyLevels: []int{1, 2, 4},
 			InputTokenLevels:  []int{512, 2048},
 			MaxTokenLevels:    []int{1024},
@@ -769,6 +773,7 @@ func defaultBenchmarkProfiles(hw HardwareInfo) []ExplorationBenchmarkProfile {
 		})
 	default:
 		profiles = append(profiles, ExplorationBenchmarkProfile{
+			Label:             "latency",
 			ConcurrencyLevels: []int{1},
 			InputTokenLevels:  []int{128, 512, 1024, 2048},
 			MaxTokenLevels:    []int{256},

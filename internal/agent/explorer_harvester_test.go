@@ -162,10 +162,10 @@ func TestHarvester_MatrixNote(t *testing.T) {
 			Success:      true,
 			MatrixCells:  4,
 			SuccessCells: 3,
-			MatrixJSON: `[{"cells":[` +
+			MatrixJSON: `[{"label":"latency","cells":[` +
 				`{"concurrency":1,"input_tokens":128,"max_tokens":256,"result":{"throughput_tps":170.5,"ttft_p95_ms":45}},` +
 				`{"concurrency":1,"input_tokens":1024,"max_tokens":256,"result":{"throughput_tps":155.0,"ttft_p95_ms":120}}` +
-				`]},{"cells":[` +
+				`]},{"label":"throughput","cells":[` +
 				`{"concurrency":4,"input_tokens":512,"max_tokens":1024,"result":{"throughput_tps":520.0,"ttft_p95_ms":200}},` +
 				`{"concurrency":4,"input_tokens":2048,"max_tokens":1024,"error":"timeout"}` +
 				`]}]`,

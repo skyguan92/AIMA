@@ -195,8 +195,9 @@ func (h *Harvester) generateMatrixNote(input HarvestInput) string {
 	var lines []string
 	lines = append(lines, header)
 
-	for i, profileJSON := range profiles {
+	for _, profileJSON := range profiles {
 		var profile struct {
+			Label string `json:"label"`
 			Cells []struct {
 				Concurrency int `json:"concurrency"`
 				InputTokens int `json:"input_tokens"`
@@ -211,9 +212,9 @@ func (h *Harvester) generateMatrixNote(input HarvestInput) string {
 		if json.Unmarshal(profileJSON, &profile) != nil {
 			continue
 		}
-		label := "Latency"
-		if i > 0 {
-			label = "Throughput"
+		label := "Unknown"
+		if profile.Label != "" {
+			label = strings.ToUpper(profile.Label[:1]) + profile.Label[1:]
 		}
 		var points []string
 		for _, c := range profile.Cells {
