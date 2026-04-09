@@ -16,6 +16,12 @@ type Planner interface {
 	Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, int, error)
 }
 
+// AnalyzablePlanner extends Planner with result analysis capability (PDCA Check+Act).
+type AnalyzablePlanner interface {
+	Planner
+	Analyze(ctx context.Context) (verdict string, extraTasks []TaskSpec, tokens int, err error)
+}
+
 // PlanInput aggregates all context needed for plan generation.
 type PlanInput struct {
 	Hardware      HardwareInfo
