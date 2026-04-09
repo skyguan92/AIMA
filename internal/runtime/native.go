@@ -60,21 +60,23 @@ type BinaryResolveFunc func(ctx context.Context, source *engine.BinarySource) (s
 
 // NativeRuntime manages inference engines as direct OS processes.
 type NativeRuntime struct {
-	logDir        string
-	distDir       string // e.g. ~/.aima/dist/windows-amd64/
-	deployDir     string // e.g. ~/.aima/deployments/ — persisted deployment metadata
-	resolveBinary BinaryResolveFunc
-	engineAssets  []knowledge.EngineAsset
-	processes     map[string]*nativeProcess
-	mu            sync.RWMutex
+	logDir          string
+	distDir         string // e.g. ~/.aima/dist/windows-amd64/
+	deployDir       string // e.g. ~/.aima/deployments/ — persisted deployment metadata
+	resolveBinary   BinaryResolveFunc
+	engineAssets    []knowledge.EngineAsset
+	processes       map[string]*nativeProcess
+	progressTracker *ProgressTracker
+	mu              sync.RWMutex
 }
 
 func NewNativeRuntime(logDir, distDir, deployDir string, opts ...NativeOption) *NativeRuntime {
 	r := &NativeRuntime{
-		logDir:    logDir,
-		distDir:   distDir,
-		deployDir: deployDir,
-		processes: make(map[string]*nativeProcess),
+		logDir:          logDir,
+		distDir:         distDir,
+		deployDir:       deployDir,
+		processes:       make(map[string]*nativeProcess),
+		progressTracker: NewProgressTracker(),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -384,10 +386,12 @@ func (r *NativeRuntime) Delete(_ context.Context, name string) error {
 	}
 
 	if !waitForPortRelease(port, nativePortReleaseTimeout) {
+		r.progressTracker.Remove(name)
 		r.removeMeta(name)
 		return fmt.Errorf("stop deployment %q: port %d is still in use after process exit", name, port)
 	}
 
+	r.progressTracker.Remove(name)
 	r.removeMeta(name)
 	return nil
 }

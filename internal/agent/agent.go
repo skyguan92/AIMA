@@ -48,6 +48,9 @@ type Response struct {
 	Content          string     `json:"content,omitempty"`
 	ReasoningContent string     `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	PromptTokens     int        `json:"prompt_tokens,omitempty"`
+	CompletionTokens int        `json:"completion_tokens,omitempty"`
+	TotalTokens      int        `json:"total_tokens,omitempty"`
 }
 
 // ToolExecutor executes MCP tools (provided by mcp.Server).

@@ -324,6 +324,11 @@ func decodeChatResponse(respBody []byte, wireToOrig map[string]string) (*Respons
 			Arguments: tc.Function.Arguments,
 		})
 	}
+	if chatResp.Usage != nil {
+		resp.PromptTokens = chatResp.Usage.PromptTokens
+		resp.CompletionTokens = chatResp.Usage.CompletionTokens
+		resp.TotalTokens = chatResp.Usage.TotalTokens
+	}
 	return resp, nil
 }
 
@@ -369,7 +374,12 @@ func (c *OpenAIClient) ChatCompletionStream(ctx context.Context, messages []Mess
 		return nil, err
 	}
 
+	// Streaming: disable client-level timeout so the connection stays open.
+	// Context-based cancellation still applies.
+	savedTimeout := c.httpClient.Timeout
+	c.httpClient.Timeout = 0
 	httpResp, err := c.httpClient.Do(httpReq)
+	c.httpClient.Timeout = savedTimeout
 	if err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}
@@ -397,6 +407,7 @@ func (c *OpenAIClient) ChatCompletionStream(ctx context.Context, messages []Mess
 	scanner := bufio.NewScanner(httpResp.Body)
 	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
 	resp := &Response{}
+	var lastUsage *chatUsage
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, ":") || !strings.HasPrefix(line, "data:") {
@@ -412,6 +423,9 @@ func (c *OpenAIClient) ChatCompletionStream(ctx context.Context, messages []Mess
 		var chunk chatStreamResponse
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			return nil, fmt.Errorf("decode stream chunk: %w", err)
+		}
+		if chunk.Usage != nil {
+			lastUsage = chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -439,6 +453,11 @@ func (c *OpenAIClient) ChatCompletionStream(ctx context.Context, messages []Mess
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read stream: %w", err)
+	}
+	if lastUsage != nil {
+		resp.PromptTokens = lastUsage.PromptTokens
+		resp.CompletionTokens = lastUsage.CompletionTokens
+		resp.TotalTokens = lastUsage.TotalTokens
 	}
 	if resp.Content == "" && resp.ReasoningContent == "" {
 		return nil, fmt.Errorf("chat completions: empty stream response")
@@ -1056,8 +1075,15 @@ type chatToolDef struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
+type chatUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type chatResponse struct {
 	Choices []chatChoice `json:"choices"`
+	Usage   *chatUsage   `json:"usage,omitempty"`
 }
 
 type chatChoice struct {
@@ -1066,6 +1092,7 @@ type chatChoice struct {
 
 type chatStreamResponse struct {
 	Choices []chatStreamChoice `json:"choices"`
+	Usage   *chatUsage         `json:"usage,omitempty"`
 }
 
 type chatStreamChoice struct {

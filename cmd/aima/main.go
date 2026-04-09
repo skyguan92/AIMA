@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jguan/aima/catalog"
 	"github.com/jguan/aima/internal/agent"
 	"github.com/jguan/aima/internal/cli"
 	"github.com/jguan/aima/internal/engine"
@@ -734,6 +733,10 @@ func loadExplorerConfig(ctx context.Context, db *state.DB) agent.ExplorerConfig 
 		"quiet_end",
 		"max_concurrent_runs",
 		"enabled",
+		"mode",
+		"max_rounds",
+		"max_plan_duration",
+		"max_tokens_per_day",
 	} {
 		value, err := db.GetConfig(ctx, explorerConfigStorageKey(key))
 		if err != nil || strings.TrimSpace(value) == "" {
@@ -782,6 +785,31 @@ func loadExplorerConfig(ctx context.Context, db *state.DB) agent.ExplorerConfig 
 			} else {
 				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
 			}
+		case "mode":
+			switch value {
+			case "continuous", "once", "budget":
+				config.Mode = value
+			default:
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value)
+			}
+		case "max_rounds":
+			if n, parseErr := strconv.Atoi(value); parseErr == nil {
+				config.MaxRounds = n
+			} else {
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
+			}
+		case "max_plan_duration":
+			if duration, parseErr := time.ParseDuration(value); parseErr == nil {
+				config.MaxPlanDuration = duration
+			} else {
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
+			}
+		case "max_tokens_per_day":
+			if n, parseErr := strconv.Atoi(value); parseErr == nil {
+				config.MaxTokensPerDay = n
+			} else {
+				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
+			}
 		}
 	}
 	return config
@@ -798,6 +826,11 @@ func explorerConfigResponse(explorer *agent.Explorer) map[string]any {
 		"quiet_start":         config.QuietStart,
 		"quiet_end":           config.QuietEnd,
 		"max_concurrent_runs": config.MaxConcurrentRuns,
+		"mode":                status.Mode,
+		"max_rounds":          status.MaxRounds,
+		"rounds_used":         status.RoundsUsed,
+		"max_tokens_per_day":  status.MaxTokensPerDay,
+		"tokens_used_today":   status.TokensUsedToday,
 	}
 }
 

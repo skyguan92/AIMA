@@ -8,7 +8,7 @@ import (
 
 func TestRulePlanner_DeployedWithoutBenchmark(t *testing.T) {
 	p := &RulePlanner{}
-	plan, err := p.Plan(context.Background(), PlanInput{
+	plan, _, err := p.Plan(context.Background(), PlanInput{
 		ActiveDeploys: []DeployStatus{
 			{Model: "qwen3-8b", Engine: "vllm", Status: "running"},
 		},
@@ -38,7 +38,7 @@ func TestRulePlanner_DeployedWithoutBenchmark(t *testing.T) {
 
 func TestRulePlanner_AdvisoryPriority(t *testing.T) {
 	p := &RulePlanner{}
-	plan, err := p.Plan(context.Background(), PlanInput{
+	plan, _, err := p.Plan(context.Background(), PlanInput{
 		Hardware: HardwareInfo{Profile: "nvidia-gb10-arm64"},
 		Advisories: []Advisory{
 			{ID: "adv-1", TargetHardware: "nvidia-gb10-arm64", TargetModel: "qwen3-30b", TargetEngine: "vllm", Config: map[string]any{"gpu_memory_utilization": 0.78}},
@@ -71,7 +71,7 @@ func TestRulePlanner_GapsLimited(t *testing.T) {
 	for i := range gaps {
 		gaps[i] = GapEntry{Model: fmt.Sprintf("model-%d", i), Engine: "vllm"}
 	}
-	plan, err := p.Plan(context.Background(), PlanInput{Gaps: gaps})
+	plan, _, err := p.Plan(context.Background(), PlanInput{Gaps: gaps})
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestRulePlanner_GapsLimited(t *testing.T) {
 
 func TestRulePlanner_EmptyInput(t *testing.T) {
 	p := &RulePlanner{}
-	plan, err := p.Plan(context.Background(), PlanInput{})
+	plan, _, err := p.Plan(context.Background(), PlanInput{})
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRulePlanner_EmptyInput(t *testing.T) {
 
 func TestRulePlanner_OpenQuestions(t *testing.T) {
 	p := &RulePlanner{}
-	plan, err := p.Plan(context.Background(), PlanInput{
+	plan, _, err := p.Plan(context.Background(), PlanInput{
 		OpenQuestions: []OpenQuestion{
 			{ID: "q-1", Status: "untested", Model: "qwen3-8b"},
 		},

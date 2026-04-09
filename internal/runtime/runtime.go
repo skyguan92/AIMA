@@ -70,7 +70,9 @@ type DeploymentStatus struct {
 	StartupProgress int    `json:"startup_progress,omitempty"` // 0-100
 	StartupMessage  string `json:"startup_message,omitempty"`  // human-readable
 	EstimatedTotalS int    `json:"estimated_total_s,omitempty"`
-	ErrorLines      string `json:"error_lines,omitempty"` // last few log lines on failure
+	ErrorLines      string `json:"error_lines,omitempty"`      // last few log lines on failure
+	Stalled         bool   `json:"stalled,omitempty"`          // progress stalled
+	LastProgressAt  int64  `json:"last_progress_at,omitempty"` // unix seconds
 }
 
 // PartitionRequest holds GPU/CPU/RAM resource limits.

@@ -14,7 +14,7 @@ func TestLLMPlanner_ParsesStructuredResponse(t *testing.T) {
 		}},
 	}
 	p := NewLLMPlanner(NewAgent(llm, &mockTools{}))
-	plan, err := p.Plan(context.Background(), PlanInput{
+	plan, _, err := p.Plan(context.Background(), PlanInput{
 		Hardware: HardwareInfo{Profile: "nvidia-rtx4090-x86", VRAMMiB: 24576},
 		Gaps:     []GapEntry{{Model: "qwen3-8b", Engine: "vllm"}},
 	})
@@ -34,7 +34,7 @@ func TestLLMPlanner_FallbackOnInvalidJSON(t *testing.T) {
 		responses: []*Response{{Content: "I can't generate a plan right now."}},
 	}
 	p := NewLLMPlanner(NewAgent(llm, &mockTools{}))
-	_, err := p.Plan(context.Background(), PlanInput{})
+	_, _, err := p.Plan(context.Background(), PlanInput{})
 	if err == nil {
 		t.Fatal("expected error for non-JSON response")
 	}
@@ -54,7 +54,7 @@ func TestLLMPlanner_TimesOut(t *testing.T) {
 
 	p := NewLLMPlanner(NewAgent(blockingPlannerLLM{}, &mockTools{}))
 	start := time.Now()
-	_, err := p.Plan(context.Background(), PlanInput{})
+	_, _, err := p.Plan(context.Background(), PlanInput{})
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}

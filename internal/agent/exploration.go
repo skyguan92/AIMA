@@ -638,35 +638,56 @@ func checkDeployPhase(ctx context.Context, tools ToolExecutor, name string) stri
 	return status.Phase
 }
 
-// waitForReady polls deploy.status until the deployment reports ready, or timeout.
-// B18: detects terminal failure phases (failed/stopped/error) and returns immediately
-// instead of wasting the full timeout on a crashed process.
+// waitForReady polls deploy.status until the deployment reports ready.
+// Uses progress-based stall detection instead of a fixed timeout.
+// Safety net = max(EstimatedTotalS * 3, 15min) prevents infinite wait
+// when an engine has no log_patterns.
 func (m *ExplorationManager) waitForReady(ctx context.Context, model string) error {
 	if m.tools == nil {
 		return nil
 	}
-	const (
-		pollInterval = 5 * time.Second
-		maxWait      = 5 * time.Minute
-	)
-	deadline := time.Now().Add(maxWait)
+	const pollInterval = 5 * time.Second
+
+	// First poll to get EstimatedTotalS for safety net calculation
+	safetyNet := 15 * time.Minute
+	deadline := time.Now().Add(safetyNet)
+
 	for time.Now().Before(deadline) {
 		statusArgs, _ := json.Marshal(map[string]string{"name": model})
 		result, err := m.tools.ExecuteTool(ctx, "deploy.status", statusArgs)
 		if err == nil && result != nil {
 			var status struct {
-				Phase string `json:"phase"`
-				Ready bool   `json:"ready"`
+				Phase           string `json:"phase"`
+				Ready           bool   `json:"ready"`
+				Stalled         bool   `json:"stalled"`
+				StartupProgress int    `json:"startup_progress"`
+				StartupPhase    string `json:"startup_phase"`
+				EstimatedTotalS int    `json:"estimated_total_s"`
 			}
 			if json.Unmarshal([]byte(result.Content), &status) == nil {
+				// Adjust safety net on first EstimatedTotalS reading
+				if status.EstimatedTotalS > 0 {
+					dynamic := time.Duration(status.EstimatedTotalS*3) * time.Second
+					if dynamic > safetyNet {
+						deadline = time.Now().Add(dynamic)
+						safetyNet = dynamic
+					}
+				}
+
 				if status.Ready {
 					slog.Info("exploration: service ready", "model", model)
 					return nil
 				}
-				// B18: fail fast on terminal phases — process crashed or was stopped.
+
+				// Fast fail on terminal phases
 				switch status.Phase {
 				case "failed", "stopped", "error", "exited":
 					return fmt.Errorf("deployment %s entered terminal phase %q", model, status.Phase)
+				}
+
+				// Stall detection: runtime layer says no progress
+				if status.Stalled {
+					return fmt.Errorf("deployment %s stalled at %s (%d%%)", model, status.StartupPhase, status.StartupProgress)
 				}
 			}
 		}
@@ -676,7 +697,7 @@ func (m *ExplorationManager) waitForReady(ctx context.Context, model string) err
 		case <-time.After(pollInterval):
 		}
 	}
-	return fmt.Errorf("timeout waiting for %s to become ready after %v", model, maxWait)
+	return fmt.Errorf("timeout waiting for %s to become ready (safety net %v)", model, safetyNet)
 }
 
 // resolveDeployEndpoint queries deploy.status to get the actual inference address.

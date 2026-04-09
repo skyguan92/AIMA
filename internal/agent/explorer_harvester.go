@@ -51,10 +51,11 @@ type HarvestAction struct {
 
 // Harvester collects exploration results and performs post-processing.
 type Harvester struct {
-	tier     int
-	llm      LLMClient // nil for Tier 1
-	syncPush func(ctx context.Context) error
-	saveNote func(ctx context.Context, title, content, hardware, model, engine string) error
+	tier          int
+	llm           LLMClient // nil for Tier 1
+	syncPush      func(ctx context.Context) error
+	saveNote      func(ctx context.Context, title, content, hardware, model, engine string) error
+	tokenCallback func(tokens int)
 }
 
 type HarvesterOption func(*Harvester)
@@ -69,6 +70,10 @@ func WithSyncPush(fn func(ctx context.Context) error) HarvesterOption {
 
 func WithSaveNote(fn func(ctx context.Context, title, content, hardware, model, engine string) error) HarvesterOption {
 	return func(h *Harvester) { h.saveNote = fn }
+}
+
+func WithTokenCallback(fn func(tokens int)) HarvesterOption {
+	return func(h *Harvester) { h.tokenCallback = fn }
 }
 
 func NewHarvester(tier int, opts ...HarvesterOption) *Harvester {
@@ -199,6 +204,9 @@ func (h *Harvester) generateLLMNote(ctx context.Context, input HarvestInput) (st
 	}, nil)
 	if err != nil {
 		return "", err
+	}
+	if h.tokenCallback != nil && resp.TotalTokens > 0 {
+		h.tokenCallback(resp.TotalTokens)
 	}
 	return resp.Content, nil
 }

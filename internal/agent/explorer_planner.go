@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"math/rand"
 	"sort"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 
 // Planner generates exploration plans from device state.
 type Planner interface {
-	Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, error)
+	Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, int, error)
 }
 
 // PlanInput aggregates all context needed for plan generation.
@@ -114,7 +115,7 @@ type PlanTask struct {
 // RulePlanner generates plans using fixed priority rules (Tier 1).
 type RulePlanner struct{}
 
-func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, error) {
+func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, int, error) {
 	var tasks []PlanTask
 	defaultHardware := firstTaskHardware(input.Hardware.Profile, input.Hardware.GPUArch)
 	localModels := toSet(input.LocalModels)
@@ -180,7 +181,12 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 		}
 		localGaps = append(localGaps, g)
 	}
-	sort.Slice(localGaps, func(i, j int) bool { return localGaps[i].Model < localGaps[j].Model })
+	rand.Shuffle(len(localGaps), func(i, j int) {
+		localGaps[i], localGaps[j] = localGaps[j], localGaps[i]
+	})
+	sort.SliceStable(localGaps, func(i, j int) bool {
+		return localGaps[i].BenchmarkCount < localGaps[j].BenchmarkCount
+	})
 	for i, gap := range localGaps {
 		if i >= 3 {
 			break
@@ -214,9 +220,6 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 		})
 	}
 
-	// B11: Dedup against completed history
-	tasks = deduplicateTasks(tasks, input.History)
-
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].Priority < tasks[j].Priority })
 
 	h := sha256.Sum256([]byte(fmt.Sprintf("%d-%d", time.Now().UnixNano(), len(tasks))))
@@ -226,7 +229,7 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 		Tier:      1,
 		Tasks:     tasks,
 		Reasoning: "rule-based",
-	}, nil
+	}, 0, nil
 }
 
 func hasHistoryFor(history []ExplorationRun, model, engine string) bool {

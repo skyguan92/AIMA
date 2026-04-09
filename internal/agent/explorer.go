@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,18 +15,40 @@ import (
 
 // ExplorerConfig holds all Explorer configuration.
 type ExplorerConfig struct {
-	Schedule ScheduleConfig
-	Enabled  bool
+	Schedule        ScheduleConfig
+	Enabled         bool
+	Mode            string        // "continuous" | "once" | "budget"
+	MaxRounds       int           // budget mode: max plans to execute (0=unlimited)
+	MaxPlanDuration time.Duration // per-plan time budget (default 30min)
+	MaxTokensPerDay int           // daily LLM token cap (0=unlimited)
 }
 
 // ExplorerStatus reports the Explorer's current state.
 type ExplorerStatus struct {
-	Running    bool           `json:"running"`
-	Enabled    bool           `json:"enabled"`
-	Tier       int            `json:"tier"`
-	ActivePlan *ExplorerPlan  `json:"active_plan,omitempty"`
-	Schedule   ScheduleConfig `json:"schedule"`
-	LastRun    time.Time      `json:"last_run,omitempty"`
+	Running         bool           `json:"running"`
+	Enabled         bool           `json:"enabled"`
+	Tier            int            `json:"tier"`
+	ActivePlan      *ExplorerPlan  `json:"active_plan,omitempty"`
+	Schedule        ScheduleConfig `json:"schedule"`
+	LastRun         time.Time      `json:"last_run,omitempty"`
+	Mode            string         `json:"mode"`
+	RoundsUsed      int            `json:"rounds_used"`
+	MaxRounds       int            `json:"max_rounds"`
+	TokensUsedToday int            `json:"tokens_used_today"`
+	MaxTokensPerDay int            `json:"max_tokens_per_day"`
+	LastPlanMetrics *PlanMetrics   `json:"last_plan_metrics,omitempty"`
+}
+
+// PlanMetrics captures per-plan execution statistics.
+type PlanMetrics struct {
+	TotalTasks       int     `json:"total_tasks"`
+	Completed        int     `json:"completed"`
+	Failed           int     `json:"failed"`
+	Skipped          int     `json:"skipped"`
+	DurationS        float64 `json:"duration_s"`
+	SuccessRate      float64 `json:"success_rate"`
+	AvgTaskDurationS float64 `json:"avg_task_duration_s"`
+	TokensUsed       int     `json:"tokens_used"`
 }
 
 // Explorer orchestrates autonomous knowledge discovery on edge devices.
@@ -64,6 +87,14 @@ type Explorer struct {
 	cancel           context.CancelFunc
 	activeExecutions int
 	slotWaiters      chan struct{}
+
+	// T2: Resource control state
+	roundsUsed      int
+	tokensUsedToday int
+	tokenResetDate  string // "2006-01-02"
+
+	// T5: Plan metrics
+	lastPlanMetrics *PlanMetrics
 }
 
 // ExplorerOption configures the Explorer.
@@ -160,7 +191,7 @@ func (e *Explorer) setupPlannerLocked() {
 }
 
 func (e *Explorer) buildHarvesterLocked() *Harvester {
-	opts := make([]HarvesterOption, 0, 3)
+	opts := make([]HarvesterOption, 0, 4)
 	if e.tier >= 2 && e.agent != nil && e.agent.llm != nil {
 		opts = append(opts, WithHarvesterLLM(e.agent.llm))
 	}
@@ -170,6 +201,12 @@ func (e *Explorer) buildHarvesterLocked() *Harvester {
 	if e.saveNote != nil {
 		opts = append(opts, WithSaveNote(e.saveNote))
 	}
+	// T6: Wire token callback so harvester LLM calls accumulate into Explorer budget
+	opts = append(opts, WithTokenCallback(func(tokens int) {
+		e.mu.Lock()
+		e.tokensUsedToday += tokens
+		e.mu.Unlock()
+	}))
 	return NewHarvester(e.tier, opts...)
 }
 
@@ -229,12 +266,18 @@ func (e *Explorer) Status() ExplorerStatus {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return ExplorerStatus{
-		Running:    e.running,
-		Enabled:    e.config.Enabled,
-		Tier:       e.tier,
-		ActivePlan: e.activePlan,
-		Schedule:   e.config.Schedule,
-		LastRun:    e.lastRun,
+		Running:         e.running,
+		Enabled:         e.config.Enabled,
+		Tier:            e.tier,
+		ActivePlan:      e.activePlan,
+		Schedule:        e.config.Schedule,
+		LastRun:         e.lastRun,
+		Mode:            e.config.Mode,
+		RoundsUsed:      e.roundsUsed,
+		MaxRounds:       e.config.MaxRounds,
+		TokensUsedToday: e.tokensUsedToday,
+		MaxTokensPerDay: e.config.MaxTokensPerDay,
+		LastPlanMetrics:  e.lastPlanMetrics,
 	}
 }
 
@@ -277,6 +320,39 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		return
 	}
 
+	// T2: Mode and budget checks
+	e.mu.Lock()
+	today := time.Now().Format("2006-01-02")
+	if e.tokenResetDate != today {
+		e.tokensUsedToday = 0
+		if e.config.Mode == "budget" {
+			e.roundsUsed = 0
+		}
+		e.tokenResetDate = today
+	}
+	mode := e.config.Mode
+	maxRounds := e.config.MaxRounds
+	maxTokens := e.config.MaxTokensPerDay
+	roundsUsed := e.roundsUsed
+	tokensUsed := e.tokensUsedToday
+	e.mu.Unlock()
+
+	if mode == "once" && roundsUsed >= 1 {
+		e.mu.Lock()
+		e.config.Enabled = false
+		e.mu.Unlock()
+		slog.Info("explorer: once mode completed, auto-disabling")
+		return
+	}
+	if mode == "budget" && maxRounds > 0 && roundsUsed >= maxRounds {
+		slog.Info("explorer: budget exhausted", "rounds_used", roundsUsed, "max_rounds", maxRounds)
+		return
+	}
+	if maxTokens > 0 && tokensUsed >= maxTokens {
+		slog.Info("explorer: daily token budget exhausted", "used", tokensUsed, "max", maxTokens)
+		return
+	}
+
 	// Handle central advisory/scenario events directly (even when normal planning is skipped)
 	switch ev.Type {
 	case EventCentralAdvisory:
@@ -310,7 +386,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	// Generate exploration plan
 	planner := e.currentPlanner()
 	slog.Info("explorer: generating plan", "tier", tier)
-	plan, err := planner.Plan(ctx, *input)
+	plan, planTokens, err := planner.Plan(ctx, *input)
 	degraded := false
 	if err != nil {
 		slog.Warn("explorer: plan generation failed", "error", err)
@@ -318,7 +394,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		if tier >= 2 {
 			slog.Info("explorer: LLM unavailable, degrading to Tier 1 planner")
 			rp := &RulePlanner{}
-			plan, err = rp.Plan(ctx, *input)
+			plan, planTokens, err = rp.Plan(ctx, *input)
 			if err != nil {
 				slog.Error("explorer: rule planner also failed", "error", err)
 				return
@@ -330,6 +406,36 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	}
 	if degraded {
 		plan.Reasoning = "rule-based (degraded from Tier 2)"
+	}
+
+	// T6: Track planner token usage
+	if planTokens > 0 {
+		e.mu.Lock()
+		e.tokensUsedToday += planTokens
+		e.mu.Unlock()
+	}
+
+	// T3: DB-based dedup (replaces history-slice dedup in planners)
+	if e.db != nil {
+		var dedupFiltered []PlanTask
+		for _, t := range plan.Tasks {
+			if t.SourceRef != "" {
+				dedupFiltered = append(dedupFiltered, t)
+				continue
+			}
+			completed, _ := e.db.HasCompletedExploration(ctx, t.Model, t.Engine)
+			if completed {
+				slog.Info("explorer: dedup skipped (completed)", "model", t.Model, "engine", t.Engine)
+				continue
+			}
+			failCount, _ := e.db.CountFailedExplorations(ctx, t.Model, t.Engine)
+			if failCount >= 2 {
+				slog.Info("explorer: dedup skipped (too many failures)", "model", t.Model, "engine", t.Engine, "fails", failCount)
+				continue
+			}
+			dedupFiltered = append(dedupFiltered, t)
+		}
+		plan.Tasks = dedupFiltered
 	}
 
 	slog.Info("explorer: plan generated", "tasks", len(plan.Tasks), "id", plan.ID, "tier", plan.Tier)
@@ -473,6 +579,12 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 		task := &plan.Tasks[i]
 		select {
 		case <-ctx.Done():
+			// T5: mark remaining tasks as skipped_timeout
+			for j := i; j < len(plan.Tasks); j++ {
+				if plan.Tasks[j].Status == "" {
+					plan.Tasks[j].Status = "skipped_timeout"
+				}
+			}
 			return
 		default:
 		}
@@ -706,7 +818,56 @@ func (e *Explorer) runPlan(ctx context.Context, plan *ExplorerPlan) {
 	}
 	defer e.releaseExecutionSlot()
 
-	e.executePlan(ctx, plan)
+	// T5: Plan time budget
+	maxDur := e.config.MaxPlanDuration
+	if maxDur <= 0 {
+		maxDur = 30 * time.Minute
+	}
+	planCtx, cancel := context.WithTimeout(ctx, maxDur)
+	defer cancel()
+
+	planStart := time.Now()
+	e.executePlan(planCtx, plan)
+	elapsed := time.Since(planStart)
+
+	// T2: increment rounds
+	e.mu.Lock()
+	e.roundsUsed++
+	e.mu.Unlock()
+
+	// T5: compute plan metrics
+	metrics := e.computePlanMetrics(plan, elapsed)
+	e.mu.Lock()
+	e.lastPlanMetrics = metrics
+	e.mu.Unlock()
+}
+
+func (e *Explorer) computePlanMetrics(plan *ExplorerPlan, elapsed time.Duration) *PlanMetrics {
+	m := &PlanMetrics{
+		TotalTasks: len(plan.Tasks),
+		DurationS:  elapsed.Seconds(),
+	}
+	for _, t := range plan.Tasks {
+		switch {
+		case t.Status == "completed":
+			m.Completed++
+		case t.Status == "failed":
+			m.Failed++
+		case strings.HasPrefix(t.Status, "skipped") || t.Status == "":
+			m.Skipped++
+		}
+	}
+	if m.TotalTasks > 0 {
+		m.SuccessRate = float64(m.Completed) / float64(m.TotalTasks)
+	}
+	executed := m.Completed + m.Failed
+	if executed > 0 {
+		m.AvgTaskDurationS = elapsed.Seconds() / float64(executed)
+	}
+	e.mu.RLock()
+	m.TokensUsed = e.tokensUsedToday
+	e.mu.RUnlock()
+	return m
 }
 
 func (e *Explorer) acquireExecutionSlot(ctx context.Context) error {
@@ -830,6 +991,42 @@ func (e *Explorer) UpdateConfig(key, value string) (string, error) {
 			return "", fmt.Errorf("parse enabled: %w", err)
 		}
 		e.config.Enabled = enabled
+	case "mode":
+		switch value {
+		case "continuous", "once", "budget":
+			e.config.Mode = value
+		default:
+			e.mu.Unlock()
+			return "", fmt.Errorf("mode must be continuous, once, or budget")
+		}
+	case "max_rounds":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			e.mu.Unlock()
+			return "", fmt.Errorf("max_rounds must be a non-negative integer")
+		}
+		e.config.MaxRounds = n
+	case "max_plan_duration":
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			e.mu.Unlock()
+			return "", fmt.Errorf("parse max_plan_duration: %w", err)
+		}
+		e.config.MaxPlanDuration = duration
+	case "max_tokens_per_day":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			e.mu.Unlock()
+			return "", fmt.Errorf("max_tokens_per_day must be a non-negative integer")
+		}
+		e.config.MaxTokensPerDay = n
+	case "rounds_used":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			e.mu.Unlock()
+			return "", fmt.Errorf("rounds_used must be a non-negative integer")
+		}
+		e.roundsUsed = n
 	default:
 		e.mu.Unlock()
 		return "", fmt.Errorf("unknown explorer config key %q", key)
@@ -861,6 +1058,18 @@ func (e *Explorer) configValueLocked(key string) string {
 		return strconv.Itoa(e.config.Schedule.MaxConcurrentRuns)
 	case "enabled":
 		return strconv.FormatBool(e.config.Enabled)
+	case "mode":
+		return e.config.Mode
+	case "max_rounds":
+		return strconv.Itoa(e.config.MaxRounds)
+	case "max_plan_duration":
+		return e.config.MaxPlanDuration.String()
+	case "max_tokens_per_day":
+		return strconv.Itoa(e.config.MaxTokensPerDay)
+	case "rounds_used":
+		return strconv.Itoa(e.roundsUsed)
+	case "tokens_used_today":
+		return strconv.Itoa(e.tokensUsedToday)
 	default:
 		return ""
 	}

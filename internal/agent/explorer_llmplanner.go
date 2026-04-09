@@ -25,7 +25,7 @@ func NewLLMPlanner(agent *Agent) *LLMPlanner {
 	return &LLMPlanner{agent: agent}
 }
 
-func (p *LLMPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, error) {
+func (p *LLMPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, int, error) {
 	// B8: Filter input to reduce prompt size — only send local-hardware
 	// gaps and limit collections to avoid multi-minute LLM calls.
 	filtered := filterPlanInput(input)
@@ -79,12 +79,12 @@ func (p *LLMPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, 
 		resp, err = p.agent.llm.ChatCompletion(planCtx, messages, nil)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("LLM plan generation: %w", err)
+		return nil, 0, fmt.Errorf("LLM plan generation: %w", err)
 	}
 	slog.Info("explorer: LLM planner response received", "content_len", len(resp.Content))
 	plan, err := parsePlanResponse(resp.Content)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defaultHardware := firstTaskHardware(input.Hardware.Profile, input.Hardware.GPUArch)
 	localModels := toSet(input.LocalModels)
@@ -107,11 +107,9 @@ func (p *LLMPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, 
 	// Post-filter: remove tasks referencing models/engines not on this device + format/type/VRAM check
 	plan.Tasks = filterLocalTasks(plan.Tasks, localModels, localEngineTypes, modelFormats, modelTypes, input.LocalModels, totalVRAMMiB)
 	afterLocalFilter := len(plan.Tasks)
-	// B11: dedup against completed history
-	plan.Tasks = deduplicateTasks(plan.Tasks, input.History)
 	slog.Info("explorer: LLM plan filtering",
-		"llm_proposed", preFilterCount, "after_local_filter", afterLocalFilter, "after_dedup", len(plan.Tasks))
-	return plan, nil
+		"llm_proposed", preFilterCount, "after_local_filter", afterLocalFilter)
+	return plan, resp.TotalTokens, nil
 }
 
 const (

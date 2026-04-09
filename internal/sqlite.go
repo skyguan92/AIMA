@@ -2617,6 +2617,33 @@ func (d *DB) CountActiveExplorationRuns(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// HasCompletedExploration checks if a model+engine combo has any completed exploration run.
+func (d *DB) HasCompletedExploration(ctx context.Context, modelID, engineID string) (bool, error) {
+	var exists int
+	err := d.db.QueryRowContext(ctx,
+		`SELECT 1 FROM exploration_runs WHERE model_id = ? AND engine_id = ? AND status = 'completed' LIMIT 1`,
+		modelID, engineID).Scan(&exists)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// CountFailedExplorations counts how many times a model+engine combo has failed.
+func (d *DB) CountFailedExplorations(ctx context.Context, modelID, engineID string) (int, error) {
+	var count int
+	err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM exploration_runs WHERE model_id = ? AND engine_id = ? AND status = 'failed'`,
+		modelID, engineID).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (d *DB) InsertExplorationEvent(ctx context.Context, event *ExplorationEvent) error {
 	if event == nil {
 		return fmt.Errorf("exploration event is nil")
