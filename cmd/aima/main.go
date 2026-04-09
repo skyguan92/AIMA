@@ -622,24 +622,8 @@ func run() error {
 				if seen[engineType] {
 					continue
 				}
-
-				if deps.GetEngineInfo != nil {
-					infoData, infoErr := deps.GetEngineInfo(ctx, engineType)
-					if infoErr != nil {
-						slog.Debug("explorer: skip local engine with missing info", "engine", engineType, "error", infoErr)
-						continue
-					}
-					var info struct {
-						Asset     *knowledge.EngineAsset `json:"asset"`
-						Installed []*state.Engine        `json:"installed"`
-					}
-					if json.Unmarshal(infoData, &info) != nil || !installedEnginesContainResolvedAsset(info.Asset, info.Installed, hwInfo.Platform) {
-						slog.Debug("explorer: skip non-executable local engine", "engine", engineType, "platform", hwInfo.Platform)
-						continue
-					}
-				}
-
 				seen[engineType] = true
+
 				le := agent.LocalEngine{
 					Name:    e.Name,
 					Type:    engineType,
