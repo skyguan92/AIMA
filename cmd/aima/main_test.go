@@ -2005,7 +2005,7 @@ func TestUpdatePerfOverlayWritesObservationOutsideCatalog(t *testing.T) {
 		TTFTP95ms:     20,
 		TPOTP50ms:     3,
 		QPS:           5,
-	})
+	}, nil, "", "", nil)
 
 	observationPath := filepath.Join(dir, "observations", "models", "qwen3-8b-perf.json")
 	if _, err := os.Stat(observationPath); err != nil {

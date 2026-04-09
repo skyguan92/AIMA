@@ -226,6 +226,49 @@ func deploymentMatchesQuery(d *runtime.DeploymentStatus, query string) bool {
 	return false
 }
 
+type matchedDeployment struct {
+	Runtime runtime.Runtime
+	Status  *runtime.DeploymentStatus
+}
+
+func findMatchingDeployments(ctx context.Context, query string, suppress func(*runtime.DeploymentStatus) bool, rts ...runtime.Runtime) []matchedDeployment {
+	matches := make([]matchedDeployment, 0)
+	seen := make(map[string]struct{})
+	for _, rt := range rts {
+		if rt == nil {
+			continue
+		}
+		if status, err := rt.Status(ctx, query); err == nil && status != nil && deploymentMatchesQuery(status, query) {
+			if suppress == nil || !suppress(status) {
+				key := fmt.Sprintf("%p|%s", rt, status.Name)
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					matches = append(matches, matchedDeployment{Runtime: rt, Status: status})
+				}
+			}
+		}
+		statuses, err := rt.List(ctx)
+		if err != nil {
+			continue
+		}
+		for _, status := range statuses {
+			if status == nil || !deploymentMatchesQuery(status, query) {
+				continue
+			}
+			if suppress != nil && suppress(status) {
+				continue
+			}
+			key := fmt.Sprintf("%p|%s", rt, status.Name)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			matches = append(matches, matchedDeployment{Runtime: rt, Status: status})
+		}
+	}
+	return matches
+}
+
 func dirRequiresSingleFileModelPath(dir string) bool {
 	if !model.PathLooksUsable(dir, "") {
 		return false

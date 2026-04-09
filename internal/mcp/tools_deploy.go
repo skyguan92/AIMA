@@ -45,8 +45,13 @@ func registerDeployTools(s *Server, deps *ToolDeps) {
 				}
 				p.Config["max_cold_start_s"] = p.MaxColdStartS
 			}
-			noPull := p.NoPull || (p.AutoPull != nil && !*p.AutoPull)
-			data, err := deps.DeployApply(ctx, p.Engine, p.Model, p.Slot, p.Config, noPull)
+			if p.NoPull || (p.AutoPull != nil && !*p.AutoPull) {
+				if p.Config == nil {
+					p.Config = map[string]any{}
+				}
+				p.Config["_auto_pull"] = false
+			}
+			data, err := deps.DeployApply(ctx, p.Engine, p.Model, p.Slot, p.Config)
 			if err != nil {
 				return nil, fmt.Errorf("deploy apply %s: %w", p.Model, err)
 			}

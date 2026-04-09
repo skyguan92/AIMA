@@ -16,7 +16,7 @@ func TestSaveBenchmarkResultPersistsDeployConfig(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	benchmarkID, configID, err := saveBenchmarkResult(ctx, db,
+	benchmarkID, configID, _, err := saveBenchmarkResult(ctx, db,
 		"nvidia-rtx4090-x86", "sglang-kt", "qwen3-4b",
 		&benchpkg.RunResult{
 			ThroughputTPS:   42.5,
@@ -26,7 +26,7 @@ func TestSaveBenchmarkResultPersistsDeployConfig(t *testing.T) {
 			AvgOutputTokens: 256,
 			TotalRequests:   8,
 		},
-		2, 2048, 256, "explorer validate")
+		nil, benchmarkSystemMetrics{}, 2, 2048, 256, "explorer validate")
 	if err != nil {
 		t.Fatalf("saveBenchmarkResult: %v", err)
 	}

@@ -66,7 +66,8 @@ type DeploymentStatus struct {
 	StartupProgress int    `json:"startup_progress,omitempty"` // 0-100
 	StartupMessage  string `json:"startup_message,omitempty"`  // human-readable
 	EstimatedTotalS int    `json:"estimated_total_s,omitempty"`
-	ErrorLines      string `json:"error_lines,omitempty"` // last few log lines on failure
+	ErrorLines      string         `json:"error_lines,omitempty"` // last few log lines on failure
+	Config          map[string]any `json:"config,omitempty"`      // resolved deploy config (engine params)
 }
 
 // PartitionRequest holds GPU/CPU/RAM resource limits.

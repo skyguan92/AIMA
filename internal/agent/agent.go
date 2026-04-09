@@ -15,6 +15,18 @@ type LLMClient interface {
 	ChatCompletion(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error)
 }
 
+// StreamingLLMClient optionally exposes streamed chat completion deltas.
+// Callers should type-assert and fall back to ChatCompletion when unavailable.
+type StreamingLLMClient interface {
+	ChatCompletionStream(ctx context.Context, messages []Message, tools []ToolDefinition, onDelta func(CompletionDelta)) (*Response, error)
+}
+
+// CompletionDelta is a streamed fragment of an LLM response.
+type CompletionDelta struct {
+	Content          string
+	ReasoningContent string
+}
+
 // Message represents a chat message in the conversation.
 type Message struct {
 	Role             string     `json:"role"` // system, user, assistant, tool

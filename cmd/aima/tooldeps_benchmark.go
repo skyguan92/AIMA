@@ -439,9 +439,6 @@ func selectReadyDeployConfig(engineName string, explicit map[string]any, matches
 			continue
 		}
 		matchedEngine := strings.TrimSpace(match.Status.Labels["aima.dev/engine"])
-		if matchedEngine == "" {
-			matchedEngine = strings.TrimSpace(match.Status.Engine)
-		}
 		if engineName != "" && !strings.EqualFold(matchedEngine, engineName) {
 			continue
 		}
