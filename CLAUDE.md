@@ -172,7 +172,7 @@ develop ───●──●──●──●──feature──●──●
 
 ### Version Numbering (SemVer)
 
-- **0.0.1** — Initial foundation release (hardware detection, 94 MCP tools, multi-runtime)
+- **0.0.1** — Initial foundation release (hardware detection, multi-runtime)
 - **0.2.0** — Support service, Web UI redesign, OpenClaw integration
 - **0.3.0** — Edge Intelligence: OpenClaw full-stack, smart agent routing, RDNA3 support, major refactoring
 - **0.4.0** — Next milestone: expanded catalog, agent orchestration maturity
@@ -241,7 +241,7 @@ Before starting any v1.0-targeted work, read that doc first. Keep it updated as 
 
 ### Current State (v0.3.0)
 
-56 MCP tools, 3 runtimes (K3S/Docker/Native), 11 hardware profiles, 27 engine YAMLs, 25 model YAMLs, 3 deployment scenarios.
+56 MCP tools, 3 runtimes (K3S/Docker/Native), 11 hardware profiles, 30 engine YAMLs, 28 model YAMLs, 3 deployment scenarios.
 OpenClaw full-stack integration (local TTS cloning end-to-end). Smart Agent routing with model ranking.
 Engine Profile system with SGLang-KT support. AMD RDNA3 (W7900D) 8-GPU validated.
 God file refactor: `cmd/aima/main.go` split into 46 modules. ZeroClaw removal.
