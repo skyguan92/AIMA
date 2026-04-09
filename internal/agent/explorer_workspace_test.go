@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -161,5 +164,90 @@ Content`,
 				t.Errorf("extractSection(%q, %q) = %q, want %q", tt.md, tt.heading, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWorkspaceInit(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	if err := ws.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "experiments"))
+	if err != nil || !info.IsDir() {
+		t.Fatal("experiments/ dir not created")
+	}
+}
+
+func TestWorkspaceReadWrite(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+	if err := ws.WriteFile("plan.md", "# Test Plan\n"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	content, err := ws.ReadFile("plan.md")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if content != "# Test Plan\n" {
+		t.Errorf("got %q", content)
+	}
+	if err := ws.AppendFile("plan.md", "more\n"); err != nil {
+		t.Fatalf("AppendFile: %v", err)
+	}
+	content, _ = ws.ReadFile("plan.md")
+	if !strings.HasSuffix(content, "more\n") {
+		t.Errorf("append failed: %q", content)
+	}
+}
+
+func TestWorkspaceReadOnlyGuard(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+	for _, name := range []string{"device-profile.md", "available-combos.md", "knowledge-base.md"} {
+		if err := ws.WriteFile(name, "hack"); err == nil {
+			t.Errorf("WriteFile(%s) should fail for read-only doc", name)
+		}
+	}
+}
+
+func TestWorkspaceListDir(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+	_ = os.WriteFile(filepath.Join(dir, "plan.md"), []byte("x"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "summary.md"), []byte("x"), 0644)
+	entries, err := ws.ListDir(".")
+	if err != nil {
+		t.Fatalf("ListDir: %v", err)
+	}
+	if len(entries) < 2 {
+		t.Errorf("got %d entries, want >= 2", len(entries))
+	}
+}
+
+func TestWorkspaceGrepFile(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+	_ = os.WriteFile(filepath.Join(dir, "plan.md"), []byte("line1\nfoo bar\nline3\n"), 0644)
+	matches, err := ws.GrepFile("foo", "plan.md")
+	if err != nil {
+		t.Fatalf("GrepFile: %v", err)
+	}
+	if len(matches) != 1 || !strings.Contains(matches[0], "foo bar") {
+		t.Errorf("grep results: %v", matches)
+	}
+}
+
+func TestWorkspacePathEscape(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+	_, err := ws.ReadFile("../../etc/passwd")
+	if err == nil {
+		t.Error("path escape should fail")
 	}
 }
