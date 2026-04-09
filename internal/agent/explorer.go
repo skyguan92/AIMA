@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +23,9 @@ type ExplorerConfig struct {
 	MaxRounds       int           // budget mode: max plans to execute (0=unlimited)
 	MaxPlanDuration time.Duration // per-plan time budget (default 30min)
 	MaxTokensPerDay int           // daily LLM token cap (0=unlimited)
+	MaxCycles       int           // PDCA max iterations per round (default 3)
+	MaxTasks        int           // max tasks per plan (default 5)
+	WorkspaceDir    string        // workspace root (default ~/.aima/explorer/)
 }
 
 // ExplorerStatus reports the Explorer's current state.
@@ -65,6 +70,7 @@ type Explorer struct {
 	bus       *EventBus
 	scheduler *Scheduler
 	planner   Planner
+	workspace *ExplorerWorkspace // PDCA document workspace
 	harvester *Harvester
 
 	// Data gathering functions, wired via options or buildToolDeps.
@@ -167,6 +173,12 @@ func WithRoundsUsed(n int) ExplorerOption {
 }
 
 func NewExplorer(config ExplorerConfig, agent *Agent, explMgr *ExplorationManager, db *state.DB, bus *EventBus, opts ...ExplorerOption) *Explorer {
+	if config.MaxCycles <= 0 {
+		config.MaxCycles = 3
+	}
+	if config.MaxTasks <= 0 {
+		config.MaxTasks = 5
+	}
 	e := &Explorer{
 		config:  config,
 		agent:   agent,
@@ -199,7 +211,18 @@ func (e *Explorer) detectTier() int {
 
 func (e *Explorer) setupPlannerLocked() {
 	if e.tier >= 2 && e.agent != nil {
-		e.planner = NewLLMPlanner(e.agent)
+		wsDir := e.config.WorkspaceDir
+		if wsDir == "" {
+			home, _ := os.UserHomeDir()
+			wsDir = filepath.Join(home, ".aima", "explorer")
+		}
+		e.workspace = NewExplorerWorkspace(wsDir)
+		e.planner = NewExplorerAgentPlanner(
+			e.agent.llm,
+			e.workspace,
+			WithAgentMaxCycles(e.config.MaxCycles),
+			WithAgentMaxTasks(e.config.MaxTasks),
+		)
 	} else {
 		e.planner = &RulePlanner{}
 	}
@@ -496,6 +519,53 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 
 	planStart := time.Now()
 	e.executePlan(planCtx, plan)
+
+	// PDCA Check+Act loop (only for AnalyzablePlanner, i.e., Tier 2 agent planner)
+	maxCycles := e.config.MaxCycles
+	if maxCycles <= 0 {
+		maxCycles = 3
+	}
+	if ap, ok := e.planner.(AnalyzablePlanner); ok {
+		for cycle := 0; cycle < maxCycles; cycle++ {
+			select {
+			case <-planCtx.Done():
+				slog.Info("explorer: PDCA timeout", "cycle", cycle)
+				goto pdcaDone
+			default:
+			}
+
+			slog.Info("explorer: PDCA Check phase", "cycle", cycle+1)
+			verdict, extraTasks, analyzeTokens, err := ap.Analyze(planCtx)
+			if analyzeTokens > 0 {
+				e.mu.Lock()
+				e.tokensUsedToday += analyzeTokens
+				e.mu.Unlock()
+			}
+			if err != nil {
+				slog.Warn("explorer: PDCA analyze failed", "error", err, "cycle", cycle+1)
+				break
+			}
+			slog.Info("explorer: PDCA verdict", "verdict", verdict, "extra_tasks", len(extraTasks), "cycle", cycle+1)
+
+			if verdict != "continue" || len(extraTasks) == 0 {
+				break
+			}
+
+			extraPlanTasks := make([]PlanTask, len(extraTasks))
+			for i, ts := range extraTasks {
+				extraPlanTasks[i] = taskSpecToPlanTask(ts, plan.Tasks[0].Hardware)
+			}
+			extraPlan := &ExplorerPlan{
+				ID:        plan.ID + fmt.Sprintf("-c%d", cycle+1),
+				Tier:      2,
+				Tasks:     extraPlanTasks,
+				Reasoning: fmt.Sprintf("PDCA Act cycle %d", cycle+1),
+			}
+			slog.Info("explorer: PDCA Do phase", "tasks", len(extraPlanTasks), "cycle", cycle+1)
+			e.executePlan(planCtx, extraPlan)
+		}
+	}
+pdcaDone:
 	planCancel()
 	elapsed := time.Since(planStart)
 
@@ -690,6 +760,33 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 		actions := harvester.Harvest(ctx, HarvestInput{Task: *task, Result: result})
 		for _, a := range actions {
 			slog.Info("explorer: harvest action", "type", a.Type, "detail", a.Detail)
+		}
+
+		// Write experiment result to workspace (for PDCA Check phase)
+		if e.workspace != nil {
+			expResult := ExperimentResult{
+				Status:    task.Status,
+				StartedAt: taskStart.UTC().Format(time.RFC3339),
+				DurationS: taskElapsed.Seconds(),
+			}
+			if !result.Success {
+				expResult.Error = result.Error
+			}
+			if result.Throughput > 0 {
+				expResult.Benchmarks = []BenchmarkEntry{{
+					ThroughputTPS: result.Throughput,
+				}}
+			}
+			expTask := TaskSpec{
+				Kind:         task.Kind,
+				Model:        task.Model,
+				Engine:       task.Engine,
+				EngineParams: task.Params,
+				Reason:       task.Reason,
+			}
+			if _, werr := e.workspace.WriteExperimentResult(i+1, expTask, expResult); werr != nil {
+				slog.Debug("explorer: write experiment result failed", "error", werr)
+			}
 		}
 
 		// Update plan progress
