@@ -76,6 +76,9 @@ Go Agent (直接调用)，保证行为一致。
 - Support (1): `support.askforhelp`
 - Download (1): `download.list`
 
+`support.askforhelp` 默认连接 `https://aimaserver.com`，AIMA 会在运行时自动补齐 `/api/v1`。
+如需覆盖默认地址，可传入 `endpoint` 参数，或提前配置 `support.endpoint` / `AIMA_SUPPORT_ENDPOINT`。
+
 ---
 
 ## 工具定义示例
