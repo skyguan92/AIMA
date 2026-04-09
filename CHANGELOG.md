@@ -3,7 +3,7 @@
 All notable changes to AIMA are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follows [SemVer](https://semver.org/).
 
-## [v0.3.2] - 2026-04-09
+## [v0.3.3] - 2026-04-09
 
 ### Fixed
 
