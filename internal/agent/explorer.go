@@ -868,6 +868,16 @@ func (e *Explorer) parseExplorationResult(status *ExplorationStatus) HarvestResu
 			if promoted, ok := summary["auto_promoted"].(bool); ok {
 				result.Promoted = promoted
 			}
+			if tc, ok := summary["total_cells"].(float64); ok {
+				result.MatrixCells = int(tc)
+			}
+			if sc, ok := summary["success_cells"].(float64); ok {
+				result.SuccessCells = int(sc)
+			}
+			if mp, ok := summary["matrix_profiles"]; ok {
+				matrixJSON, _ := json.Marshal(mp)
+				result.MatrixJSON = string(matrixJSON)
+			}
 		}
 	}
 	return result

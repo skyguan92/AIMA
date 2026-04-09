@@ -153,3 +153,59 @@ func TestHarvester_ValidateUsesTemplate_TuneUsesLLM(t *testing.T) {
 		t.Error("tune: insightPending should be false when LLM succeeds")
 	}
 }
+
+func TestHarvester_MatrixNote(t *testing.T) {
+	h := NewHarvester(1)
+	input := HarvestInput{
+		Task: PlanTask{Model: "test-model", Engine: "sglang-kt"},
+		Result: HarvestResult{
+			Success:      true,
+			MatrixCells:  4,
+			SuccessCells: 3,
+			MatrixJSON: `[{"cells":[` +
+				`{"concurrency":1,"input_tokens":128,"max_tokens":256,"result":{"throughput_tps":170.5,"ttft_p95_ms":45}},` +
+				`{"concurrency":1,"input_tokens":1024,"max_tokens":256,"result":{"throughput_tps":155.0,"ttft_p95_ms":120}}` +
+				`]},{"cells":[` +
+				`{"concurrency":4,"input_tokens":512,"max_tokens":1024,"result":{"throughput_tps":520.0,"ttft_p95_ms":200}},` +
+				`{"concurrency":4,"input_tokens":2048,"max_tokens":1024,"error":"timeout"}` +
+				`]}]`,
+		},
+	}
+	note := h.generateTemplateNote(input)
+	if !strings.Contains(note, "4 cells, 3 ok") {
+		t.Errorf("note missing cell count: %s", note)
+	}
+	if !strings.Contains(note, "170tok/s") || !strings.Contains(note, "171tok/s") {
+		// Allow rounding: 170.5 → "170" or "171"
+		if !strings.Contains(note, "17") {
+			t.Errorf("note missing throughput: %s", note)
+		}
+	}
+	if !strings.Contains(note, "Latency") || !strings.Contains(note, "Throughput") {
+		t.Errorf("note missing profile labels: %s", note)
+	}
+	// Timeout cell should be excluded
+	if strings.Contains(note, "2048") {
+		t.Errorf("note should exclude error cells: %s", note)
+	}
+}
+
+func TestHarvester_SinglePointNote(t *testing.T) {
+	h := NewHarvester(1)
+	input := HarvestInput{
+		Task: PlanTask{Model: "test-model", Engine: "vllm"},
+		Result: HarvestResult{
+			Success:    true,
+			Throughput: 100.5,
+			TTFTP95:    45.0,
+			Config:     map[string]any{"tp_size": 2},
+		},
+	}
+	note := h.generateTemplateNote(input)
+	if !strings.Contains(note, "100.5 tok/s") {
+		t.Errorf("note missing throughput: %s", note)
+	}
+	if !strings.Contains(note, "TTFT P95 45ms") {
+		t.Errorf("note missing TTFT: %s", note)
+	}
+}

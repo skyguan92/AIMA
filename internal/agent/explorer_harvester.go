@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -41,6 +42,9 @@ type HarvestResult struct {
 	Config          map[string]any
 	Promoted        bool // set by maybeAutoPromote
 	Error           string
+	MatrixCells     int    // total cells in benchmark matrix (0 = single-point)
+	SuccessCells    int    // cells completed without error
+	MatrixJSON      string // raw matrix profiles JSON for note generation
 }
 
 // HarvestAction describes a post-exploration side effect.
@@ -148,6 +152,9 @@ func (h *Harvester) generateNote(ctx context.Context, input HarvestInput) (strin
 }
 
 func (h *Harvester) generateTemplateNote(input HarvestInput) string {
+	if input.Result.MatrixCells > 0 {
+		return h.generateMatrixNote(input)
+	}
 	engineLabel := input.Task.Engine
 	if input.Result.EngineVersion != "" {
 		engineLabel += "@" + input.Result.EngineVersion
@@ -177,6 +184,58 @@ func (h *Harvester) generateTemplateNote(input HarvestInput) string {
 	}
 	sentences = append(sentences, fmt.Sprintf("Config=%v.", input.Result.Config))
 	return strings.Join(sentences, " ")
+}
+
+func (h *Harvester) generateMatrixNote(input HarvestInput) string {
+	header := fmt.Sprintf("%s on %s (%d cells, %d ok):",
+		input.Task.Model, input.Task.Engine,
+		input.Result.MatrixCells, input.Result.SuccessCells)
+
+	var profiles []json.RawMessage
+	_ = json.Unmarshal([]byte(input.Result.MatrixJSON), &profiles)
+
+	var lines []string
+	lines = append(lines, header)
+
+	for i, profileJSON := range profiles {
+		var profile struct {
+			Cells []struct {
+				Concurrency int `json:"concurrency"`
+				InputTokens int `json:"input_tokens"`
+				MaxTokens   int `json:"max_tokens"`
+				Result      struct {
+					ThroughputTPS float64 `json:"throughput_tps"`
+					TTFTP95ms     float64 `json:"ttft_p95_ms"`
+				} `json:"result"`
+				Error string `json:"error"`
+			} `json:"cells"`
+		}
+		if json.Unmarshal(profileJSON, &profile) != nil {
+			continue
+		}
+		label := "Latency"
+		if i > 0 {
+			label = "Throughput"
+		}
+		var points []string
+		for _, c := range profile.Cells {
+			if c.Error != "" || c.Result.ThroughputTPS <= 0 {
+				continue
+			}
+			point := fmt.Sprintf("in=%d/out=%d/c=%d→%.0ftok/s TTFT=%.0fms",
+				c.InputTokens, c.MaxTokens, c.Concurrency,
+				c.Result.ThroughputTPS, c.Result.TTFTP95ms)
+			points = append(points, point)
+		}
+		if len(points) > 0 {
+			lines = append(lines, fmt.Sprintf("  %s: %s", label, strings.Join(points, " | ")))
+		}
+	}
+
+	if cfg := input.Result.Config; len(cfg) > 0 {
+		lines = append(lines, fmt.Sprintf("  Config: %v", cfg))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (h *Harvester) generateLLMNote(ctx context.Context, input HarvestInput) (string, error) {
