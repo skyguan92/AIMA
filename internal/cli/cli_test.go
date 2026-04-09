@@ -526,6 +526,9 @@ func TestExploreStartDoesNotExposePlannerFlag(t *testing.T) {
 
 func TestDeployListCmd(t *testing.T) {
 	app := testApp(t)
+	app.ToolDeps.DeployList = func(ctx context.Context) (json.RawMessage, error) {
+		return json.RawMessage(`[{"name":"qwen3-8b-vllm","model":"qwen3-8b","engine":"vllm","phase":"running","ready":true}]`), nil
+	}
 	root := NewRootCmd(app)
 
 	var buf bytes.Buffer
@@ -538,5 +541,12 @@ func TestDeployListCmd(t *testing.T) {
 
 	if buf.Len() == 0 {
 		t.Error("deploy list output is empty")
+	}
+	output := buf.String()
+	if !strings.Contains(output, `"model": "qwen3-8b"`) {
+		t.Fatalf("deploy list output missing top-level model: %s", output)
+	}
+	if !strings.Contains(output, `"engine": "vllm"`) {
+		t.Fatalf("deploy list output missing top-level engine: %s", output)
 	}
 }

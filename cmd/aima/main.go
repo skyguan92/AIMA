@@ -202,7 +202,7 @@ func run() error {
 			if modelName == "" {
 				return nil, fmt.Errorf("snapshot missing model label, cannot redeploy")
 			}
-			result, err := deps.DeployApply(ctx, engineType, modelName, "", nil)
+			result, err := deps.DeployApply(ctx, engineType, modelName, "", nil, false)
 			if err != nil {
 				return nil, fmt.Errorf("redeploy %s: %w", modelName, err)
 			}
@@ -462,8 +462,8 @@ func run() error {
 			}
 			statuses := make([]agent.DeployStatus, 0, len(deployments))
 			for _, deployment := range deployments {
-				modelName := deployment.Labels["aima.dev/model"]
-				engineType := deployment.Labels["aima.dev/engine"]
+				modelName := firstNonEmpty(deployment.Model, deployment.Labels["aima.dev/model"])
+				engineType := firstNonEmpty(deployment.Engine, deployment.Labels["aima.dev/engine"])
 				if modelName == "" || engineType == "" {
 					continue
 				}
@@ -513,13 +513,13 @@ func run() error {
 			advisories := make([]agent.Advisory, 0, len(items))
 			for _, item := range items {
 				adv := agent.Advisory{
-					ID:             stringField(item,"id"),
-					Type:           stringField(item,"type"),
-					TargetHardware: stringField(item,"target_hardware"),
-					TargetModel:    stringField(item,"target_model"),
-					TargetEngine:   stringField(item,"target_engine"),
-					Confidence:     stringField(item,"confidence"),
-					Reasoning:      stringField(item,"reasoning"),
+					ID:             stringField(item, "id"),
+					Type:           stringField(item, "type"),
+					TargetHardware: stringField(item, "target_hardware"),
+					TargetModel:    stringField(item, "target_model"),
+					TargetEngine:   stringField(item, "target_engine"),
+					Confidence:     stringField(item, "confidence"),
+					Reasoning:      stringField(item, "reasoning"),
 				}
 				if cfg, ok := item["config"].(map[string]any); ok {
 					adv.Config = cfg
@@ -595,9 +595,10 @@ func run() error {
 				return nil, err
 			}
 			var engines []struct {
-				Type    string `json:"type"`
-				Name    string `json:"name"`
-				Runtime string `json:"runtime"`
+				Type      string `json:"type"`
+				Name      string `json:"name"`
+				Runtime   string `json:"runtime"`
+				Available bool   `json:"available"`
 			}
 			if err := json.Unmarshal(data, &engines); err != nil {
 				return nil, nil
@@ -610,9 +611,29 @@ func run() error {
 				if engineType == "" {
 					engineType = e.Name
 				}
+				if !e.Available {
+					continue
+				}
 				if seen[engineType] {
 					continue
 				}
+
+				if deps.GetEngineInfo != nil {
+					infoData, infoErr := deps.GetEngineInfo(ctx, engineType)
+					if infoErr != nil {
+						slog.Debug("explorer: skip local engine with missing info", "engine", engineType, "error", infoErr)
+						continue
+					}
+					var info struct {
+						Asset     *knowledge.EngineAsset `json:"asset"`
+						Installed []*state.Engine        `json:"installed"`
+					}
+					if json.Unmarshal(infoData, &info) != nil || !installedEnginesContainResolvedAsset(info.Asset, info.Installed, hwInfo.Platform) {
+						slog.Debug("explorer: skip non-executable local engine", "engine", engineType, "platform", hwInfo.Platform)
+						continue
+					}
+				}
+
 				seen[engineType] = true
 				le := agent.LocalEngine{
 					Name:    e.Name,
@@ -1040,7 +1061,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 			}
 		}
 
-		waitForDeployment := func(deployName, runtimeName, resolvedEngine string) (json.RawMessage, error) {
+		waitForDeployment := func(deployName, runtimeName, resolvedEngine string, resolvedConfig map[string]any) (json.RawMessage, error) {
 			notify("waiting", deployName)
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()
@@ -1083,6 +1104,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 						return json.Marshal(map[string]any{
 							"name": deployName, "model": model, "engine": resolvedEngine,
 							"runtime": runtimeName, "address": status.Address, "status": "ready",
+							"config": resolvedConfig,
 						})
 					}
 					if status.Phase == "failed" {
@@ -1112,8 +1134,9 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 			return nil, fmt.Errorf("resolve: %w", err)
 		}
 		var plan struct {
-			Engine    string `json:"engine"`
-			Runtime   string `json:"runtime"`
+			Engine    string         `json:"engine"`
+			Runtime   string         `json:"runtime"`
+			Config    map[string]any `json:"config"`
 			FitReport struct {
 				Fit    bool     `json:"fit"`
 				Reason string   `json:"reason"`
@@ -1149,6 +1172,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 					return json.Marshal(map[string]any{
 						"name": deployName, "model": model, "engine": plan.Engine,
 						"runtime": runtimeName, "address": status.Address, "status": "ready",
+						"config": plan.Config,
 					})
 				case status.Phase == "running" || status.Phase == "starting":
 					notify("reusing", deployName)
@@ -1156,7 +1180,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 					if status.Runtime != "" {
 						runtimeName = status.Runtime
 					}
-					return waitForDeployment(deployName, runtimeName, plan.Engine)
+					return waitForDeployment(deployName, runtimeName, plan.Engine, plan.Config)
 				}
 			}
 		}
@@ -1179,11 +1203,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 
 		// Step 4: Deploy
 		notify("deploying", model)
-		deployCtx := ctx
-		if noPull {
-			deployCtx = withDeployAutoPull(ctx, false)
-		}
-		deployData, err := deps.DeployApply(deployCtx, engineType, model, slot, configOverrides)
+		deployData, err := deps.DeployApply(ctx, engineType, model, slot, configOverrides, noPull)
 		if err != nil {
 			return nil, fmt.Errorf("deploy: %w", err)
 		}
@@ -1194,7 +1214,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 		if err := json.Unmarshal(deployData, &deployResult); err != nil || deployResult.Name == "" {
 			return deployData, nil
 		}
-		return waitForDeployment(deployResult.Name, deployResult.Runtime, plan.Engine)
+		return waitForDeployment(deployResult.Name, deployResult.Runtime, plan.Engine, plan.Config)
 	}
 
 	deps = &mcp.ToolDeps{}

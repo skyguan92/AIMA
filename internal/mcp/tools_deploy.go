@@ -45,13 +45,8 @@ func registerDeployTools(s *Server, deps *ToolDeps) {
 				}
 				p.Config["max_cold_start_s"] = p.MaxColdStartS
 			}
-			if p.NoPull || (p.AutoPull != nil && !*p.AutoPull) {
-				if p.Config == nil {
-					p.Config = map[string]any{}
-				}
-				p.Config["_auto_pull"] = false
-			}
-			data, err := deps.DeployApply(ctx, p.Engine, p.Model, p.Slot, p.Config)
+			noPull := p.NoPull || (p.AutoPull != nil && !*p.AutoPull)
+			data, err := deps.DeployApply(ctx, p.Engine, p.Model, p.Slot, p.Config, noPull)
 			if err != nil {
 				return nil, fmt.Errorf("deploy apply %s: %w", p.Model, err)
 			}
@@ -215,7 +210,7 @@ func registerDeployTools(s *Server, deps *ToolDeps) {
 	// deploy.status
 	s.RegisterTool(&Tool{
 		Name:        "deploy.status",
-		Description: "Check deployment health: phase (Running/Pending/Failed), ready state, restart count, exit code. Accepts deployment name or model name.",
+		Description: "Get detailed deployment state for one deployment: model, engine, slot, runtime, ready address, config, startup progress, and failure detail. Accepts deployment name or model name.",
 		InputSchema: schema(`"name":{"type":"string","description":"Deployment name (e.g. 'aima-vllm-qwen3-0-6b') or model name (e.g. 'qwen3-0.6b'). Call deploy.list if unsure."}`, "name"),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.DeployStatus == nil {
@@ -241,7 +236,7 @@ func registerDeployTools(s *Server, deps *ToolDeps) {
 	// deploy.list
 	s.RegisterTool(&Tool{
 		Name:        "deploy.list",
-		Description: "List all active deployments on this device with names, models, engines, and statuses.",
+		Description: "List active deployment overviews on this device: name, model, engine, slot, runtime, phase/status, ready address, and startup summary. Use deploy.status for full per-deployment details.",
 		InputSchema: noParamsSchema(),
 		Handler: func(ctx context.Context, params json.RawMessage) (*ToolResult, error) {
 			if deps.DeployList == nil {

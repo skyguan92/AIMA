@@ -51,9 +51,13 @@ type DeployRequest struct {
 // DeploymentStatus is the unified status across runtimes.
 type DeploymentStatus struct {
 	Name          string            `json:"name"`
+	Model         string            `json:"model,omitempty"`
+	Engine        string            `json:"engine,omitempty"`
+	Slot          string            `json:"slot,omitempty"`
 	Phase         string            `json:"phase"` // running / starting / stopped / failed
 	Ready         bool              `json:"ready"`
 	Address       string            `json:"address"` // host:port
+	Config        map[string]any    `json:"config,omitempty"`
 	Labels        map[string]string `json:"labels"`
 	StartTime     string            `json:"start_time"`
 	StartedAtUnix int64             `json:"started_at_unix,omitempty"`
@@ -66,8 +70,7 @@ type DeploymentStatus struct {
 	StartupProgress int    `json:"startup_progress,omitempty"` // 0-100
 	StartupMessage  string `json:"startup_message,omitempty"`  // human-readable
 	EstimatedTotalS int    `json:"estimated_total_s,omitempty"`
-	ErrorLines      string         `json:"error_lines,omitempty"` // last few log lines on failure
-	Config          map[string]any `json:"config,omitempty"`      // resolved deploy config (engine params)
+	ErrorLines      string `json:"error_lines,omitempty"` // last few log lines on failure
 }
 
 // PartitionRequest holds GPU/CPU/RAM resource limits.

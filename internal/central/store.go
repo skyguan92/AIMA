@@ -103,6 +103,7 @@ type BenchmarkResult struct {
 	RAMUsageMiB     int     `json:"ram_usage_mib"`
 	PowerDrawWatts  float64 `json:"power_draw_watts"`
 	GPUUtilPct      float64 `json:"gpu_utilization_pct"`
+	CPUUsagePct     float64 `json:"cpu_usage_pct"`
 	ErrorRate       float64 `json:"error_rate"`
 	OOMOccurred     bool    `json:"oom_occurred"`
 	Stability       string  `json:"stability,omitempty"`

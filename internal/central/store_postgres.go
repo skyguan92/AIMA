@@ -199,6 +199,7 @@ CREATE INDEX IF NOT EXISTS idx_scenario_hw_profile ON scenarios(hardware_profile
 		`ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS advisory_id TEXT`,
 		`ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1`,
 		`ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`,
+		`ALTER TABLE benchmark_results ADD COLUMN IF NOT EXISTS cpu_usage_pct REAL`,
 		`CREATE INDEX IF NOT EXISTS idx_advisory_status ON advisories(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_advisory_target_hw ON advisories(target_hardware)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_scenario_name ON scenarios(name)`,
@@ -372,12 +373,12 @@ func (p *PostgresCentralStore) InsertBenchmark(ctx context.Context, b BenchmarkR
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO benchmark_results (id, config_id, device_id, concurrency, input_len_bucket, output_len_bucket, modality,
 		 throughput_tps, ttft_p50_ms, ttft_p95_ms, ttft_p99_ms, tpot_p50_ms, tpot_p95_ms, qps, vram_usage_mib, ram_usage_mib,
-		 power_draw_watts, gpu_utilization_pct, error_rate, oom_occurred, stability, duration_s, sample_count, tested_at, agent_model, notes)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+		 power_draw_watts, gpu_utilization_pct, cpu_usage_pct, error_rate, oom_occurred, stability, duration_s, sample_count, tested_at, agent_model, notes)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 		 ON CONFLICT (id) DO NOTHING`,
 		b.ID, b.ConfigID, b.DeviceID, b.Concurrency, b.InputLenBucket, b.OutputLenBucket, b.Modality,
 		b.ThroughputTPS, b.TTFTP50ms, b.TTFTP95ms, b.TTFTP99ms, b.TPOTP50ms, b.TPOTP95ms, b.QPS, b.VRAMUsageMiB, b.RAMUsageMiB,
-		b.PowerDrawWatts, b.GPUUtilPct, b.ErrorRate, b.OOMOccurred, b.Stability, b.DurationS, b.SampleCount, b.TestedAt, b.AgentModel, b.Notes)
+		b.PowerDrawWatts, b.GPUUtilPct, b.CPUUsagePct, b.ErrorRate, b.OOMOccurred, b.Stability, b.DurationS, b.SampleCount, b.TestedAt, b.AgentModel, b.Notes)
 	return err
 }
 
@@ -387,7 +388,7 @@ func (p *PostgresCentralStore) ListBenchmarksForSync(ctx context.Context, config
 	           COALESCE(throughput_tps,0), COALESCE(ttft_p50_ms,0), COALESCE(ttft_p95_ms,0), COALESCE(ttft_p99_ms,0),
 	           COALESCE(tpot_p50_ms,0), COALESCE(tpot_p95_ms,0), COALESCE(qps,0),
 	           COALESCE(vram_usage_mib,0), COALESCE(ram_usage_mib,0), COALESCE(power_draw_watts,0),
-	           COALESCE(gpu_utilization_pct,0), COALESCE(error_rate,0), COALESCE(oom_occurred,false),
+	           COALESCE(gpu_utilization_pct,0), COALESCE(cpu_usage_pct,0), COALESCE(error_rate,0), COALESCE(oom_occurred,false),
 	           COALESCE(stability,''), COALESCE(duration_s,0), COALESCE(sample_count,0),
 	           COALESCE(agent_model,''), COALESCE(notes,''), COALESCE(tested_at::text,'')
 	          FROM benchmark_results WHERE 1=1`
@@ -427,7 +428,7 @@ func (p *PostgresCentralStore) QueryBenchmarks(ctx context.Context, f BenchmarkF
 	           COALESCE(br.throughput_tps,0), COALESCE(br.ttft_p50_ms,0), COALESCE(br.ttft_p95_ms,0), COALESCE(br.ttft_p99_ms,0),
 	           COALESCE(br.tpot_p50_ms,0), COALESCE(br.tpot_p95_ms,0), COALESCE(br.qps,0),
 	           COALESCE(br.vram_usage_mib,0), COALESCE(br.ram_usage_mib,0), COALESCE(br.power_draw_watts,0),
-	           COALESCE(br.gpu_utilization_pct,0), COALESCE(br.error_rate,0), COALESCE(br.oom_occurred,false),
+	           COALESCE(br.gpu_utilization_pct,0), COALESCE(br.cpu_usage_pct,0), COALESCE(br.error_rate,0), COALESCE(br.oom_occurred,false),
 	           COALESCE(br.stability,''), COALESCE(br.duration_s,0), COALESCE(br.sample_count,0),
 	           COALESCE(br.agent_model,''), COALESCE(br.notes,''), COALESCE(br.tested_at::text,'')
 	          FROM benchmark_results br`

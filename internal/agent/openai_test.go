@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,6 +37,55 @@ func TestOpenAIClient_TextResponse(t *testing.T) {
 	}
 	if len(resp.ToolCalls) != 0 {
 		t.Errorf("tool calls = %d, want 0", len(resp.ToolCalls))
+	}
+}
+
+func TestOpenAIClient_ChatCompletionStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("Decode request: %v", err)
+		}
+		if stream, _ := req["stream"].(bool); !stream {
+			t.Fatalf("stream = %v, want true", req["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer is not flushable")
+		}
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n")
+		flusher.Flush()
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n")
+		flusher.Flush()
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n")
+		flusher.Flush()
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient(srv.URL+"/v1", WithModel("test-model"))
+	var deltas []CompletionDelta
+	resp, err := client.ChatCompletionStream(context.Background(), []Message{
+		{Role: "user", Content: "Hi"},
+	}, nil, func(delta CompletionDelta) {
+		deltas = append(deltas, delta)
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletionStream: %v", err)
+	}
+	if resp.Content != "Hello" {
+		t.Fatalf("content = %q, want Hello", resp.Content)
+	}
+	if resp.ReasoningContent != "thinking" {
+		t.Fatalf("reasoning = %q, want thinking", resp.ReasoningContent)
+	}
+	if len(deltas) != 3 {
+		t.Fatalf("deltas = %d, want 3", len(deltas))
 	}
 }
 

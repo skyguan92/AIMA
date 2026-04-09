@@ -176,6 +176,7 @@ type IngestBenchmark struct {
 	RAMUsageMiB     int     `json:"ram_usage_mib"`
 	PowerDrawWatts  float64 `json:"power_draw_watts"`
 	GPUUtilPct      float64 `json:"gpu_util_pct"`
+	CPUUsagePct     float64 `json:"cpu_usage_pct"`
 	ErrorRate       float64 `json:"error_rate"`
 	OOMOccurred     bool    `json:"oom_occurred"`
 	Stability       string  `json:"stability"`
@@ -295,6 +296,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			RAMUsageMiB:     b.RAMUsageMiB,
 			PowerDrawWatts:  b.PowerDrawWatts,
 			GPUUtilPct:      b.GPUUtilPct,
+			CPUUsagePct:     b.CPUUsagePct,
 			ErrorRate:       b.ErrorRate,
 			OOMOccurred:     b.OOMOccurred,
 			Stability:       b.Stability,
@@ -418,7 +420,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 			"ttft_p50_ms": b.TTFTP50ms, "ttft_p95_ms": b.TTFTP95ms, "ttft_p99_ms": b.TTFTP99ms,
 			"tpot_p50_ms": b.TPOTP50ms, "tpot_p95_ms": b.TPOTP95ms, "qps": b.QPS,
 			"vram_usage_mib": b.VRAMUsageMiB, "ram_usage_mib": b.RAMUsageMiB, "power_draw_watts": b.PowerDrawWatts,
-			"gpu_util_pct": b.GPUUtilPct, "error_rate": b.ErrorRate, "oom_occurred": b.OOMOccurred,
+			"gpu_util_pct": b.GPUUtilPct, "cpu_usage_pct": b.CPUUsagePct, "error_rate": b.ErrorRate, "oom_occurred": b.OOMOccurred,
 			"stability": b.Stability, "duration_s": b.DurationS, "sample_count": b.SampleCount,
 			"tested_at": b.TestedAt, "agent_model": b.AgentModel, "notes": b.Notes,
 		})

@@ -31,7 +31,7 @@ type ToolDeps struct {
 	RemoveEngine  func(ctx context.Context, name string, deleteFiles bool) error
 
 	// Deployment (runtime package)
-	DeployApply  func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error)
+	DeployApply  func(ctx context.Context, engine, model, slot string, configOverrides map[string]any, noPull bool) (json.RawMessage, error)
 	DeployDryRun func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error)
 	DeployRun    func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool, onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent)) (json.RawMessage, error)
 	DeployDelete func(ctx context.Context, name string) error

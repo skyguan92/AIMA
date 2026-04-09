@@ -1136,7 +1136,7 @@ func TestApplyScenarioSkipsRemainingDeploymentsAndPostDeployAfterWaitFailure(t *
 
 	deployCalls := 0
 	deps := &mcp.ToolDeps{
-		DeployApply: func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error) {
+		DeployApply: func(ctx context.Context, engine, model, slot string, configOverrides map[string]any, noPull bool) (json.RawMessage, error) {
 			deployCalls++
 			if model != "model-a" {
 				t.Fatalf("unexpected DeployApply for %s", model)
@@ -1201,7 +1201,7 @@ func TestApplyScenarioWaitsOnLastStepBeforePostDeploy(t *testing.T) {
 	}
 
 	deps := &mcp.ToolDeps{
-		DeployApply: func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error) {
+		DeployApply: func(ctx context.Context, engine, model, slot string, configOverrides map[string]any, noPull bool) (json.RawMessage, error) {
 			return json.RawMessage(`{"name":"model-a-engine-a"}`), nil
 		},
 		DeployStatus: func(context.Context, string) (json.RawMessage, error) {

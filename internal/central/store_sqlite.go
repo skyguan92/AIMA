@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS benchmark_results (
     ram_usage_mib INTEGER,
     power_draw_watts REAL,
     gpu_utilization_pct REAL,
+    cpu_usage_pct REAL,
     error_rate REAL,
     oom_occurred BOOLEAN,
     stability TEXT,
@@ -202,6 +203,7 @@ CREATE INDEX IF NOT EXISTS idx_scenario_hw_profile ON scenarios(hardware_profile
 		{"scenarios", "advisory_id", "TEXT"},
 		{"scenarios", "version", "INTEGER DEFAULT 1"},
 		{"scenarios", "updated_at", "DATETIME"},
+		{"benchmark_results", "cpu_usage_pct", "REAL"},
 	} {
 		if err := s.ensureColumn(ctx, change.table, change.col, change.def); err != nil {
 			return err
@@ -385,11 +387,11 @@ func (s *SQLiteCentralStore) InsertBenchmark(ctx context.Context, b BenchmarkRes
 	_, err := s.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO benchmark_results (id, config_id, device_id, concurrency, input_len_bucket, output_len_bucket, modality,
 		 throughput_tps, ttft_p50_ms, ttft_p95_ms, ttft_p99_ms, tpot_p50_ms, tpot_p95_ms, qps, vram_usage_mib, ram_usage_mib,
-		 power_draw_watts, gpu_utilization_pct, error_rate, oom_occurred, stability, duration_s, sample_count, tested_at, agent_model, notes)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 power_draw_watts, gpu_utilization_pct, cpu_usage_pct, error_rate, oom_occurred, stability, duration_s, sample_count, tested_at, agent_model, notes)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		b.ID, b.ConfigID, b.DeviceID, b.Concurrency, b.InputLenBucket, b.OutputLenBucket, b.Modality,
 		b.ThroughputTPS, b.TTFTP50ms, b.TTFTP95ms, b.TTFTP99ms, b.TPOTP50ms, b.TPOTP95ms, b.QPS, b.VRAMUsageMiB, b.RAMUsageMiB,
-		b.PowerDrawWatts, b.GPUUtilPct, b.ErrorRate, b.OOMOccurred, b.Stability, b.DurationS, b.SampleCount, b.TestedAt, b.AgentModel, b.Notes)
+		b.PowerDrawWatts, b.GPUUtilPct, b.CPUUsagePct, b.ErrorRate, b.OOMOccurred, b.Stability, b.DurationS, b.SampleCount, b.TestedAt, b.AgentModel, b.Notes)
 	return err
 }
 
@@ -399,7 +401,7 @@ func (s *SQLiteCentralStore) ListBenchmarksForSync(ctx context.Context, configID
 	           COALESCE(throughput_tps,0), COALESCE(ttft_p50_ms,0), COALESCE(ttft_p95_ms,0), COALESCE(ttft_p99_ms,0),
 	           COALESCE(tpot_p50_ms,0), COALESCE(tpot_p95_ms,0), COALESCE(qps,0),
 	           COALESCE(vram_usage_mib,0), COALESCE(ram_usage_mib,0), COALESCE(power_draw_watts,0),
-	           COALESCE(gpu_utilization_pct,0), COALESCE(error_rate,0), COALESCE(oom_occurred,0),
+	           COALESCE(gpu_utilization_pct,0), COALESCE(cpu_usage_pct,0), COALESCE(error_rate,0), COALESCE(oom_occurred,0),
 	           COALESCE(stability,''), COALESCE(duration_s,0), COALESCE(sample_count,0),
 	           COALESCE(agent_model,''), COALESCE(notes,''), COALESCE(tested_at,'')
 	          FROM benchmark_results WHERE 1=1`
@@ -436,7 +438,7 @@ func (s *SQLiteCentralStore) QueryBenchmarks(ctx context.Context, f BenchmarkFil
 	           COALESCE(br.throughput_tps,0), COALESCE(br.ttft_p50_ms,0), COALESCE(br.ttft_p95_ms,0), COALESCE(br.ttft_p99_ms,0),
 	           COALESCE(br.tpot_p50_ms,0), COALESCE(br.tpot_p95_ms,0), COALESCE(br.qps,0),
 	           COALESCE(br.vram_usage_mib,0), COALESCE(br.ram_usage_mib,0), COALESCE(br.power_draw_watts,0),
-	           COALESCE(br.gpu_utilization_pct,0), COALESCE(br.error_rate,0), COALESCE(br.oom_occurred,0),
+	           COALESCE(br.gpu_utilization_pct,0), COALESCE(br.cpu_usage_pct,0), COALESCE(br.error_rate,0), COALESCE(br.oom_occurred,0),
 	           COALESCE(br.stability,''), COALESCE(br.duration_s,0), COALESCE(br.sample_count,0),
 	           COALESCE(br.agent_model,''), COALESCE(br.notes,''), COALESCE(br.tested_at,'')
 	          FROM benchmark_results br`
@@ -483,7 +485,7 @@ func scanBenchmarkRows(rows *sql.Rows) ([]BenchmarkResult, error) {
 			&b.InputLenBucket, &b.OutputLenBucket, &b.Modality,
 			&b.ThroughputTPS, &b.TTFTP50ms, &b.TTFTP95ms, &b.TTFTP99ms,
 			&b.TPOTP50ms, &b.TPOTP95ms, &b.QPS, &b.VRAMUsageMiB, &b.RAMUsageMiB,
-			&b.PowerDrawWatts, &b.GPUUtilPct, &b.ErrorRate, &b.OOMOccurred,
+			&b.PowerDrawWatts, &b.GPUUtilPct, &b.CPUUsagePct, &b.ErrorRate, &b.OOMOccurred,
 			&b.Stability, &b.DurationS, &b.SampleCount,
 			&b.AgentModel, &b.Notes, &b.TestedAt); err != nil {
 			return nil, err

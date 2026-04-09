@@ -281,6 +281,7 @@ func (p *Patrol) checkDeployments(ctx context.Context) []Alert {
 
 	var deploys []struct {
 		Name   string `json:"name"`
+		Phase  string `json:"phase"`
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(result.Content), &deploys); err != nil {
@@ -289,10 +290,14 @@ func (p *Patrol) checkDeployments(ctx context.Context) []Alert {
 
 	var alerts []Alert
 	for _, d := range deploys {
-		switch d.Status {
-		case "CrashLoopBackOff", "Error", "Failed":
+		phase := d.Phase
+		if phase == "" {
+			phase = d.Status
+		}
+		switch strings.ToLower(strings.TrimSpace(phase)) {
+		case "crashloopbackoff", "error", "failed":
 			alerts = append(alerts, makeAlert("critical", "deploy_crash",
-				fmt.Sprintf("Deployment %s is in %s state", d.Name, d.Status)))
+				fmt.Sprintf("Deployment %s is in %s state", d.Name, phase)))
 		}
 	}
 	return alerts

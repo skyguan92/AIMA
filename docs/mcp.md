@@ -55,6 +55,17 @@ Go Agent (直接调用)，保证行为一致。
 - Stack (1): `stack`
 - System (2): `system.status`, `system.config`
 
+#### Deploy 返回契约
+
+- `deploy.list` 是 overview 接口。
+  返回当前设备上的部署摘要，顶层字段以 `name`、`model`、`engine`、`slot`、`phase`、`status`、`ready`、`address`、`runtime` 为主。
+  启动/失败摘要字段如 `startup_phase`、`startup_progress`、`startup_message`、`message`、`error_lines` 也可能出现。
+  供 proxy 路由使用的 `served_model`、`parameter_count`、`context_window_tokens` 也是顶层字段。
+- `deploy.status` 是 detail 接口。
+  返回单个部署的完整状态，包含上述 overview 字段，以及 `config`、`labels`、`restarts`、`exit_code`、启动时间戳等 detail 字段。
+- 不要依赖 `deploy.list` 提供原始 `config` 或 label map。
+  如果自动化流程需要精确运行配置或原始 labels，应调用 `deploy.status`。
+
 ### 知识与调优
 
 - Knowledge (6): `knowledge.resolve`, `knowledge.search`, `knowledge.analytics`, `knowledge.promote`, `knowledge.save`, `knowledge.evaluate`

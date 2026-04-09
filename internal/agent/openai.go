@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -189,8 +190,16 @@ func (c *OpenAIClient) SetRequestTimeout(timeout time.Duration) {
 	c.manageTimeout = true
 }
 
-// ChatCompletion sends a chat completion request with optional tool definitions.
-func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+type preparedChatRequest struct {
+	url        string
+	model      string
+	apiKey     string
+	userAgent  string
+	body       []byte
+	wireToOrig map[string]string
+}
+
+func (c *OpenAIClient) prepareChatRequest(ctx context.Context, messages []Message, tools []ToolDefinition, stream bool) (*preparedChatRequest, error) {
 	// Snapshot mutable fields under read lock (don't hold during I/O)
 	c.mu.RLock()
 	apiKey := c.apiKey
@@ -225,14 +234,14 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 		}
 	}
 
-	// Build request body as map so extraParams can inject arbitrary top-level fields.
 	reqBody := map[string]any{
 		"model":    model,
 		"messages": wireMessages,
 	}
+	if stream {
+		reqBody["stream"] = true
+	}
 
-	// Some LLM providers (e.g. Kimi) reject dots in function names.
-	// Sanitize: "deploy.apply" → "deploy__apply", and build a reverse map.
 	wireToOrig := make(map[string]string, len(tools))
 	if len(tools) > 0 {
 		apiTools := make([]chatTool, len(tools))
@@ -251,7 +260,6 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 		reqBody["tools"] = apiTools
 	}
 
-	// Merge extra params (temperature, top_p, thinking, etc.) — provider-agnostic.
 	for k, v := range extraParams {
 		if k != "model" && k != "messages" && k != "tools" {
 			reqBody[k] = v
@@ -269,17 +277,65 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 		}
 	}
 
-	url := baseURL + "/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	return &preparedChatRequest{
+		url:        baseURL + "/chat/completions",
+		model:      model,
+		apiKey:     apiKey,
+		userAgent:  userAgent,
+		body:       body,
+		wireToOrig: wireToOrig,
+	}, nil
+}
+
+func buildChatHTTPRequest(ctx context.Context, prepared *preparedChatRequest) (*http.Request, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", prepared.url, bytes.NewReader(prepared.body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	if prepared.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+prepared.apiKey)
 	}
-	if userAgent != "" {
-		httpReq.Header.Set("User-Agent", userAgent)
+	if prepared.userAgent != "" {
+		httpReq.Header.Set("User-Agent", prepared.userAgent)
+	}
+	return httpReq, nil
+}
+
+func decodeChatResponse(respBody []byte, wireToOrig map[string]string) (*Response, error) {
+	var chatResp chatResponse
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	if len(chatResp.Choices) == 0 {
+		return nil, fmt.Errorf("chat completions: empty choices")
+	}
+
+	msg := chatResp.Choices[0].Message
+	resp := &Response{Content: msg.Content, ReasoningContent: msg.ReasoningContent}
+	for _, tc := range msg.ToolCalls {
+		name := tc.Function.Name
+		if orig, ok := wireToOrig[name]; ok {
+			name = orig
+		}
+		resp.ToolCalls = append(resp.ToolCalls, ToolCall{
+			ID:        tc.ID,
+			Name:      name,
+			Arguments: tc.Function.Arguments,
+		})
+	}
+	return resp, nil
+}
+
+// ChatCompletion sends a chat completion request with optional tool definitions.
+func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+	prepared, err := c.prepareChatRequest(ctx, messages, tools, false)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := buildChatHTTPRequest(ctx, prepared)
+	if err != nil {
+		return nil, err
 	}
 
 	httpResp, err := c.httpClient.Do(httpReq)
@@ -297,30 +353,95 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, messages []Message, t
 		if httpResp.StatusCode == http.StatusNotFound || httpResp.StatusCode == http.StatusServiceUnavailable {
 			c.invalidateTargetCache()
 		}
-		return nil, fmt.Errorf("chat completions (POST %s, model=%s): HTTP %d: %s", url, model, httpResp.StatusCode, respBody)
+		return nil, fmt.Errorf("chat completions (POST %s, model=%s): HTTP %d: %s", prepared.url, prepared.model, httpResp.StatusCode, respBody)
+	}
+	return decodeChatResponse(respBody, prepared.wireToOrig)
+}
+
+// ChatCompletionStream sends a streamed chat completion request and emits content deltas as they arrive.
+func (c *OpenAIClient) ChatCompletionStream(ctx context.Context, messages []Message, tools []ToolDefinition, onDelta func(CompletionDelta)) (*Response, error) {
+	prepared, err := c.prepareChatRequest(ctx, messages, tools, true)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := buildChatHTTPRequest(ctx, prepared)
+	if err != nil {
+		return nil, err
 	}
 
-	var chatResp chatResponse
-	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
 	}
-	if len(chatResp.Choices) == 0 {
-		return nil, fmt.Errorf("chat completions: empty choices")
-	}
+	defer httpResp.Body.Close()
 
-	msg := chatResp.Choices[0].Message
-	resp := &Response{Content: msg.Content, ReasoningContent: msg.ReasoningContent}
-	for _, tc := range msg.ToolCalls {
-		name := tc.Function.Name
-		// Reverse-map sanitized name back to original (e.g. "deploy__apply" → "deploy.apply")
-		if orig, ok := wireToOrig[name]; ok {
-			name = orig
+	if httpResp.StatusCode != http.StatusOK {
+		respBody, readErr := io.ReadAll(io.LimitReader(httpResp.Body, 10*1024*1024))
+		if readErr != nil {
+			return nil, fmt.Errorf("read response: %w", readErr)
 		}
-		resp.ToolCalls = append(resp.ToolCalls, ToolCall{
-			ID:        tc.ID,
-			Name:      name,
-			Arguments: tc.Function.Arguments,
-		})
+		if httpResp.StatusCode == http.StatusNotFound || httpResp.StatusCode == http.StatusServiceUnavailable {
+			c.invalidateTargetCache()
+		}
+		return nil, fmt.Errorf("chat completions (POST %s, model=%s): HTTP %d: %s", prepared.url, prepared.model, httpResp.StatusCode, respBody)
+	}
+
+	if !strings.Contains(strings.ToLower(httpResp.Header.Get("Content-Type")), "text/event-stream") {
+		respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 10*1024*1024))
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+		return decodeChatResponse(respBody, prepared.wireToOrig)
+	}
+
+	scanner := bufio.NewScanner(httpResp.Body)
+	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
+	resp := &Response{}
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") || !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			break
+		}
+		var chunk chatStreamResponse
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return nil, fmt.Errorf("decode stream chunk: %w", err)
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		choice := chunk.Choices[0]
+		delta := choice.Delta
+		if delta.Content == "" && choice.Message.Content != "" {
+			delta.Content = choice.Message.Content
+		}
+		if delta.ReasoningContent == "" && choice.Message.ReasoningContent != "" {
+			delta.ReasoningContent = choice.Message.ReasoningContent
+		}
+		if delta.Content != "" {
+			resp.Content += delta.Content
+		}
+		if delta.ReasoningContent != "" {
+			resp.ReasoningContent += delta.ReasoningContent
+		}
+		if onDelta != nil && (delta.Content != "" || delta.ReasoningContent != "") {
+			onDelta(CompletionDelta{
+				Content:          delta.Content,
+				ReasoningContent: delta.ReasoningContent,
+			})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read stream: %w", err)
+	}
+	if resp.Content == "" && resp.ReasoningContent == "" {
+		return nil, fmt.Errorf("chat completions: empty stream response")
 	}
 	return resp, nil
 }
@@ -940,6 +1061,15 @@ type chatResponse struct {
 }
 
 type chatChoice struct {
+	Message chatMessage `json:"message"`
+}
+
+type chatStreamResponse struct {
+	Choices []chatStreamChoice `json:"choices"`
+}
+
+type chatStreamChoice struct {
+	Delta   chatMessage `json:"delta"`
 	Message chatMessage `json:"message"`
 }
 
