@@ -121,6 +121,42 @@ type PlanTask struct {
 	Status    string         `json:"status,omitempty"` // "", "completed", "failed", "skipped", "skipped_tier_degraded"
 }
 
+// TaskSpec is an LLM-authored exploration task parsed from plan.md YAML.
+// The LLM fills in all structured fields; Go transparently executes.
+type TaskSpec struct {
+	Kind         string         `yaml:"kind" json:"kind"`     // "validate" | "tune"
+	Model        string         `yaml:"model" json:"model"`
+	Engine       string         `yaml:"engine" json:"engine"`
+	EngineParams map[string]any `yaml:"engine_params" json:"engine_params,omitempty"`
+	Benchmark    BenchmarkSpec  `yaml:"benchmark" json:"benchmark"`
+	Reason       string         `yaml:"reason" json:"reason"`
+}
+
+// BenchmarkSpec defines the benchmark matrix for one task.
+type BenchmarkSpec struct {
+	Concurrency      []int `yaml:"concurrency" json:"concurrency"`
+	InputTokens      []int `yaml:"input_tokens" json:"input_tokens"`
+	MaxTokens        []int `yaml:"max_tokens" json:"max_tokens"`
+	RequestsPerCombo int   `yaml:"requests_per_combo" json:"requests_per_combo"`
+}
+
+// RecommendedConfig is an LLM-authored golden configuration from summary.md YAML.
+type RecommendedConfig struct {
+	Model        string         `yaml:"model" json:"model"`
+	Engine       string         `yaml:"engine" json:"engine"`
+	Hardware     string         `yaml:"hardware" json:"hardware"`
+	EngineParams map[string]any `yaml:"engine_params" json:"engine_params,omitempty"`
+	Performance  PerfSummary    `yaml:"performance" json:"performance"`
+	Confidence   string         `yaml:"confidence" json:"confidence"` // "validated" | "tuned" | "provisional"
+	Note         string         `yaml:"note" json:"note,omitempty"`
+}
+
+// PerfSummary captures key performance metrics.
+type PerfSummary struct {
+	ThroughputTPS float64 `yaml:"throughput_tps" json:"throughput_tps"`
+	LatencyP50Ms  float64 `yaml:"latency_p50_ms" json:"latency_p50_ms"`
+}
+
 // RulePlanner generates plans using fixed priority rules (Tier 1).
 type RulePlanner struct{}
 
