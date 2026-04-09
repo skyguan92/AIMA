@@ -1112,6 +1112,9 @@ func (m *ExplorationManager) newRun(ctx context.Context, req ExplorationStart) (
 }
 
 func (m *ExplorationManager) executeBenchmarkStep(ctx context.Context, run *state.ExplorationRun, plan ExplorationPlan, stepKind string, stepIndex int) (*benchmarkStepResult, error) {
+	if len(plan.BenchmarkProfiles) > 0 {
+		return m.executeBenchmarkMatrix(ctx, run, plan, stepKind, stepIndex)
+	}
 	var deployStep *deploymentStepResult
 	if strings.TrimSpace(plan.BenchmarkProfile.Endpoint) == "" {
 		var err error
@@ -1201,6 +1204,114 @@ func (m *ExplorationManager) executeBenchmarkStep(ctx context.Context, run *stat
 		ResponseJSON: result.Content,
 		BenchmarkID:  summary.BenchmarkID,
 		ConfigID:     summary.ConfigID,
+	}, nil
+}
+
+func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *state.ExplorationRun, plan ExplorationPlan, stepKind string, stepIndex int) (*benchmarkStepResult, error) {
+	endpoint := plan.BenchmarkProfile.Endpoint // resolved by executeValidate
+
+	var allCellsJSON []json.RawMessage
+	totalCells, successCells := 0, 0
+
+	for i, profile := range plan.BenchmarkProfiles {
+		matrixArgs := map[string]any{
+			"model":              plan.Target.Model,
+			"endpoint":           endpoint,
+			"concurrency_levels": profile.ConcurrencyLevels,
+			"input_token_levels": profile.InputTokenLevels,
+			"max_token_levels":   profile.MaxTokenLevels,
+			"requests_per_combo": profile.RequestsPerCombo,
+			"rounds":             profile.Rounds,
+			"save":               true,
+		}
+		if plan.Target.Hardware != "" {
+			matrixArgs["hardware"] = plan.Target.Hardware
+		}
+		if plan.Target.Engine != "" {
+			matrixArgs["engine"] = plan.Target.Engine
+		}
+
+		requestJSON, _ := json.Marshal(matrixArgs)
+		profileLabel := "latency"
+		if i > 0 {
+			profileLabel = "throughput"
+		}
+		_ = m.db.InsertExplorationEvent(context.Background(), &state.ExplorationEvent{
+			RunID:       run.ID,
+			StepIndex:   stepIndex + i,
+			StepKind:    stepKind,
+			Status:      "running",
+			ToolName:    "benchmark.matrix",
+			RequestJSON: string(requestJSON),
+		})
+
+		slog.Info("explorer: running benchmark matrix", "profile", profileLabel,
+			"concurrency", profile.ConcurrencyLevels,
+			"input_tokens", profile.InputTokenLevels,
+			"output_tokens", profile.MaxTokenLevels)
+
+		result, err := m.tools.ExecuteTool(ctx, "benchmark.matrix", requestJSON)
+		if err == nil {
+			err = toolResultError(result)
+		}
+
+		if err != nil {
+			slog.Warn("explorer: benchmark matrix failed", "profile", profileLabel, "error", err)
+			_ = m.db.InsertExplorationEvent(context.Background(), &state.ExplorationEvent{
+				RunID:     run.ID,
+				StepIndex: stepIndex + i,
+				StepKind:  stepKind,
+				Status:    "failed",
+				ToolName:  "benchmark.matrix",
+			})
+			continue
+		}
+
+		var matrixResp struct {
+			Cells []struct {
+				Concurrency int            `json:"concurrency"`
+				InputTokens int            `json:"input_tokens"`
+				MaxTokens   int            `json:"max_tokens"`
+				Result      map[string]any `json:"result"`
+				Error       string         `json:"error"`
+			} `json:"cells"`
+			Total int `json:"total"`
+		}
+		_ = json.Unmarshal([]byte(result.Content), &matrixResp)
+
+		for _, cell := range matrixResp.Cells {
+			totalCells++
+			if cell.Error == "" && cell.Result != nil {
+				successCells++
+			}
+		}
+
+		allCellsJSON = append(allCellsJSON, json.RawMessage(result.Content))
+
+		_ = m.db.InsertExplorationEvent(context.Background(), &state.ExplorationEvent{
+			RunID:        run.ID,
+			StepIndex:    stepIndex + i,
+			StepKind:     stepKind,
+			Status:       "completed",
+			ToolName:     "benchmark.matrix",
+			ResponseJSON: result.Content,
+		})
+	}
+
+	if totalCells == 0 || successCells == 0 {
+		return nil, fmt.Errorf("benchmark matrix: no successful cells (total=%d)", totalCells)
+	}
+
+	combinedJSON, _ := json.Marshal(map[string]any{
+		"matrix_profiles": allCellsJSON,
+		"total_cells":     totalCells,
+		"success_cells":   successCells,
+	})
+
+	return &benchmarkStepResult{
+		ResponseJSON: string(combinedJSON),
+		TotalCells:   totalCells,
+		SuccessCells: successCells,
 	}, nil
 }
 
