@@ -1,6 +1,9 @@
 package benchmark
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Requester is the interface between the benchmark runner and modality-specific
 // adapters. Each modality (LLM/VLM/TTS/ASR/T2I/T2V) implements a Requester.
@@ -66,4 +69,16 @@ type AudioInput struct {
 	Filename  string
 	Data      []byte
 	DurationS float64
+}
+
+// sampleToRequestSample converts a Sample to the legacy RequestSample type
+// used by existing LLM/VLM aggregation.
+func sampleToRequestSample(s *Sample) RequestSample {
+	return RequestSample{
+		TTFT:         time.Duration(s.TTFTMs * float64(time.Millisecond)),
+		TotalTime:    time.Duration(s.LatencyMs * float64(time.Millisecond)),
+		InputTokens:  s.InputTokens,
+		OutputTokens: s.OutputTokens,
+		Error:        s.Error,
+	}
 }
