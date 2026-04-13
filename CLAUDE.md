@@ -20,6 +20,19 @@ Design docs: `design/ARCHITECTURE.md` (system architecture), `design/PRD.md`, `d
 | **本地路径** | `/Users/jguan/projects/aima-central-knowledge` |
 | **API 契约** | `aima-central-knowledge/api/openapi.yaml` (OpenAPI 3.1) |
 
+### 生产部署
+
+Central 已部署到 `aima-oversea` 服务器，作为 aima-service docker-compose 中的独立容器。
+
+| 项目 | 说明 |
+|------|------|
+| **生产 URL** | `https://aimaservice.ai/central` |
+| **默认 endpoint** | Edge 代码默认使用此 URL（`defaultCentralEndpoint` in `tooldeps_integration.go`） |
+| **覆盖方式** | `system.config set central.endpoint <url>` |
+| **Gateway 代理** | Rust gateway `/central/*` → strip 前缀 → `http://central:8081` |
+| **数据库** | PostgreSQL `aima_central` database（与 platform 隔离） |
+| **升级** | `cd aima-central-knowledge && git pull && docker build -t aima-central:latest . && docker compose up -d central` |
+
 ### 开发警告
 
 - **不要在本 repo 创建 `internal/central/` 或 `cmd/central/`** — 已迁出
