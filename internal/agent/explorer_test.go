@@ -820,6 +820,117 @@ func TestExplorerAgentPlanner_FilterTaskSpecs_GuardsBlockedAndNonReadyCombos(t *
 	}
 }
 
+func TestExtractMaxModelLen(t *testing.T) {
+	tests := []struct {
+		name   string
+		params map[string]any
+		want   int
+	}{
+		{"nil params", nil, 0},
+		{"empty params", map[string]any{}, 0},
+		{"max_model_len float64", map[string]any{"max_model_len": float64(32768)}, 32768},
+		{"context_length int", map[string]any{"context_length": 65536}, 65536},
+		{"ctx_size", map[string]any{"ctx_size": float64(4096)}, 4096},
+		{"prefers max_model_len over context_length", map[string]any{"max_model_len": float64(8192), "context_length": float64(32768)}, 8192},
+		{"ignores non-numeric", map[string]any{"max_model_len": "auto"}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractMaxModelLen(tt.params)
+			if got != tt.want {
+				t.Errorf("extractMaxModelLen() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAdaptBenchmarkProfiles(t *testing.T) {
+	base := []ExplorationBenchmarkProfile{
+		{
+			Label:             "throughput",
+			ConcurrencyLevels: []int{1, 4, 8},
+			InputTokenLevels:  []int{128, 512, 1024, 2048, 4096, 8192},
+			MaxTokenLevels:    []int{128, 512},
+			RequestsPerCombo:  3,
+		},
+		{
+			Label:             "latency",
+			ConcurrencyLevels: []int{1},
+			InputTokenLevels:  []int{128, 512, 1024, 2048},
+			MaxTokenLevels:    []int{256},
+			RequestsPerCombo:  5,
+		},
+	}
+
+	t.Run("expands to 32K model", func(t *testing.T) {
+		result := adaptBenchmarkProfiles(base, 32768)
+		// Should include levels up to 32768 - minOutput
+		tp := result[0] // throughput profile, minOutput=128
+		// maxInput = 32768 - 128 = 32640 → levels up to 16384
+		found16k := false
+		for _, l := range tp.InputTokenLevels {
+			if l == 16384 {
+				found16k = true
+			}
+			if l > 32640 {
+				t.Errorf("input level %d exceeds maxInput 32640", l)
+			}
+		}
+		if !found16k {
+			t.Errorf("expected 16384 in input levels for 32K model, got %v", tp.InputTokenLevels)
+		}
+	})
+
+	t.Run("expands to 128K model", func(t *testing.T) {
+		result := adaptBenchmarkProfiles(base, 131072)
+		tp := result[0]
+		// maxInput = 131072 - 128 = 130944 → levels up to 65536
+		found64k := false
+		for _, l := range tp.InputTokenLevels {
+			if l == 65536 {
+				found64k = true
+			}
+		}
+		if !found64k {
+			t.Errorf("expected 65536 in input levels for 128K model, got %v", tp.InputTokenLevels)
+		}
+	})
+
+	t.Run("filters infeasible max_tokens", func(t *testing.T) {
+		small := []ExplorationBenchmarkProfile{{
+			InputTokenLevels: []int{128},
+			MaxTokenLevels:   []int{256, 2048, 8192},
+		}}
+		result := adaptBenchmarkProfiles(small, 4096)
+		// minInput=128, so max_tokens up to 4096-128=3968 → 256 and 2048 pass, 8192 filtered
+		for _, mt := range result[0].MaxTokenLevels {
+			if mt == 8192 {
+				t.Error("expected max_tokens 8192 to be filtered for 4096 context model")
+			}
+		}
+		if len(result[0].MaxTokenLevels) != 2 {
+			t.Errorf("expected 2 feasible max_tokens, got %v", result[0].MaxTokenLevels)
+		}
+	})
+
+	t.Run("no-op for zero maxModelLen", func(t *testing.T) {
+		result := adaptBenchmarkProfiles(base, 0)
+		if len(result[0].InputTokenLevels) != len(base[0].InputTokenLevels) {
+			t.Error("expected no change for maxModelLen=0")
+		}
+	})
+
+	t.Run("very small model keeps at least one level", func(t *testing.T) {
+		result := adaptBenchmarkProfiles(base, 256)
+		if len(result[0].InputTokenLevels) == 0 {
+			t.Error("expected at least one input level even for tiny model")
+		}
+		if result[0].InputTokenLevels[0] != 128 {
+			t.Errorf("expected first level to be 128, got %d", result[0].InputTokenLevels[0])
+		}
+	})
+}
+
 func TestExplorerParseExplorationResult_PreservesArtifactsAndMatrix(t *testing.T) {
 	explorer := &Explorer{}
 	status := &ExplorationStatus{

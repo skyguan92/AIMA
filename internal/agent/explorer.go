@@ -1211,6 +1211,90 @@ func defaultBenchmarkProfiles(hw HardwareInfo) []ExplorationBenchmarkProfile {
 	return profiles
 }
 
+// extractMaxModelLen reads max_model_len (vLLM) or context_length (sglang)
+// from the task params set by the LLM planner.
+func extractMaxModelLen(params map[string]any) int {
+	for _, key := range []string{"max_model_len", "context_length", "ctx_size"} {
+		if v, ok := params[key]; ok {
+			switch x := v.(type) {
+			case float64:
+				return int(x)
+			case int:
+				return x
+			}
+		}
+	}
+	return 0
+}
+
+// adaptBenchmarkProfiles expands InputTokenLevels to cover up to maxModelLen
+// and filters out infeasible combos where input_tokens + max_tokens > maxModelLen.
+func adaptBenchmarkProfiles(profiles []ExplorationBenchmarkProfile, maxModelLen int) []ExplorationBenchmarkProfile {
+	if maxModelLen <= 0 || len(profiles) == 0 {
+		return profiles
+	}
+
+	// Standard token level ladder — doubles each step.
+	allLevels := []int{128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072}
+
+	result := make([]ExplorationBenchmarkProfile, 0, len(profiles))
+	for _, p := range profiles {
+		if len(p.InputTokenLevels) == 0 {
+			result = append(result, p)
+			continue
+		}
+
+		minOutput := minInt(p.MaxTokenLevels)
+		if minOutput <= 0 {
+			minOutput = 256
+		}
+
+		// Build expanded input levels up to maxModelLen - minOutput.
+		maxInput := maxModelLen - minOutput
+		var expanded []int
+		for _, level := range allLevels {
+			if level > maxInput {
+				break
+			}
+			expanded = append(expanded, level)
+		}
+		if len(expanded) == 0 {
+			expanded = []int{128} // always test at least one level
+		}
+		p.InputTokenLevels = expanded
+
+		// Filter MaxTokenLevels to only include feasible values.
+		minInput := expanded[0]
+		var feasibleMax []int
+		for _, mt := range p.MaxTokenLevels {
+			if minInput+mt <= maxModelLen {
+				feasibleMax = append(feasibleMax, mt)
+			}
+		}
+		if len(feasibleMax) == 0 {
+			// At minimum keep the smallest max_tokens
+			feasibleMax = []int{minInt(p.MaxTokenLevels)}
+		}
+		p.MaxTokenLevels = feasibleMax
+
+		result = append(result, p)
+	}
+	return result
+}
+
+func minInt(vals []int) int {
+	if len(vals) == 0 {
+		return 0
+	}
+	m := vals[0]
+	for _, v := range vals[1:] {
+		if v < m {
+			m = v
+		}
+	}
+	return m
+}
+
 func (e *Explorer) executeTask(ctx context.Context, task PlanTask, planID string) HarvestResult {
 	if e.explMgr == nil {
 		return HarvestResult{Success: false, Error: "no exploration manager"}
@@ -1281,6 +1365,13 @@ func (e *Explorer) executeTask(ctx context.Context, task PlanTask, planID string
 				req.BenchmarkProfiles = []ExplorationBenchmarkProfile{bp}
 			}
 		}
+	}
+
+	// Adapt benchmark profiles to effective max_model_len:
+	// expand input_token_levels to cover longer contexts and
+	// filter out infeasible combos where input+output > max_model_len.
+	if maxModelLen := extractMaxModelLen(task.Params); maxModelLen > 0 {
+		req.BenchmarkProfiles = adaptBenchmarkProfiles(req.BenchmarkProfiles, maxModelLen)
 	}
 
 	status, err := e.explMgr.StartAndWait(ctx, req)

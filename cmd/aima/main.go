@@ -582,10 +582,11 @@ func run() error {
 			for _, m := range models {
 				if m.Name != "" {
 					result = append(result, agent.LocalModel{
-						Name:      m.Name,
-						Format:    m.Format,
-						Type:      m.Type,
-						SizeBytes: m.SizeBytes,
+						Name:          m.Name,
+						Format:        m.Format,
+						Type:          m.Type,
+						SizeBytes:     m.SizeBytes,
+						MaxContextLen: modelMaxContextLen(cat, m.Name),
 					})
 				}
 			}

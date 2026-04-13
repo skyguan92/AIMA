@@ -53,10 +53,11 @@ type SkipCombo struct {
 
 // LocalModel describes a model installed on this device.
 type LocalModel struct {
-	Name      string `json:"name"`
-	Format    string `json:"format"`     // "safetensors", "gguf"
-	Type      string `json:"type"`       // "llm", "asr", "tts", "embedding", "reranker"
-	SizeBytes int64  `json:"size_bytes"` // on-disk size (≈ VRAM needed for non-quantized)
+	Name           string `json:"name"`
+	Format         string `json:"format"`                    // "safetensors", "gguf"
+	Type           string `json:"type"`                      // "llm", "asr", "tts", "embedding", "reranker"
+	SizeBytes      int64  `json:"size_bytes"`                // on-disk size (≈ VRAM needed for non-quantized)
+	MaxContextLen  int    `json:"max_context_len,omitempty"` // model's max context window from catalog variant (0 = unknown)
 }
 
 // LocalEngine describes an engine installed on this device with catalog metadata.

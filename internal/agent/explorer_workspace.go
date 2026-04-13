@@ -496,8 +496,8 @@ func (w *ExplorerWorkspace) generateDeviceProfile(input PlanInput, now string) s
 
 	// Models table
 	fmt.Fprintf(&sb, "## Local Models\n\n")
-	fmt.Fprintf(&sb, "| Name | Format | Type | Size (GiB) | Fits VRAM |\n")
-	fmt.Fprintf(&sb, "|------|--------|------|------------|----------|\n")
+	fmt.Fprintf(&sb, "| Name | Format | Type | Size (GiB) | Max Context | Fits VRAM |\n")
+	fmt.Fprintf(&sb, "|------|--------|------|------------|-------------|----------|\n")
 	for _, m := range input.LocalModels {
 		sizeGiB := float64(m.SizeBytes) / (1024 * 1024 * 1024)
 		fits := "✅"
@@ -506,7 +506,11 @@ func (w *ExplorerWorkspace) generateDeviceProfile(input PlanInput, now string) s
 			fits = "❌"
 			reason = " (VRAM overflow)"
 		}
-		fmt.Fprintf(&sb, "| %s | %s | %s | %.2f | %s%s |\n", m.Name, m.Format, m.Type, sizeGiB, fits, reason)
+		ctxStr := "—"
+		if m.MaxContextLen > 0 {
+			ctxStr = fmt.Sprintf("%dK", m.MaxContextLen/1024)
+		}
+		fmt.Fprintf(&sb, "| %s | %s | %s | %.2f | %s | %s%s |\n", m.Name, m.Format, m.Type, sizeGiB, ctxStr, fits, reason)
 	}
 	fmt.Fprintf(&sb, "\n")
 
