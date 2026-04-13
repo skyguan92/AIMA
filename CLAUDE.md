@@ -9,6 +9,51 @@ and exposes 56 MCP tools for AI Agents to operate everything. **This project is 
 Tech: Go (no CGO), K3S, HAMi, SQLite (modernc.org/sqlite), MCP (JSON-RPC 2.0), Cobra CLI, log/slog.
 Design docs: `design/ARCHITECTURE.md` (system architecture), `design/PRD.md`, `design/MRD.md`.
 
+## ====== Central Knowledge Server 已拆分 ======
+
+> **`internal/central/` 和 `cmd/central/` 已拆分至独立 repo，本 repo 中不再包含。**
+
+| | 说明 |
+|---|---|
+| **独立 repo** | `github.com/Approaching-AI/aima-central-knowledge` (private) |
+| **个人 fork** | `github.com/skyguan92/aima-central-knowledge` (private) |
+| **本地路径** | `/Users/jguan/projects/aima-central-knowledge` |
+| **API 契约** | `aima-central-knowledge/api/openapi.yaml` (OpenAPI 3.1) |
+
+### 开发警告
+
+- **不要在本 repo 创建 `internal/central/` 或 `cmd/central/`** — 已迁出
+- **不要在本 repo 修改 Central Server 的逻辑** — 去 `aima-central-knowledge` repo 改
+- **Edge→Central 通信仅通过 HTTP REST** — 见 `cmd/aima/tooldeps_integration.go`，用 `map[string]any` 构造 payload，不 import central 包
+- **修改 sync/ingest 的 JSON 字段时**，必须同步检查 `aima-central-knowledge/api/openapi.yaml` 的契约定义
+- **本 repo 的 `tooldeps_integration.go` 中的 normalization 函数**（`normalizeCentralAdvisory` 等）是 Edge 侧的 JSON 适配层，修改前需确认 Central 端对应端点的 response schema
+
+### Edge ↔ Central API 端点速查
+
+| Method | Path | Edge 用途 | Edge 调用位置 |
+|--------|------|-----------|---------------|
+| POST | `/api/v1/ingest` | 推送 configs/benchmarks/notes | `SyncPush()` in `tooldeps_integration.go` |
+| GET | `/api/v1/sync?since=` | 增量拉取知识 | `SyncPull()` in `tooldeps_integration.go` |
+| GET | `/api/v1/stats` | 连通性检查 | `SyncStatus()` in `tooldeps_integration.go` |
+| POST | `/api/v1/advise` | 请求 LLM 推荐 | `RequestAdvise()` in `tooldeps_integration.go` |
+| GET | `/api/v1/advisories` | 拉取待处理推荐 | `SyncPullAdvisories()` in `tooldeps_integration.go` |
+| POST | `/api/v1/advisories/{id}/feedback` | 反馈验证/拒绝 | `AdvisoryFeedback()` in `tooldeps_integration.go` |
+| POST | `/api/v1/scenarios/generate` | 生成部署方案 | `RequestScenario()` in `tooldeps_integration.go` |
+| GET | `/api/v1/scenarios` | 拉取方案 | `ListCentralScenarios()` in `tooldeps_integration.go` |
+
+### 跨 Repo 联调
+
+```bash
+# 1. 启动 Central (在 aima-central-knowledge repo)
+cd /Users/jguan/projects/aima-central-knowledge
+CENTRAL_API_KEY=test-key go run ./cmd/central/
+
+# 2. 配置 Edge 连接 (在 AIMA repo)
+# 通过 system.config MCP tool 设置 central.endpoint 和 central.api_key
+# 或直接 curl 测试：
+curl http://localhost:8080/api/v1/stats | jq .
+```
+
 ## ====== Remote Test Lab (Heterogeneous Hardware) ======
 
 **This is a live, SSH-driven test environment for real-device validation.**
@@ -246,7 +291,7 @@ OpenClaw full-stack integration (local TTS cloning end-to-end). Smart Agent rout
 Engine Profile system with SGLang-KT support. AMD RDNA3 (W7900D) 8-GPU validated.
 God file refactor: `cmd/aima/main.go` split into 46 modules. ZeroClaw removal.
 Embedded Web UI with per-card GPU metrics, collapsible panels, multi-socket CPU fix.
-Central knowledge server (`cmd/central`). TUI dashboard (Bubble Tea). ResourceSlot abstraction.
+Central knowledge server (已拆分至 `aima-central-knowledge` 独立 repo). TUI dashboard (Bubble Tea). ResourceSlot abstraction.
 Knowledge query engine complete (6 query types). Agent: patrol + self-healing with auto-diagnosis/recovery.
 L2c golden config injection in resolve chain. Time constraint engine filtering.
 Explorer Agent Planner: 文档驱动 PDCA 工作流（ExplorerWorkspace + 7 bash 风格工具 + 知识库查询），替代单次 JSON prompt。Engine discovery 从 catalog 匹配解耦。
@@ -271,7 +316,7 @@ Focus: OpenClaw full-stack integration, smart agent routing, Engine Profile syst
 | Knowledge validation tool (predicted vs actual) | F5 | **DONE** | `mcp/tools.go`, `cmd/aima/main.go` |
 | Power history tracking + MCP tool | F4 | **DONE** | `cmd/aima/main.go`, `sqlite.go` |
 | TUI terminal dashboard (Bubble Tea) | F6 | **DONE** | `internal/tui/tui.go`, `cli/tui.go` |
-| Central knowledge server (SQLite + REST) | K9 | **DONE** | `internal/central/server.go`, `cmd/central/main.go` |
+| Central knowledge server (SQLite + REST) | K9 | **DONE → 已拆分** | ~~`internal/central/`, `cmd/central/`~~ → 独立 repo `aima-central-knowledge` |
 | Knowledge sync push/pull/status MCP tools | K6 | **DONE** | `mcp/tools.go`, `cmd/aima/main.go` |
 | Open questions resolution from YAML | I6 | **DONE** | `mcp/tools.go`, `cmd/aima/main.go` |
 | App register/provision/list MCP tools | D4 | **REMOVED** (v0.4 consolidation — unused, no external consumers) | ~~`mcp/tools.go`, `cli/app.go`~~ |
@@ -320,7 +365,6 @@ Read `design/ARCHITECTURE.md` §14 for full list. The critical ones:
 
 ```
 cmd/aima/main.go              # Edge binary entry point
-cmd/central/main.go           # Central knowledge server entry point
 internal/
   hal/                        # Hardware detection (nvidia-smi, /proc)
   k3s/                        # K3S client (kubectl wrapper)
@@ -339,7 +383,6 @@ internal/
   cli/                        # Cobra commands (thin wrappers over MCP tools)
   ui/                         # Embedded Web UI (go:embed, Alpine.js SPA on :6188/ui/)
   tui/                        # Terminal dashboard (Bubble Tea, lipgloss)
-  central/                    # Central knowledge aggregation server (SQLite + REST)
 catalog/                      # Knowledge assets (go:embed, 编译时嵌入)
   embed.go
   hardware/                   # Hardware Profile YAML (incl. gpu.resource_name)
