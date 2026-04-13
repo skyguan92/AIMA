@@ -375,7 +375,12 @@ func saveBenchmarkResult(ctx context.Context, db *state.DB, hardware, engineID, 
 
 // maybeAutoPromote promotes a config to golden if its benchmark throughput beats
 // the current golden by >5%. Returns (promoted, oldGoldenID).
-func maybeAutoPromote(ctx context.Context, db *state.DB, newConfigID string, newThroughput float64, hardware, engine, model string) (bool, string) {
+// The modality parameter ensures promotion only competes within the same modality;
+// an empty modality defaults to "text" for backward compatibility.
+func maybeAutoPromote(ctx context.Context, db *state.DB, newConfigID string, newThroughput float64, hardware, engine, model, modality string) (bool, string) {
+	if modality == "" {
+		modality = "text"
+	}
 	goldenCfg, goldenBench, err := db.FindGoldenBenchmark(ctx, hardware, engine, model)
 	if err != nil {
 		slog.Warn("auto-promote: failed to query golden", "error", err)

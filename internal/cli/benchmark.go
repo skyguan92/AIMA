@@ -31,6 +31,7 @@ func newBenchmarkRecordCmd(app *App) *cobra.Command {
 		engine          string
 		model           string
 		deviceID        string
+		modality        string
 		concurrency     int
 		inputLenBucket  string
 		outputLenBucket string
@@ -65,6 +66,7 @@ Example:
 				"hardware":          hardware,
 				"engine":            engine,
 				"model":             model,
+				"modality":          modality,
 				"concurrency":       concurrency,
 				"throughput_tps":    throughput,
 				"ttft_ms_p50":       ttftP50,
@@ -102,6 +104,7 @@ Example:
 	cmd.Flags().StringVar(&engine, "engine", "", "Engine type (e.g. vllm-nightly)")
 	cmd.Flags().StringVar(&model, "model", "", "Model name (e.g. qwen3.5-35b-a3b)")
 	cmd.Flags().StringVar(&deviceID, "device", "", "Device ID (e.g. gb10)")
+	cmd.Flags().StringVar(&modality, "modality", "llm", "Benchmark modality: llm, vlm, tts, asr, image_gen, video_gen")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Concurrency level during test")
 	cmd.Flags().StringVar(&inputLenBucket, "input-bucket", "", "Input length bucket (e.g. 1K, 8K, 128K)")
 	cmd.Flags().StringVar(&outputLenBucket, "output-bucket", "", "Output length bucket (e.g. 128)")
@@ -128,6 +131,7 @@ func newBenchmarkRunCmd(app *App) *cobra.Command {
 	var (
 		modelName      string
 		endpoint       string
+		modality       string
 		concurrency    int
 		requests       int
 		maxTokens      int
@@ -158,6 +162,7 @@ Examples:
 			params := map[string]any{
 				"model":            modelName,
 				"endpoint":         endpoint,
+				"modality":         modality,
 				"concurrency":      concurrency,
 				"num_requests":     requests,
 				"max_tokens":       maxTokens,
@@ -186,6 +191,7 @@ Examples:
 
 	cmd.Flags().StringVar(&modelName, "model", "", "Model name (required)")
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "OpenAI-compatible endpoint URL (auto-detect if empty)")
+	cmd.Flags().StringVar(&modality, "modality", "llm", "Benchmark modality: llm, vlm, tts, asr, image_gen, video_gen")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Number of concurrent requests")
 	cmd.Flags().IntVar(&requests, "requests", 10, "Total requests to send")
 	cmd.Flags().IntVar(&maxTokens, "max-tokens", 256, "Max output tokens per request")
@@ -207,6 +213,7 @@ func newBenchmarkMatrixCmd(app *App) *cobra.Command {
 	var (
 		modelName      string
 		endpoint       string
+		modality       string
 		concurrencyStr string
 		inputTokensStr string
 		maxTokensStr   string
@@ -233,6 +240,7 @@ Examples:
 			params := map[string]any{
 				"model":              modelName,
 				"endpoint":           endpoint,
+				"modality":           modality,
 				"concurrency_levels": parseIntList(concurrencyStr),
 				"input_token_levels": parseIntList(inputTokensStr),
 				"max_token_levels":   parseIntList(maxTokensStr),
@@ -259,6 +267,7 @@ Examples:
 
 	cmd.Flags().StringVar(&modelName, "model", "", "Model name (required)")
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "OpenAI-compatible endpoint URL (auto-detect if empty)")
+	cmd.Flags().StringVar(&modality, "modality", "llm", "Benchmark modality: llm, vlm, tts, asr, image_gen, video_gen")
 	cmd.Flags().StringVar(&concurrencyStr, "concurrency", "1,4", "Comma-separated concurrency levels")
 	cmd.Flags().StringVar(&inputTokensStr, "input-tokens", "128,1024", "Comma-separated input token lengths")
 	cmd.Flags().StringVar(&maxTokensStr, "max-tokens", "128,512", "Comma-separated output token lengths")
@@ -276,11 +285,12 @@ Examples:
 
 func newBenchmarkListCmd(app *App) *cobra.Command {
 	var (
-		configID string
-		hardware string
+		configID  string
+		hardware  string
 		modelName string
-		engine   string
-		limit    int
+		engine    string
+		modality  string
+		limit     int
 	)
 
 	cmd := &cobra.Command{
@@ -298,6 +308,7 @@ Examples:
 				"hardware":  hardware,
 				"model":     modelName,
 				"engine":    engine,
+				"modality":  modality,
 				"limit":     limit,
 			}
 			raw, err := json.Marshal(params)
@@ -317,6 +328,7 @@ Examples:
 	cmd.Flags().StringVar(&hardware, "hardware", "", "Filter by hardware profile ID")
 	cmd.Flags().StringVar(&modelName, "model", "", "Filter by model name")
 	cmd.Flags().StringVar(&engine, "engine", "", "Filter by engine type")
+	cmd.Flags().StringVar(&modality, "modality", "", "Filter by modality: llm, vlm, tts, asr, image_gen, video_gen")
 	cmd.Flags().IntVar(&limit, "limit", 20, "Max results to return")
 
 	return cmd

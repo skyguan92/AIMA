@@ -272,7 +272,7 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 			}
 
 			// L2c auto-promote: if new benchmark beats current golden by >5%
-			if promoted, oldID := maybeAutoPromote(ctx, db, configID, result.ThroughputTPS, p.Hardware, p.Engine, p.Model); promoted {
+			if promoted, oldID := maybeAutoPromote(ctx, db, configID, result.ThroughputTPS, p.Hardware, p.Engine, p.Model, "text"); promoted {
 				resp["auto_promoted"] = true
 				if oldID != "" {
 					resp["old_golden_id"] = oldID
