@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	reflect "reflect"
 	"strings"
 	"testing"
@@ -11,6 +13,19 @@ import (
 
 	state "github.com/jguan/aima/internal"
 )
+
+func newInferenceReadyServer(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"test-model"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	return server, strings.TrimPrefix(server.URL, "http://")
+}
 
 func TestBenchmarkMetadataComplete(t *testing.T) {
 	tests := []struct {
@@ -170,6 +185,8 @@ func TestBuildOpenQuestionActualResultIncludesBenchmarkArtifacts(t *testing.T) {
 func TestExplorationManagerEnsureDeployed_ContainerRuntimeSkipsConflictScan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
 	db, err := state.Open(ctx, ":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -192,7 +209,7 @@ func TestExplorationManagerEnsureDeployed_ContainerRuntimeSkipsConflictScan(t *t
 				if statusCalls == 1 {
 					return nil, fmt.Errorf("not found")
 				}
-				return &ToolResult{Content: `{"phase":"running","ready":true}`}, nil
+				return &ToolResult{Content: fmt.Sprintf(`{"phase":"running","ready":true,"engine":"vllm","runtime":"container","address":%q}`, addr)}, nil
 			case "deploy.apply":
 				return &ToolResult{Content: `{"name":"target-model","config":{"gpu_memory_utilization":0.8}}`}, nil
 			case "deploy.list":
@@ -274,6 +291,8 @@ func TestExplorationManagerEnsureDeployed_NativeRuntimeRefusesToDeleteConflicts(
 func TestExplorationManagerEnsureDeployed_DockerDoesNotBlockNative(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
 	db, err := state.Open(ctx, ":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -286,7 +305,7 @@ func TestExplorationManagerEnsureDeployed_DockerDoesNotBlockNative(t *testing.T)
 			switch name {
 			case "deploy.status":
 				if applied {
-					return &ToolResult{Content: `{"phase":"running","ready":true,"engine":"sglang-kt","runtime":"native"}`}, nil
+					return &ToolResult{Content: fmt.Sprintf(`{"phase":"running","ready":true,"engine":"sglang-kt","runtime":"native","address":%q}`, addr)}, nil
 				}
 				return nil, fmt.Errorf("not found")
 			case "deploy.list":
@@ -318,8 +337,10 @@ func TestExplorationManagerEnsureDeployed_DockerDoesNotBlockNative(t *testing.T)
 }
 
 func TestExplorationManagerEnsureDeployed_EngineMismatchRedeploys(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
 	db, err := state.Open(ctx, ":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -333,7 +354,7 @@ func TestExplorationManagerEnsureDeployed_EngineMismatchRedeploys(t *testing.T) 
 			case "deploy.status":
 				if applyCalled {
 					// After deploy.apply, return ready for waitForReady.
-					return &ToolResult{Content: `{"phase":"running","ready":true,"engine":"sglang-kt","runtime":"native"}`}, nil
+					return &ToolResult{Content: fmt.Sprintf(`{"phase":"running","ready":true,"engine":"sglang-kt","runtime":"native","address":%q}`, addr)}, nil
 				}
 				if deleteCalled {
 					// After delete, deployment gone — waitForGPURelease sees this.
@@ -377,6 +398,8 @@ func TestExplorationManagerEnsureDeployed_EngineMismatchRedeploys(t *testing.T) 
 func TestExplorationManagerEnsureDeployed_SameEngineSkipsDeploy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
 	db, err := state.Open(ctx, ":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -388,7 +411,7 @@ func TestExplorationManagerEnsureDeployed_SameEngineSkipsDeploy(t *testing.T) {
 			switch name {
 			case "deploy.status":
 				// Same engine already deployed and ready.
-				return &ToolResult{Content: `{"phase":"running","ready":true,"engine":"vllm","runtime":"docker"}`}, nil
+				return &ToolResult{Content: fmt.Sprintf(`{"phase":"running","ready":true,"engine":"vllm","runtime":"docker","address":%q}`, addr)}, nil
 			case "deploy.apply":
 				t.Fatal("deploy.apply should not be called when same engine is already ready")
 			case "deploy.delete":
@@ -409,5 +432,304 @@ func TestExplorationManagerEnsureDeployed_SameEngineSkipsDeploy(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ensureDeployed: %v", err)
+	}
+}
+
+func TestExplorationManagerExecuteValidate_CleansUpOwnedDeploymentOnSuccess(t *testing.T) {
+	ctx := context.Background()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	plan := ExplorationPlan{
+		Kind: "validate",
+		Target: ExplorationTarget{
+			Model:   "target-model",
+			Engine:  "vllm",
+			Runtime: "container",
+		},
+		BenchmarkProfiles: []ExplorationBenchmarkProfile{{
+			Concurrency: 1,
+			Rounds:      1,
+		}},
+	}
+	planJSON, _ := json.Marshal(plan)
+	run := &state.ExplorationRun{
+		ID:       "run-success",
+		Kind:     "validate",
+		ModelID:  "target-model",
+		EngineID: "vllm",
+		PlanJSON: string(planJSON),
+		Status:   "queued",
+	}
+	if err := db.InsertExplorationRun(ctx, run); err != nil {
+		t.Fatalf("InsertExplorationRun: %v", err)
+	}
+
+	var applied, deleted bool
+	deleteCalls := 0
+	overrideCalls := 0
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "deploy.status":
+				if deleted {
+					return nil, fmt.Errorf("not found")
+				}
+				if applied {
+					return &ToolResult{Content: fmt.Sprintf(`{"phase":"running","ready":true,"engine":"vllm","runtime":"container","address":%q,"config":{"gpu_memory_utilization":0.8}}`, addr)}, nil
+				}
+				return nil, fmt.Errorf("not found")
+			case "deploy.apply":
+				applied = true
+				return &ToolResult{Content: `{"name":"target-model","config":{"gpu_memory_utilization":0.8}}`}, nil
+			case "benchmark.run":
+				return &ToolResult{Content: `{"benchmark_id":"bench-001","config_id":"cfg-001","engine_version":"1.0.0","engine_image":"example/vllm:1.0.0","deploy_config":{"gpu_memory_utilization":0.8},"result":{"throughput_tps":123.4,"qps":12.3,"ttft_p50_ms":40,"ttft_p95_ms":45,"ttft_p99_ms":50,"tpot_p50_ms":5,"tpot_p95_ms":6,"error_rate":0,"total_requests":4,"successful_requests":4,"avg_input_tokens":128,"avg_output_tokens":256,"config":{"concurrency":1,"rounds":1}}}`}, nil
+			case "catalog.override":
+				overrideCalls++
+				return &ToolResult{Content: `{"action":"created"}`}, nil
+			case "deploy.delete":
+				deleteCalls++
+				deleted = true
+				return &ToolResult{Content: `{"deleted":true}`}, nil
+			}
+			return nil, fmt.Errorf("unexpected tool: %s", name)
+		},
+	}
+
+	manager := NewExplorationManager(db, nil, tools)
+	manager.executeValidate(ctx, run)
+
+	if run.Status != "completed" {
+		t.Fatalf("run status = %q, want completed (error=%q)", run.Status, run.Error)
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("deploy.delete calls = %d, want 1", deleteCalls)
+	}
+	if overrideCalls != 1 {
+		t.Fatalf("catalog.override calls = %d, want 1", overrideCalls)
+	}
+}
+
+func TestExplorationManagerExecuteValidate_CleansUpOwnedDeploymentOnBenchmarkFailure(t *testing.T) {
+	ctx := context.Background()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	plan := ExplorationPlan{
+		Kind: "validate",
+		Target: ExplorationTarget{
+			Model:   "target-model",
+			Engine:  "vllm",
+			Runtime: "container",
+		},
+		BenchmarkProfiles: []ExplorationBenchmarkProfile{{
+			Concurrency: 1,
+			Rounds:      1,
+		}},
+	}
+	planJSON, _ := json.Marshal(plan)
+	run := &state.ExplorationRun{
+		ID:       "run-failure",
+		Kind:     "validate",
+		ModelID:  "target-model",
+		EngineID: "vllm",
+		PlanJSON: string(planJSON),
+		Status:   "queued",
+	}
+	if err := db.InsertExplorationRun(ctx, run); err != nil {
+		t.Fatalf("InsertExplorationRun: %v", err)
+	}
+
+	var applied, deleted bool
+	deleteCalls := 0
+	overrideCalls := 0
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "deploy.status":
+				if deleted {
+					return nil, fmt.Errorf("not found")
+				}
+				if applied {
+					return &ToolResult{Content: fmt.Sprintf(`{"phase":"running","ready":true,"engine":"vllm","runtime":"container","address":%q,"config":{"gpu_memory_utilization":0.8}}`, addr)}, nil
+				}
+				return nil, fmt.Errorf("not found")
+			case "deploy.apply":
+				applied = true
+				return &ToolResult{Content: `{"name":"target-model","config":{"gpu_memory_utilization":0.8}}`}, nil
+			case "benchmark.run":
+				return nil, fmt.Errorf("benchmark exploded")
+			case "catalog.override":
+				overrideCalls++
+				return &ToolResult{Content: `{"action":"created"}`}, nil
+			case "deploy.delete":
+				deleteCalls++
+				deleted = true
+				return &ToolResult{Content: `{"deleted":true}`}, nil
+			}
+			return nil, fmt.Errorf("unexpected tool: %s", name)
+		},
+	}
+
+	manager := NewExplorationManager(db, nil, tools)
+	manager.executeValidate(ctx, run)
+
+	if run.Status != "failed" {
+		t.Fatalf("run status = %q, want failed", run.Status)
+	}
+	if !strings.Contains(run.Error, "benchmark exploded") {
+		t.Fatalf("run error = %q, want benchmark failure", run.Error)
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("deploy.delete calls = %d, want 1", deleteCalls)
+	}
+	if overrideCalls != 0 {
+		t.Fatalf("catalog.override calls = %d, want 0", overrideCalls)
+	}
+}
+
+func TestExplorationManagerStartAndWait_RespectsCallerDeadline(t *testing.T) {
+	ctx := context.Background()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
+
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "deploy.status":
+				return &ToolResult{Content: fmt.Sprintf(`{"phase":"running","ready":true,"engine":"vllm","runtime":"container","address":%q,"config":{"gpu_memory_utilization":0.8}}`, addr)}, nil
+			case "benchmark.run":
+				<-ctx.Done()
+				return nil, ctx.Err()
+			default:
+				return nil, fmt.Errorf("unexpected tool: %s", name)
+			}
+		},
+	}
+
+	manager := NewExplorationManager(db, nil, tools)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = manager.StartAndWait(waitCtx, ExplorationStart{
+		Kind: "validate",
+		Target: ExplorationTarget{
+			Model:   "target-model",
+			Engine:  "vllm",
+			Runtime: "container",
+		},
+		BenchmarkProfiles: []ExplorationBenchmarkProfile{{
+			Concurrency: 1,
+			Rounds:      1,
+		}},
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("StartAndWait error = nil, want context deadline exceeded")
+	}
+	if !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("StartAndWait error = %q, want deadline exceeded", err)
+	}
+	if strings.Contains(err.Error(), "30 minutes") {
+		t.Fatalf("StartAndWait error = %q, should respect caller deadline instead of fallback timeout", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("StartAndWait elapsed = %v, want < 1s", elapsed)
+	}
+}
+
+func TestExplorationManagerExecuteValidate_CancelledContextSkipsLateSuccessArtifacts(t *testing.T) {
+	ctx := context.Background()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
+
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	plan := ExplorationPlan{
+		Kind: "validate",
+		Target: ExplorationTarget{
+			Model:   "target-model",
+			Engine:  "vllm",
+			Runtime: "container",
+		},
+		BenchmarkProfiles: []ExplorationBenchmarkProfile{{
+			Label:             "latency",
+			ConcurrencyLevels: []int{1},
+			InputTokenLevels:  []int{128},
+			MaxTokenLevels:    []int{256},
+			RequestsPerCombo:  1,
+			Rounds:            1,
+		}},
+	}
+	planJSON, _ := json.Marshal(plan)
+	run := &state.ExplorationRun{
+		ID:       "run-cancelled-late-success",
+		Kind:     "validate",
+		ModelID:  "target-model",
+		EngineID: "vllm",
+		PlanJSON: string(planJSON),
+		Status:   "queued",
+	}
+	if err := db.InsertExplorationRun(ctx, run); err != nil {
+		t.Fatalf("InsertExplorationRun: %v", err)
+	}
+
+	overrideCalls := 0
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "deploy.status":
+				return &ToolResult{Content: fmt.Sprintf(`{"phase":"running","ready":true,"engine":"vllm","runtime":"container","address":%q,"config":{"gpu_memory_utilization":0.8}}`, addr)}, nil
+			case "benchmark.matrix":
+				<-ctx.Done()
+				return &ToolResult{Content: `{"cells":[{"concurrency":1,"input_tokens":128,"max_tokens":256,"benchmark_id":"bench-late","config_id":"cfg-late","result":{"throughput_tps":123.4,"ttft_p95_ms":45,"tpot_p95_ms":6}}],"total":1}`}, nil
+			case "catalog.override":
+				overrideCalls++
+				return &ToolResult{Content: `{"action":"created"}`}, nil
+			default:
+				return nil, fmt.Errorf("unexpected tool: %s", name)
+			}
+		},
+	}
+
+	manager := NewExplorationManager(db, nil, tools)
+	runCtx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	manager.executeValidate(runCtx, run)
+
+	if run.Status != "cancelled" {
+		t.Fatalf("run status = %q, want cancelled (error=%q)", run.Status, run.Error)
+	}
+	if overrideCalls != 0 {
+		t.Fatalf("catalog.override calls = %d, want 0 after cancellation", overrideCalls)
+	}
+	stored, err := db.GetExplorationRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("GetExplorationRun: %v", err)
+	}
+	if stored.Status != "cancelled" {
+		t.Fatalf("stored run status = %q, want cancelled", stored.Status)
 	}
 }

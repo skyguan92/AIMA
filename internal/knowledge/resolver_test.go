@@ -1582,6 +1582,41 @@ func TestFindEngineByName(t *testing.T) {
 	}
 }
 
+func TestFindEngineByName_WildcardPreferredOverMismatch(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{Name: "eng-platform-a", Type: "eng", Version: "1.0"},
+				Hardware: EngineHardware{GPUArch: "PlatformA"},
+				Image:    EngineImage{Name: "img/eng", Tag: "platform-a"},
+			},
+			{
+				Metadata: EngineMetadata{Name: "eng-universal", Type: "eng", Version: "1.0"},
+				Hardware: EngineHardware{GPUArch: "*"},
+				Image:    EngineImage{Name: "img/eng", Tag: "universal"},
+			},
+		},
+	}
+
+	// Query with unrelated arch should prefer wildcard, not first type match.
+	ea := cat.FindEngineByName("eng", HardwareInfo{GPUArch: "UnrelatedArch"})
+	if ea == nil {
+		t.Fatal("expected non-nil")
+	}
+	if ea.Metadata.Name != "eng-universal" {
+		t.Errorf("Name = %q, want eng-universal (wildcard should be preferred over platform mismatch)", ea.Metadata.Name)
+	}
+
+	// Exact arch match should still win over wildcard.
+	ea = cat.FindEngineByName("eng", HardwareInfo{GPUArch: "PlatformA"})
+	if ea == nil {
+		t.Fatal("expected non-nil")
+	}
+	if ea.Metadata.Name != "eng-platform-a" {
+		t.Errorf("Name = %q, want eng-platform-a (exact arch match should win)", ea.Metadata.Name)
+	}
+}
+
 func TestGPUCountFiltering(t *testing.T) {
 	// Build a catalog with a multi-GPU variant (gpu_count_min: 2) and a single-GPU fallback.
 	cat := &Catalog{

@@ -522,21 +522,29 @@ func (c *Catalog) FindEngineByName(name string, hw HardwareInfo) *EngineAsset {
 	}
 
 	// Pass 2: metadata.type with hardware preference
-	var typeMatch *EngineAsset
+	// Priority: exact gpu_arch match → wildcard (*) → first type match.
+	// This aligns with findEngine() to avoid overlay/resolve divergence.
+	var typeWildcard, typeFirst *EngineAsset
 	for i := range c.EngineAssets {
 		ea := &c.EngineAssets[i]
 		if strings.ToLower(ea.Metadata.Type) != nameLower {
 			continue
 		}
-		if typeMatch == nil {
-			typeMatch = ea
+		if typeFirst == nil {
+			typeFirst = ea
 		}
 		if strings.EqualFold(ea.Hardware.GPUArch, hw.GPUArch) {
 			return ea
 		}
+		if ea.Hardware.GPUArch == "*" && typeWildcard == nil {
+			typeWildcard = ea
+		}
 	}
-	if typeMatch != nil {
-		return typeMatch
+	if typeWildcard != nil {
+		return typeWildcard
+	}
+	if typeFirst != nil {
+		return typeFirst
 	}
 
 	// Pass 3: image name substring

@@ -94,6 +94,37 @@ func TestParsePlanTasks_CommentOnlyYaml(t *testing.T) {
 	}
 }
 
+func TestParsePlanTasks_WrappedTasksMap(t *testing.T) {
+	md := `# Exploration Plan
+
+## Tasks
+` + "```yaml\n" + `tasks:
+  - kind: validate
+    model: qwen3-4b
+    engine: vllm
+    engine_params:
+      tensor_parallel_size: 1
+      gpu_memory_utilization: 0.9
+    benchmark:
+      concurrency: [1, 2, 4]
+      input_tokens: [512, 1024]
+      max_tokens: [256, 512]
+      requests_per_combo: 10
+    reason: "baseline validation"
+` + "```\n"
+
+	tasks, err := parsePlanTasks(md)
+	if err != nil {
+		t.Fatalf("parsePlanTasks(wrapped): %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].Kind != "validate" || tasks[0].Model != "qwen3-4b" || tasks[0].Engine != "vllm" {
+		t.Fatalf("task = %+v", tasks[0])
+	}
+}
+
 func TestParseRecommendedConfigs(t *testing.T) {
 	md := `# Exploration Summary
 
@@ -133,6 +164,41 @@ Focus on engine comparison.
 	}
 	if configs[0].Performance.ThroughputTPS != 95.2 {
 		t.Errorf("config 0 throughput=%f", configs[0].Performance.ThroughputTPS)
+	}
+}
+
+func TestParseRecommendedConfigs_WithScenario(t *testing.T) {
+	md := `# Summary
+
+## Recommended Configurations
+` + "```yaml\n" + `- model: qwen3-4b
+  engine: vllm
+  hardware: nvidia-rtx4090-x86
+  engine_params:
+    gpu_memory_utilization: 0.9
+  performance:
+    throughput_tps: 445.6
+    throughput_scenario: "concurrency=8, input=512, max_tokens=1024"
+    latency_p50_ms: 25.0
+    latency_scenario: "concurrency=1, input=128, max_tokens=256"
+  confidence: validated
+  note: "fast small LLM"
+` + "```\n" + `
+## Current Strategy
+done
+`
+	configs, err := parseRecommendedConfigs(md)
+	if err != nil {
+		t.Fatalf("parseRecommendedConfigs: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("got %d configs, want 1", len(configs))
+	}
+	if configs[0].Performance.ThroughputScenario != "concurrency=8, input=512, max_tokens=1024" {
+		t.Errorf("throughput_scenario = %q", configs[0].Performance.ThroughputScenario)
+	}
+	if configs[0].Performance.LatencyScenario != "concurrency=1, input=128, max_tokens=256" {
+		t.Errorf("latency_scenario = %q", configs[0].Performance.LatencyScenario)
 	}
 }
 
@@ -421,6 +487,46 @@ func TestWriteExperimentResult(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Fatalf("experiment missing %q: %s", want, content)
 		}
+	}
+}
+
+func TestWriteExperimentResult_NoOutputStatus(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	task := TaskSpec{Kind: "validate", Model: "test-model", Engine: "vllm"}
+	result := ExperimentResult{
+		Status: "completed",
+		Benchmarks: []BenchmarkEntry{
+			{Concurrency: 1, InputTokens: 128, MaxTokens: 256,
+				ThroughputTPS: 95.2, TTFTP95Ms: 42, TPOTP95Ms: 10},
+			// Zero throughput + zero TTFT = no-output (not "ok")
+			{Concurrency: 1, InputTokens: 8192, MaxTokens: 1024,
+				ThroughputTPS: 0, TTFTP95Ms: 0, TPOTP95Ms: 0},
+			// Zero throughput but has error = show error, not no-output
+			{Concurrency: 1, InputTokens: 4096, MaxTokens: 1024,
+				ThroughputTPS: 0, TTFTP95Ms: 0, TPOTP95Ms: 0, Error: "timeout"},
+		},
+	}
+
+	path, err := ws.WriteExperimentResult(1, task, result)
+	if err != nil {
+		t.Fatalf("WriteExperimentResult: %v", err)
+	}
+
+	content, _ := ws.ReadFile(path)
+	// First row: normal throughput → ok
+	if !strings.Contains(content, "| 95.2 | 42 | 10 | ok |") {
+		t.Error("expected ok status for successful benchmark")
+	}
+	// Second row: zero throughput, no error → no-output
+	if !strings.Contains(content, "no-output") {
+		t.Error("expected no-output status for zero throughput cell")
+	}
+	// Third row: zero throughput with error → show error
+	if !strings.Contains(content, "| timeout |") {
+		t.Error("expected timeout status for errored cell")
 	}
 }
 

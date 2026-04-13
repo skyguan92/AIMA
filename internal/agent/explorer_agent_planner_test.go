@@ -376,6 +376,49 @@ Done for now.
 	}
 }
 
+func TestFilterTaskSpecs_SanitizesEngineParamsToTunableSet(t *testing.T) {
+	planner := &ExplorerAgentPlanner{}
+	input := PlanInput{
+		LocalEngines: []LocalEngine{
+			{
+				Name: "vllm",
+				Type: "vllm",
+				TunableParams: map[string]any{
+					"gpu_memory_utilization": 0.9,
+					"tensor_parallel_size":   1,
+				},
+			},
+		},
+	}
+	tasks := []TaskSpec{
+		{
+			Kind:   "validate",
+			Model:  "test-model",
+			Engine: "vllm",
+			EngineParams: map[string]any{
+				"gpu_memory_utilization": 0.85,
+				"port":                   8001,
+				"unknown":                true,
+			},
+			Reason: "sanitize params",
+		},
+	}
+
+	filtered := planner.filterTaskSpecs(input, tasks)
+	if len(filtered) != 1 {
+		t.Fatalf("filtered len=%d, want 1", len(filtered))
+	}
+	if got := filtered[0].EngineParams; len(got) != 1 {
+		t.Fatalf("engine params = %#v, want only tunable params", got)
+	}
+	if got := filtered[0].EngineParams["gpu_memory_utilization"]; got != 0.85 {
+		t.Fatalf("gpu_memory_utilization = %#v, want 0.85", got)
+	}
+	if _, exists := filtered[0].EngineParams["port"]; exists {
+		t.Fatalf("unexpected port param survived sanitization: %#v", filtered[0].EngineParams)
+	}
+}
+
 func TestFullPDCACycle(t *testing.T) {
 	dir := t.TempDir()
 	ws := NewExplorerWorkspace(dir)

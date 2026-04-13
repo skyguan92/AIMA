@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -84,6 +85,12 @@ type benchmarkStepResult struct {
 	MatrixJSON    string
 	TotalCells    int
 	SuccessCells  int
+}
+
+type deploymentLease struct {
+	Name    string
+	Config  map[string]any
+	Created bool
 }
 
 func (m *ExplorationManager) resolveCurrentDeployConfig(ctx context.Context, model, engine string) map[string]any {
@@ -218,11 +225,18 @@ func (m *ExplorationManager) StartAndWait(ctx context.Context, req ExplorationSt
 	}
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	timeout := time.After(30 * time.Minute)
+	var timeout <-chan time.Time
+	var timeoutTimer *time.Timer
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeoutTimer = time.NewTimer(30 * time.Minute)
+		timeout = timeoutTimer.C
+		defer timeoutTimer.Stop()
+	}
 	for {
 		select {
 		case <-ctx.Done():
-			return m.Stop(context.Background(), run.ID)
+			_, _ = m.Stop(context.Background(), run.ID)
+			return nil, fmt.Errorf("exploration %s canceled: %w", run.ID, ctx.Err())
 		case <-timeout:
 			_, _ = m.Stop(context.Background(), run.ID)
 			return nil, fmt.Errorf("exploration %s timed out after 30 minutes", run.ID)
@@ -237,6 +251,31 @@ func (m *ExplorationManager) StartAndWait(ctx context.Context, req ExplorationSt
 			}
 		}
 	}
+}
+
+func (m *ExplorationManager) finishRunWithError(run *state.ExplorationRun, err error) {
+	if run == nil || err == nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		run.Status = "cancelled"
+	} else {
+		run.Status = "failed"
+	}
+	run.Error = err.Error()
+	run.CompletedAt = time.Now()
+	_ = m.db.UpdateExplorationRun(context.Background(), run)
+}
+
+func (m *ExplorationManager) finishRunIfContextDone(ctx context.Context, run *state.ExplorationRun) bool {
+	if ctx == nil {
+		return false
+	}
+	if err := ctx.Err(); err != nil {
+		m.finishRunWithError(run, err)
+		return true
+	}
+	return false
 }
 
 func (m *ExplorationManager) Stop(ctx context.Context, runID string) (*ExplorationStatus, error) {
@@ -466,12 +505,15 @@ func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.Exp
 
 	// Pre-flight: ensure the model is deployed before benchmarking.
 	// Without this, benchmark.run hits an empty endpoint and gets 0 tok/s.
-	deployCfg, err := m.ensureDeployed(ctx, run, plan)
+	lease, err := m.ensureDeployed(ctx, run, plan)
 	if err != nil {
-		run.Status = "failed"
-		run.Error = fmt.Sprintf("pre-flight deploy: %s", err)
-		run.CompletedAt = time.Now()
-		_ = m.db.UpdateExplorationRun(context.Background(), run)
+		m.finishRunWithError(run, fmt.Errorf("pre-flight deploy: %w", err))
+		return
+	}
+	if lease != nil {
+		defer m.releaseDeployment(lease)
+	}
+	if m.finishRunIfContextDone(ctx, run) {
 		return
 	}
 
@@ -488,19 +530,24 @@ func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.Exp
 
 	stepResult, err := m.executeBenchmarkStep(ctx, run, plan, "validate", 0)
 	if err != nil {
-		run.Status = "failed"
-		run.Error = err.Error()
-		run.CompletedAt = time.Now()
-		_ = m.db.UpdateExplorationRun(context.Background(), run)
+		m.finishRunWithError(run, err)
+		return
+	}
+	if m.finishRunIfContextDone(ctx, run) {
 		return
 	}
 
 	run.Status = "completed"
+	run.Error = ""
 	run.CompletedAt = time.Now()
 	run.SummaryJSON = stepResult.ResponseJSON
 	_ = m.db.UpdateExplorationRun(context.Background(), run)
 
 	// Task #13: After successful benchmark, write discovered knowledge as overlay YAML.
+	var deployCfg map[string]any
+	if lease != nil {
+		deployCfg = lease.Config
+	}
 	m.maybeCreateKnowledge(ctx, run, plan, stepResult, deployCfg)
 }
 
@@ -508,7 +555,7 @@ func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.Exp
 // Returns the resolved deployment config (for overlay YAML creation).
 // B17: checks deploy.status first — if already ready, skip deploy; if starting, wait;
 // only call deploy.apply when no existing deployment or previous one failed.
-func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.ExplorationRun, plan ExplorationPlan) (map[string]any, error) {
+func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.ExplorationRun, plan ExplorationPlan) (*deploymentLease, error) {
 	if m.tools == nil {
 		return nil, fmt.Errorf("no tool executor")
 	}
@@ -523,16 +570,16 @@ func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.Expl
 		strings.EqualFold(ds.Engine, plan.Target.Engine)
 
 	if ds.Ready && engineMatch {
-		// D1: deploy.status can report ready=true while container health is still
-		// "starting". Do a single inference probe to verify. If it fails, proceed
-		// anyway — benchmark will fail fast with a clear error.
-		if !m.probeInferenceEndpoint(ctx, plan.Target.Model) {
-			slog.Warn("exploration: deploy reports ready but inference probe failed, proceeding anyway",
-				"model", plan.Target.Model)
+		if err := m.waitForInferenceReady(ctx, plan.Target.Model); err != nil {
+			return nil, fmt.Errorf("verify ready deployment %s: %w", plan.Target.Model, err)
 		}
 		slog.Info("exploration: model already deployed, skipping deploy",
 			"model", plan.Target.Model, "engine", plan.Target.Engine)
-		return nil, nil
+		return &deploymentLease{
+			Name:    plan.Target.Model,
+			Config:  m.resolveCurrentDeployConfig(ctx, plan.Target.Model, plan.Target.Engine),
+			Created: false,
+		}, nil
 	}
 	if ds.Ready && !engineMatch {
 		// Wrong engine deployed. Delete the existing deployment so we can redeploy
@@ -554,12 +601,14 @@ func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.Expl
 		if err := m.waitForReady(ctx, plan.Target.Model); err != nil {
 			return nil, fmt.Errorf("wait for in-progress deploy %s: %w", plan.Target.Model, err)
 		}
-		// D1: After deploy.status reports ready, also verify inference is serving.
 		if err := m.waitForInferenceReady(ctx, plan.Target.Model); err != nil {
-			slog.Warn("exploration: inference probe failed after deploy wait, proceeding anyway",
-				"model", plan.Target.Model, "error", err)
+			return nil, fmt.Errorf("wait for in-progress deployment endpoint %s: %w", plan.Target.Model, err)
 		}
-		return nil, nil
+		return &deploymentLease{
+			Name:    plan.Target.Model,
+			Config:  m.resolveCurrentDeployConfig(ctx, plan.Target.Model, plan.Target.Engine),
+			Created: false,
+		}, nil
 	}
 
 	// Native runtime is exclusive. Only same-runtime (native) deployments are
@@ -632,21 +681,28 @@ func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.Expl
 
 	// Extract resolved config from deploy.apply response for overlay YAML.
 	deployCfg := parseDeployConfig(responseJSON)
+	lease := &deploymentLease{
+		Name:    plan.Target.Model,
+		Config:  deployCfg,
+		Created: true,
+	}
 
 	slog.Info("exploration: model deployed for validation",
 		"model", plan.Target.Model, "engine", plan.Target.Engine)
 
 	// B14: Wait for the service to become ready before benchmarking.
 	if err := m.waitForReady(ctx, plan.Target.Model); err != nil {
-		slog.Warn("exploration: readiness check failed, proceeding anyway",
-			"model", plan.Target.Model, "error", err)
+		m.releaseDeployment(lease)
+		return nil, fmt.Errorf("wait for deployed service %s: %w", plan.Target.Model, err)
 	}
-	// D1: Also verify inference endpoint is actually serving.
 	if err := m.waitForInferenceReady(ctx, plan.Target.Model); err != nil {
-		slog.Warn("exploration: inference probe failed after deploy, proceeding anyway",
-			"model", plan.Target.Model, "error", err)
+		m.releaseDeployment(lease)
+		return nil, fmt.Errorf("wait for deployed endpoint %s: %w", plan.Target.Model, err)
 	}
-	return deployCfg, nil
+	if len(lease.Config) == 0 {
+		lease.Config = m.resolveCurrentDeployConfig(ctx, plan.Target.Model, plan.Target.Engine)
+	}
+	return lease, nil
 }
 
 // deployStatusResult holds the parsed deploy.status response.
@@ -721,6 +777,25 @@ func (m *ExplorationManager) activeConflictingDeploys(ctx context.Context, targe
 // waitForDeleteComplete polls deploy.status until the deployment is no longer running.
 func (m *ExplorationManager) waitForDeleteComplete(ctx context.Context, name string) {
 	waitForGPURelease(ctx, m.tools, name, gpuReleaseGrace)
+}
+
+func (m *ExplorationManager) releaseDeployment(lease *deploymentLease) {
+	if lease == nil || !lease.Created || m.tools == nil || strings.TrimSpace(lease.Name) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	deleteArgs, _ := json.Marshal(map[string]string{"name": lease.Name})
+	result, err := m.tools.ExecuteTool(ctx, "deploy.delete", deleteArgs)
+	if err == nil {
+		err = toolResultError(result)
+	}
+	if err != nil {
+		slog.Warn("exploration: cleanup deployment failed", "model", lease.Name, "error", err)
+		return
+	}
+	m.waitForDeleteComplete(ctx, lease.Name)
+	slog.Info("exploration: cleaned up owned deployment", "model", lease.Name)
 }
 
 // waitForGPURelease polls deploy.status until the named deployment is no longer active,
@@ -1280,20 +1355,24 @@ func (m *ExplorationManager) executeOpenQuestion(ctx context.Context, run *state
 	_ = m.db.UpdateExplorationRun(context.Background(), run)
 
 	// Pre-flight: ensure the model is deployed before benchmarking.
-	if _, err := m.ensureDeployed(ctx, run, plan); err != nil {
-		run.Status = "failed"
-		run.Error = fmt.Sprintf("pre-flight deploy: %s", err)
-		run.CompletedAt = time.Now()
-		_ = m.db.UpdateExplorationRun(context.Background(), run)
+	lease, err := m.ensureDeployed(ctx, run, plan)
+	if err != nil {
+		m.finishRunWithError(run, fmt.Errorf("pre-flight deploy: %w", err))
+		return
+	}
+	if lease != nil {
+		defer m.releaseDeployment(lease)
+	}
+	if m.finishRunIfContextDone(ctx, run) {
 		return
 	}
 
 	stepResult, err := m.executeBenchmarkStep(ctx, run, plan, "resolve_open_question", 0)
 	if err != nil {
-		run.Status = "failed"
-		run.Error = err.Error()
-		run.CompletedAt = time.Now()
-		_ = m.db.UpdateExplorationRun(context.Background(), run)
+		m.finishRunWithError(run, err)
+		return
+	}
+	if m.finishRunIfContextDone(ctx, run) {
 		return
 	}
 

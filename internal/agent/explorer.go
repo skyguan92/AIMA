@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -368,6 +369,26 @@ func (e *Explorer) Status() ExplorerStatus {
 	}
 }
 
+func (e *Explorer) claimPlanRound(ctx context.Context, mode string, maxRounds int) (int, bool) {
+	e.mu.Lock()
+	if mode == "once" && e.roundsUsed >= 1 {
+		roundsUsed := e.roundsUsed
+		e.mu.Unlock()
+		return roundsUsed, false
+	}
+	if mode == "budget" && maxRounds > 0 && e.roundsUsed >= maxRounds {
+		roundsUsed := e.roundsUsed
+		e.mu.Unlock()
+		return roundsUsed, false
+	}
+	e.roundsUsed++
+	roundsUsed := e.roundsUsed
+	e.mu.Unlock()
+
+	e.persistConfigKey(ctx, "rounds_used", strconv.Itoa(roundsUsed))
+	return roundsUsed, true
+}
+
 func (e *Explorer) isEnabled() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -537,12 +558,17 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		slog.Info("explorer: no tasks to execute after filtering")
 		// N1: empty plan still counts as a budget round — prevents infinite
 		// LLM calls when all proposed tasks are deduped.
+		enabled := true
+		_, _ = e.claimPlanRound(ctx, mode, maxRounds)
 		e.mu.Lock()
-		e.roundsUsed++
 		if mode == "once" {
 			e.config.Enabled = false
+			enabled = false
 		}
 		e.mu.Unlock()
+		if !enabled {
+			e.persistConfigKey(ctx, "enabled", "false")
+		}
 		if mode == "once" {
 			slog.Info("explorer: once mode completed, auto-disabling")
 		}
@@ -557,13 +583,17 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	}
 
 	// D1: synchronous execution — budget, dedup, and activePlan are naturally correct
+	roundsUsed, ok := e.claimPlanRound(ctx, mode, maxRounds)
+	if !ok {
+		if mode == "budget" && maxRounds > 0 {
+			slog.Info("explorer: budget exhausted", "rounds_used", roundsUsed, "max_rounds", maxRounds)
+		}
+		return
+	}
 	e.mu.Lock()
 	e.activePlan = plan
 	e.lastRun = time.Now()
-	e.roundsUsed++ // increment BEFORE execution to prevent race
-	roundsUsed = e.roundsUsed
 	e.mu.Unlock()
-	e.persistConfigKey(ctx, "rounds_used", strconv.Itoa(roundsUsed))
 
 	// Plan time budget
 	maxDur := e.config.MaxPlanDuration
@@ -591,6 +621,15 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 				slog.Info("explorer: PDCA timeout", "cycle", cycle)
 				goto pdcaDone
 			default:
+			}
+
+			if refresher, ok := ap.(FactRefreshablePlanner); ok {
+				input, err := e.buildPlanInput(planCtx, &ev)
+				if err != nil {
+					slog.Warn("explorer: PDCA fact refresh build failed", "error", err, "cycle", cycle+1)
+				} else if err := refresher.RefreshFacts(*input); err != nil {
+					slog.Warn("explorer: PDCA fact refresh failed", "error", err, "cycle", cycle+1)
+				}
 			}
 
 			slog.Info("explorer: PDCA Check phase", "cycle", cycle+1)
@@ -621,6 +660,13 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 				Tier:      2,
 				Tasks:     extraPlanTasks,
 				Reasoning: fmt.Sprintf("PDCA Act cycle %d", cycle+1),
+			}
+			roundsUsed, ok := e.claimPlanRound(planCtx, mode, maxRounds)
+			if !ok {
+				if mode == "budget" && maxRounds > 0 {
+					slog.Info("explorer: budget exhausted", "rounds_used", roundsUsed, "max_rounds", maxRounds)
+				}
+				break
 			}
 			slog.Info("explorer: PDCA Do phase", "tasks", len(extraPlanTasks), "cycle", cycle+1)
 			if e.db != nil {
@@ -875,6 +921,8 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 
 		if result.Success {
 			task.Status = "completed"
+		} else if result.Cancelled {
+			task.Status = "cancelled"
 		} else {
 			task.Status = "failed"
 			// Track deploy-level failures for intra-plan feedback
@@ -975,6 +1023,104 @@ func (e *Explorer) reconcileStaleExplorationPlans(ctx context.Context) {
 		}); err != nil {
 			slog.Debug("explorer: stale plan reconciliation failed", "error", err, "plan_id", plan.ID)
 		}
+	}
+}
+
+func extractPlanIDFromGoal(goal string) string {
+	const prefix = "[plan:"
+	if !strings.HasPrefix(goal, prefix) {
+		return ""
+	}
+	end := strings.Index(goal, "]")
+	if end <= len(prefix) {
+		return ""
+	}
+	return goal[len(prefix):end]
+}
+
+func parsePlanTaskStatuses(summaryJSON string) map[string]string {
+	if strings.TrimSpace(summaryJSON) == "" {
+		return nil
+	}
+	var summary struct {
+		Tasks []PlanTask
+	}
+	if err := json.Unmarshal([]byte(summaryJSON), &summary); err != nil {
+		return nil
+	}
+	statuses := make(map[string]string, len(summary.Tasks))
+	for _, task := range summary.Tasks {
+		if task.Model == "" || task.Engine == "" || task.Status == "" {
+			continue
+		}
+		statuses[task.Model+"|"+task.Engine] = task.Status
+	}
+	return statuses
+}
+
+func canonicalRunStatusFromPlanTask(taskStatus string) string {
+	switch taskStatus {
+	case "failed":
+		return "failed"
+	case "cancelled", "skipped_timeout":
+		return "cancelled"
+	default:
+		return ""
+	}
+}
+
+func (e *Explorer) reconcileHistoricalExplorationRuns(ctx context.Context) {
+	if e.db == nil {
+		return
+	}
+	plans, err := e.db.ListExplorationPlans(ctx, "")
+	if err != nil || len(plans) == 0 {
+		return
+	}
+	planTasks := make(map[string]map[string]string, len(plans))
+	for _, plan := range plans {
+		if plan == nil || plan.ID == "" {
+			continue
+		}
+		if statuses := parsePlanTaskStatuses(plan.SummaryJSON); len(statuses) > 0 {
+			planTasks[plan.ID] = statuses
+		}
+	}
+	if len(planTasks) == 0 {
+		return
+	}
+	runs, err := e.db.ListExplorationRuns(ctx, "", 200)
+	if err != nil {
+		return
+	}
+	for _, run := range runs {
+		if run == nil || run.Status != "completed" {
+			continue
+		}
+		planID := extractPlanIDFromGoal(run.Goal)
+		if planID == "" {
+			continue
+		}
+		statuses := planTasks[planID]
+		if len(statuses) == 0 {
+			continue
+		}
+		taskStatus := statuses[run.ModelID+"|"+run.EngineID]
+		canonical := canonicalRunStatusFromPlanTask(taskStatus)
+		if canonical == "" || canonical == run.Status {
+			continue
+		}
+		run.Status = canonical
+		if run.Error == "" {
+			run.Error = fmt.Sprintf("reconciled from plan %s: task status=%s", planID, taskStatus)
+		}
+		if err := e.db.UpdateExplorationRun(context.Background(), run); err != nil {
+			slog.Debug("explorer: reconcile historical run failed", "error", err, "run_id", run.ID, "plan_id", planID)
+			continue
+		}
+		slog.Info("explorer: reconciled historical run status",
+			"run_id", run.ID, "plan_id", planID, "model", run.ModelID, "engine", run.EngineID,
+			"from", "completed", "to", canonical)
 	}
 }
 
@@ -1139,11 +1285,18 @@ func (e *Explorer) executeTask(ctx context.Context, task PlanTask, planID string
 
 	status, err := e.explMgr.StartAndWait(ctx, req)
 	if err != nil {
-		return HarvestResult{Success: false, Error: err.Error()}
+		return HarvestResult{
+			Success:   false,
+			Cancelled: errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded),
+			Error:     err.Error(),
+		}
 	}
 
 	if status.Run.Status == "failed" {
 		return HarvestResult{Success: false, Error: status.Run.Error}
+	}
+	if status.Run.Status == "cancelled" {
+		return HarvestResult{Success: false, Cancelled: true, Error: status.Run.Error}
 	}
 
 	// Parse benchmark results from exploration summary
@@ -1202,6 +1355,10 @@ func (e *Explorer) parseExplorationResult(status *ExplorationStatus) HarvestResu
 
 func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*PlanInput, error) {
 	input := &PlanInput{Event: ev}
+
+	// Self-heal historical late-write pollution before the next planning round
+	// so dedup and LLM facts both see the same canonical state.
+	e.reconcileHistoricalExplorationRuns(ctx)
 
 	// D4: Run independent gathers in parallel to reduce plan input build time.
 	// gatherComboFacts depends on hardware/models/engines, so it runs after.
@@ -1338,6 +1495,8 @@ func (e *Explorer) computePlanMetrics(plan *ExplorerPlan, elapsed time.Duration,
 			m.DiscoveryCount++
 		case t.Status == "failed":
 			m.Failed++
+		case t.Status == "cancelled":
+			m.Skipped++
 		case strings.HasPrefix(t.Status, "skipped") || t.Status == "":
 			m.Skipped++
 		}

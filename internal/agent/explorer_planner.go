@@ -23,6 +23,12 @@ type AnalyzablePlanner interface {
 	Analyze(ctx context.Context) (verdict string, extraTasks []TaskSpec, tokens int, err error)
 }
 
+// FactRefreshablePlanner refreshes planner-visible fact documents from the
+// latest device state before follow-up PDCA analysis.
+type FactRefreshablePlanner interface {
+	RefreshFacts(input PlanInput) error
+}
+
 // PlanInput aggregates all context needed for plan generation.
 type PlanInput struct {
 	Hardware      HardwareInfo
@@ -171,10 +177,12 @@ type RecommendedConfig struct {
 	Note         string         `yaml:"note" json:"note,omitempty"`
 }
 
-// PerfSummary captures key performance metrics.
+// PerfSummary captures key performance metrics with scenario context.
 type PerfSummary struct {
-	ThroughputTPS float64 `yaml:"throughput_tps" json:"throughput_tps"`
-	LatencyP50Ms  float64 `yaml:"latency_p50_ms" json:"latency_p50_ms"`
+	ThroughputTPS      float64 `yaml:"throughput_tps" json:"throughput_tps"`
+	ThroughputScenario string  `yaml:"throughput_scenario,omitempty" json:"throughput_scenario,omitempty"`
+	LatencyP50Ms       float64 `yaml:"latency_p50_ms" json:"latency_p50_ms"`
+	LatencyScenario    string  `yaml:"latency_scenario,omitempty" json:"latency_scenario,omitempty"`
 }
 
 // RulePlanner generates plans using fixed priority rules (Tier 1).

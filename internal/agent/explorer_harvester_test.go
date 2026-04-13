@@ -176,13 +176,13 @@ func TestHarvester_MatrixNote(t *testing.T) {
 			PowerWatts:    245.0,
 			MatrixCells:   4,
 			SuccessCells:  3,
-			MatrixJSON: `[{"label":"latency","cells":[` +
+			MatrixJSON: `{"matrix_profiles":[{"label":"latency","cells":[` +
 				`{"concurrency":1,"input_tokens":128,"max_tokens":256,"result":{"throughput_tps":170.5,"ttft_p95_ms":45}},` +
 				`{"concurrency":1,"input_tokens":1024,"max_tokens":256,"result":{"throughput_tps":155.0,"ttft_p95_ms":120}}` +
 				`]},{"label":"throughput","cells":[` +
 				`{"concurrency":4,"input_tokens":512,"max_tokens":1024,"result":{"throughput_tps":520.0,"ttft_p95_ms":200}},` +
 				`{"concurrency":4,"input_tokens":2048,"max_tokens":1024,"error":"timeout"}` +
-				`]}]`,
+				`]}]}`,
 			Config: map[string]any{"gpu_memory_utilization": 0.85},
 		},
 	}
@@ -228,5 +228,73 @@ func TestHarvester_SinglePointNote(t *testing.T) {
 	}
 	if !strings.Contains(note, "TTFT P95 45ms") {
 		t.Errorf("note missing TTFT: %s", note)
+	}
+}
+
+func TestIsStructuralFailure(t *testing.T) {
+	tests := []struct {
+		errMsg string
+		want   bool
+	}{
+		{"Transformers does not recognize this architecture", true},
+		{"model format \"safetensors\" not supported by engine llamacpp-universal", true},
+		{"container compatibility check failed for qwen3-tts-0.6b", true},
+		{"CUDA out of memory", false},
+		{"health check timed out", false},
+		{"connection refused", false},
+		{"exit status 137", false},
+		{"some random error", false},
+	}
+	for _, tt := range tests {
+		name := tt.errMsg
+		if len(name) > 30 {
+			name = name[:30]
+		}
+		t.Run(name, func(t *testing.T) {
+			got := isStructuralFailure(tt.errMsg)
+			if got != tt.want {
+				t.Errorf("isStructuralFailure(%q) = %v, want %v", tt.errMsg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHarvester_PersistsStructuralFailure(t *testing.T) {
+	var savedTitle, savedNote string
+	h := NewHarvester(1, WithSaveNote(func(ctx context.Context, title, content, hardware, model, engine string) error {
+		savedTitle = title
+		savedNote = content
+		return nil
+	}))
+
+	// Structural failure: should be persisted
+	h.Harvest(context.Background(), HarvestInput{
+		Task: PlanTask{Hardware: "nvidia-rtx4090-x86", Model: "qwen3-tts-0.6b", Engine: "vllm"},
+		Result: HarvestResult{
+			Success: false,
+			Error:   "Transformers does not recognize this architecture qwen3_tts",
+		},
+	})
+	if savedTitle == "" {
+		t.Fatal("structural failure should have been persisted")
+	}
+	if !strings.Contains(savedTitle, "structural failure") {
+		t.Errorf("title = %q, want 'structural failure'", savedTitle)
+	}
+	if !strings.Contains(savedNote, "qwen3-tts-0.6b") {
+		t.Errorf("note missing model name: %s", savedNote)
+	}
+
+	// Reset and test transient failure: should NOT be persisted
+	savedTitle = ""
+	h.Harvest(context.Background(), HarvestInput{
+		Task: PlanTask{Hardware: "nvidia-rtx4090-x86", Model: "qwen3-8b", Engine: "vllm"},
+		Result: HarvestResult{
+			Success: false,
+			Error:   "CUDA out of memory",
+		},
+	})
+	if savedTitle != "" {
+		t.Fatalf("transient failure should NOT have been persisted, got title=%q", savedTitle)
 	}
 }

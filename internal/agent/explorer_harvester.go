@@ -17,6 +17,7 @@ type HarvestInput struct {
 // HarvestResult captures benchmark/exploration outcomes.
 type HarvestResult struct {
 	Success         bool
+	Cancelled       bool
 	BenchmarkID     string
 	ConfigID        string
 	ExecutionPath   string
@@ -97,8 +98,15 @@ func (h *Harvester) Harvest(ctx context.Context, input HarvestInput) []HarvestAc
 	if !input.Result.Success {
 		note := generateFailureNote(input)
 		actions = append(actions, HarvestAction{Type: "note", Detail: note})
-		// Don't persist failure notes to DB — failure data is already in exploration_runs.
-		// This prevents polluting central with failure notes during sync.
+		// Persist structural failures (architecture incompatibility, version gaps) to
+		// prevent re-exploration of known-broken combos. Transient failures (OOM,
+		// timeout, deploy_crash) are NOT persisted — they may succeed with different params.
+		if h.saveNote != nil && isStructuralFailure(input.Result.Error) {
+			title := fmt.Sprintf("%s on %s: structural failure", input.Task.Model, input.Task.Engine)
+			if err := h.saveNote(ctx, title, note, input.Task.Hardware, input.Task.Model, input.Task.Engine); err != nil {
+				slog.Warn("harvester save structural failure note failed", "error", err, "title", title)
+			}
+		}
 		return actions
 	}
 
@@ -203,29 +211,34 @@ func (h *Harvester) generateMatrixNote(input HarvestInput) string {
 		input.Task.Model, engineLabel,
 		input.Result.MatrixCells, input.Result.SuccessCells)
 
-	var profiles []json.RawMessage
-	_ = json.Unmarshal([]byte(input.Result.MatrixJSON), &profiles)
+	type matrixProfile struct {
+		Label string `json:"label"`
+		Cells []struct {
+			Concurrency int `json:"concurrency"`
+			InputTokens int `json:"input_tokens"`
+			MaxTokens   int `json:"max_tokens"`
+			Result      struct {
+				ThroughputTPS float64 `json:"throughput_tps"`
+				TTFTP95ms     float64 `json:"ttft_p95_ms"`
+			} `json:"result"`
+			Error string `json:"error"`
+		} `json:"cells"`
+	}
+	var wrapped struct {
+		MatrixProfiles []matrixProfile `json:"matrix_profiles"`
+	}
+	profiles := wrapped.MatrixProfiles
+	if err := json.Unmarshal([]byte(input.Result.MatrixJSON), &wrapped); err == nil {
+		profiles = wrapped.MatrixProfiles
+	}
+	if len(profiles) == 0 {
+		_ = json.Unmarshal([]byte(input.Result.MatrixJSON), &profiles)
+	}
 
 	var lines []string
 	lines = append(lines, header)
 
-	for _, profileJSON := range profiles {
-		var profile struct {
-			Label string `json:"label"`
-			Cells []struct {
-				Concurrency int `json:"concurrency"`
-				InputTokens int `json:"input_tokens"`
-				MaxTokens   int `json:"max_tokens"`
-				Result      struct {
-					ThroughputTPS float64 `json:"throughput_tps"`
-					TTFTP95ms     float64 `json:"ttft_p95_ms"`
-				} `json:"result"`
-				Error string `json:"error"`
-			} `json:"cells"`
-		}
-		if json.Unmarshal(profileJSON, &profile) != nil {
-			continue
-		}
+	for _, profile := range profiles {
 		label := "Unknown"
 		if profile.Label != "" {
 			label = strings.ToUpper(profile.Label[:1]) + profile.Label[1:]
@@ -378,6 +391,19 @@ func classifyError(errMsg string) string {
 	default:
 		return "error"
 	}
+}
+
+// isStructuralFailure returns true for failures caused by fundamental
+// incompatibilities (architecture not recognized, format not supported) that
+// won't be fixed by retrying with different parameters. Transient failures
+// (OOM, timeout, deploy_crash) return false.
+func isStructuralFailure(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	return strings.Contains(lower, "does not recognize") ||
+		strings.Contains(lower, "not supported") ||
+		strings.Contains(lower, "architecture") ||
+		strings.Contains(lower, "not recognize this") ||
+		strings.Contains(lower, "compatibility check failed")
 }
 
 // generateFailureNote creates a structured failure note with config evidence.

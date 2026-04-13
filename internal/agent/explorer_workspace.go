@@ -255,12 +255,29 @@ func parsePlanTasks(md string) ([]TaskSpec, error) {
 		// like "No new tasks needed" or omit the block entirely.
 		return nil, nil
 	}
-	var tasks []TaskSpec
-	if err := yaml.Unmarshal([]byte(matches[1]), &tasks); err != nil {
+	tasks, err := parseTaskSpecYAML([]byte(matches[1]))
+	if err != nil {
 		return nil, fmt.Errorf("parse tasks yaml: %w", err)
 	}
 	// D2: comment-only yaml blocks unmarshal to nil — also valid "no tasks".
 	return tasks, nil
+}
+
+func parseTaskSpecYAML(data []byte) ([]TaskSpec, error) {
+	var tasks []TaskSpec
+	listErr := yaml.Unmarshal(data, &tasks)
+	if listErr == nil {
+		return tasks, nil
+	}
+
+	var wrapped struct {
+		Tasks []TaskSpec `yaml:"tasks"`
+	}
+	if err := yaml.Unmarshal(data, &wrapped); err == nil {
+		return wrapped.Tasks, nil
+	}
+
+	return nil, listErr
 }
 
 // parseRecommendedConfigs extracts RecommendedConfig list from summary.md.
@@ -641,7 +658,8 @@ func (w *ExplorerWorkspace) generateResolvedAvailableCombos(input PlanInput, now
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# Available Combos\n\n_Generated: %s_\n\n", now)
-	fmt.Fprintf(&sb, "This document is authoritative for new scheduling. Only rows under `## Ready Combos` may appear in new tasks.\n\n")
+	fmt.Fprintf(&sb, "This document is authoritative for new scheduling. Only rows under `## Ready Combos` may appear in new tasks.\n")
+	fmt.Fprintf(&sb, "This document is refreshed before each PDCA phase; plan.md snapshots may refer to an earlier state.\n\n")
 
 	fmt.Fprintf(&sb, "## Ready Combos\n\n")
 	writeComboTable(&sb, ready, "ready")
@@ -861,6 +879,8 @@ func (w *ExplorerWorkspace) WriteExperimentResult(index int, task TaskSpec, resu
 			status := "ok"
 			if strings.TrimSpace(b.Error) != "" {
 				status = b.Error
+			} else if b.ThroughputTPS == 0 && b.TTFTP95Ms == 0 {
+				status = "no-output"
 			}
 			profile := "-"
 			if strings.TrimSpace(b.Profile) != "" {

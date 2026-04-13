@@ -1252,6 +1252,8 @@ func TestExplorationManagerTunePersistsRun(t *testing.T) {
 
 func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 	ctx := context.Background()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
 	db, err := state.Open(ctx, ":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -1262,11 +1264,11 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
 			switch name {
 			case "deploy.run":
-				return &ToolResult{Content: `{"status":"ready","name":"qwen3-8b-vllm","address":"127.0.0.1:30000","config":{"gpu_memory_utilization":0.8}}`}, nil
+				return &ToolResult{Content: fmt.Sprintf(`{"status":"ready","name":"qwen3-8b-vllm","address":%q,"config":{"gpu_memory_utilization":0.8}}`, addr)}, nil
 			case "deploy.apply":
 				return &ToolResult{Content: `{"name":"qwen3-8b-vllm","config":{"gpu_memory_utilization":0.8}}`}, nil
 			case "deploy.status":
-				return &ToolResult{Content: `{"name":"qwen3-8b-vllm","phase":"running","ready":true,"address":"127.0.0.1:30000"}`}, nil
+				return &ToolResult{Content: fmt.Sprintf(`{"name":"qwen3-8b-vllm","phase":"running","ready":true,"address":%q}`, addr)}, nil
 			case "deploy.delete":
 				return &ToolResult{Content: `{"status":"deleted"}`}, nil
 			case "benchmark.run":
@@ -1345,6 +1347,8 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 
 func TestExplorationManagerOpenQuestionAutoResolves(t *testing.T) {
 	ctx := context.Background()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
 	db, err := state.Open(ctx, ":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -1359,11 +1363,11 @@ func TestExplorationManagerOpenQuestionAutoResolves(t *testing.T) {
 		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
 			switch name {
 			case "deploy.run":
-				return &ToolResult{Content: `{"status":"ready","name":"qwen3-8b-vllm","address":"127.0.0.1:30001","config":{"gpu_memory_utilization":0.82}}`}, nil
+				return &ToolResult{Content: fmt.Sprintf(`{"status":"ready","name":"qwen3-8b-vllm","address":%q,"config":{"gpu_memory_utilization":0.82}}`, addr)}, nil
 			case "deploy.apply":
 				return &ToolResult{Content: `{"name":"qwen3-8b-vllm","config":{"gpu_memory_utilization":0.82}}`}, nil
 			case "deploy.status":
-				return &ToolResult{Content: `{"name":"qwen3-8b-vllm","phase":"running","ready":true,"address":"127.0.0.1:30001"}`}, nil
+				return &ToolResult{Content: fmt.Sprintf(`{"name":"qwen3-8b-vllm","phase":"running","ready":true,"address":%q}`, addr)}, nil
 			case "deploy.delete":
 				return &ToolResult{Content: `{"status":"deleted"}`}, nil
 			case "benchmark.run":

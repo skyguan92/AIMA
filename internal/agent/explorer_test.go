@@ -157,6 +157,67 @@ func (p *emptyPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan
 	return &ExplorerPlan{ID: fmt.Sprintf("empty-%d", *p.calls), Tier: 2, Tasks: nil}, 100, nil
 }
 
+type refreshTrackingPlanner struct {
+	planCalls          int
+	analyzeCalls       int
+	refreshCalls       int
+	lastRefreshDeploys int
+}
+
+func (p *refreshTrackingPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, int, error) {
+	p.planCalls++
+	return &ExplorerPlan{
+		ID:   "refresh-plan",
+		Tier: 2,
+		Tasks: []PlanTask{{
+			Kind:     "validate",
+			Model:    "test-model",
+			Engine:   "vllm",
+			Hardware: input.Hardware.Profile,
+			Reason:   "test refresh",
+		}},
+	}, 0, nil
+}
+
+func (p *refreshTrackingPlanner) Analyze(ctx context.Context) (string, []TaskSpec, int, error) {
+	p.analyzeCalls++
+	return "done", nil, 0, nil
+}
+
+func (p *refreshTrackingPlanner) RefreshFacts(input PlanInput) error {
+	p.refreshCalls++
+	p.lastRefreshDeploys = len(input.ActiveDeploys)
+	return nil
+}
+
+type pdcaBudgetPlanner struct {
+	analyzeCalls int
+}
+
+func (p *pdcaBudgetPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, int, error) {
+	return &ExplorerPlan{
+		ID:   "pdca-budget",
+		Tier: 2,
+		Tasks: []PlanTask{{
+			Kind:     "validate",
+			Model:    "seed-model",
+			Engine:   "seed-engine",
+			Hardware: "test-hw",
+			Reason:   "seed task",
+		}},
+	}, 0, nil
+}
+
+func (p *pdcaBudgetPlanner) Analyze(ctx context.Context) (string, []TaskSpec, int, error) {
+	p.analyzeCalls++
+	return "continue", []TaskSpec{{
+		Kind:   "validate",
+		Model:  fmt.Sprintf("followup-%d", p.analyzeCalls),
+		Engine: "seed-engine",
+		Reason: "budget follow-up",
+	}}, 0, nil
+}
+
 func TestExplorer_EmptyPlanCountsAsBudgetRound(t *testing.T) {
 	bus := NewEventBus()
 	calls := 0
@@ -194,6 +255,185 @@ func TestExplorer_EmptyPlanCountsAsBudgetRound(t *testing.T) {
 	}
 }
 
+func TestExplorer_EmptyPlanPersistsBudgetRound(t *testing.T) {
+	dir := t.TempDir()
+	db, err := state.Open(context.Background(), filepath.Join(dir, "explorer.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer db.Close()
+
+	bus := NewEventBus()
+	calls := 0
+	agent := NewAgent(&mockLLM{}, &mockTools{})
+	agent.mode = toolModeContextOnly
+	e := NewExplorer(ExplorerConfig{
+		Schedule:  DefaultScheduleConfig(),
+		Enabled:   true,
+		Mode:      "budget",
+		MaxRounds: 3,
+	}, agent, nil, db, bus)
+	e.planner = &emptyPlanner{calls: &calls}
+
+	e.handleEvent(context.Background(), ExplorerEvent{Type: EventScheduledGapScan})
+
+	got, err := db.GetConfig(context.Background(), "explorer.rounds_used")
+	if err != nil {
+		t.Fatalf("GetConfig explorer.rounds_used: %v", err)
+	}
+	if got != "1" {
+		t.Fatalf("explorer.rounds_used = %q, want 1", got)
+	}
+}
+
+func TestExplorerClaimPlanRound_BudgetModeCountsPDCAPlans(t *testing.T) {
+	dir := t.TempDir()
+	db, err := state.Open(context.Background(), filepath.Join(dir, "explorer.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer db.Close()
+
+	e := NewExplorer(ExplorerConfig{
+		Schedule:  DefaultScheduleConfig(),
+		Enabled:   true,
+		Mode:      "budget",
+		MaxRounds: 3,
+	}, nil, nil, db, NewEventBus())
+
+	for i := 1; i <= 3; i++ {
+		got, ok := e.claimPlanRound(context.Background(), "budget", 3)
+		if !ok {
+			t.Fatalf("claim %d rejected unexpectedly", i)
+		}
+		if got != i {
+			t.Fatalf("claim %d rounds_used=%d, want %d", i, got, i)
+		}
+	}
+
+	got, err := db.GetConfig(context.Background(), "explorer.rounds_used")
+	if err != nil {
+		t.Fatalf("GetConfig explorer.rounds_used: %v", err)
+	}
+	if got != "3" {
+		t.Fatalf("explorer.rounds_used = %q, want 3", got)
+	}
+}
+
+func TestExplorerClaimPlanRound_BudgetModeRejectsFourthPlan(t *testing.T) {
+	e := NewExplorer(ExplorerConfig{
+		Schedule:  DefaultScheduleConfig(),
+		Enabled:   true,
+		Mode:      "budget",
+		MaxRounds: 3,
+	}, nil, nil, nil, NewEventBus())
+
+	for i := 0; i < 3; i++ {
+		if _, ok := e.claimPlanRound(context.Background(), "budget", 3); !ok {
+			t.Fatalf("claim %d rejected unexpectedly", i+1)
+		}
+	}
+
+	got, ok := e.claimPlanRound(context.Background(), "budget", 3)
+	if ok {
+		t.Fatal("fourth plan claim unexpectedly allowed")
+	}
+	if got != 3 {
+		t.Fatalf("fourth plan rounds_used=%d, want 3", got)
+	}
+}
+
+func TestExplorer_PDCAExtraPlansConsumeBudgetRounds(t *testing.T) {
+	dir := t.TempDir()
+	db, err := state.Open(context.Background(), filepath.Join(dir, "explorer.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer db.Close()
+
+	bus := NewEventBus()
+	agent := NewAgent(&mockLLM{}, &mockTools{})
+	agent.mode = toolModeContextOnly
+	planner := &pdcaBudgetPlanner{}
+	e := NewExplorer(ExplorerConfig{
+		Schedule:  DefaultScheduleConfig(),
+		Enabled:   true,
+		Mode:      "budget",
+		MaxRounds: 3,
+		MaxCycles: 4,
+	}, agent, nil, db, bus,
+		WithGatherHardware(func(ctx context.Context) (HardwareInfo, error) {
+			return HardwareInfo{Profile: "test-hw", GPUArch: "test"}, nil
+		}),
+	)
+	e.planner = planner
+
+	e.handleEvent(context.Background(), ExplorerEvent{Type: EventScheduledGapScan})
+
+	if planner.analyzeCalls != 3 {
+		t.Fatalf("Analyze calls = %d, want 3 (third follow-up should hit budget wall)", planner.analyzeCalls)
+	}
+
+	got, err := db.GetConfig(context.Background(), "explorer.rounds_used")
+	if err != nil {
+		t.Fatalf("GetConfig explorer.rounds_used: %v", err)
+	}
+	if got != "3" {
+		t.Fatalf("explorer.rounds_used = %q, want 3", got)
+	}
+
+	plans, err := db.ListExplorationPlans(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListExplorationPlans: %v", err)
+	}
+	if len(plans) != 3 {
+		t.Fatalf("plans len = %d, want 3", len(plans))
+	}
+
+	planIDs := make(map[string]bool, len(plans))
+	for _, plan := range plans {
+		planIDs[plan.ID] = true
+	}
+	for _, want := range []string{"pdca-budget", "pdca-budget-c1", "pdca-budget-c2"} {
+		if !planIDs[want] {
+			t.Fatalf("missing persisted plan %q; got %v", want, planIDs)
+		}
+	}
+	if planIDs["pdca-budget-c3"] {
+		t.Fatalf("unexpected fourth plan persisted: %v", planIDs)
+	}
+}
+
+func TestExplorer_EmptyPlanDisablesOnceModeInDB(t *testing.T) {
+	dir := t.TempDir()
+	db, err := state.Open(context.Background(), filepath.Join(dir, "explorer.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer db.Close()
+
+	bus := NewEventBus()
+	calls := 0
+	agent := NewAgent(&mockLLM{}, &mockTools{})
+	agent.mode = toolModeContextOnly
+	e := NewExplorer(ExplorerConfig{
+		Schedule: DefaultScheduleConfig(),
+		Enabled:  true,
+		Mode:     "once",
+	}, agent, nil, db, bus)
+	e.planner = &emptyPlanner{calls: &calls}
+
+	e.handleEvent(context.Background(), ExplorerEvent{Type: EventScheduledGapScan})
+
+	got, err := db.GetConfig(context.Background(), "explorer.enabled")
+	if err != nil {
+		t.Fatalf("GetConfig explorer.enabled: %v", err)
+	}
+	if got != "false" {
+		t.Fatalf("explorer.enabled = %q, want false", got)
+	}
+}
+
 func TestExplorer_OnceModeDisablesAfterRound(t *testing.T) {
 	bus := NewEventBus()
 	plansExecuted := 0
@@ -223,6 +463,49 @@ func TestExplorer_OnceModeDisablesAfterRound(t *testing.T) {
 	}
 	if e.Status().Enabled {
 		t.Fatal("expected once mode to disable immediately after the round finishes")
+	}
+}
+
+func TestExplorer_RefreshesFactsBeforeAnalyze(t *testing.T) {
+	bus := NewEventBus()
+	agent := NewAgent(&mockLLM{}, &mockTools{})
+	agent.mode = toolModeContextOnly
+	planner := &refreshTrackingPlanner{}
+	deployCalls := 0
+
+	e := NewExplorer(ExplorerConfig{
+		Schedule: DefaultScheduleConfig(),
+		Enabled:  true,
+	}, agent, nil, nil, bus,
+		WithGatherDeploys(func(ctx context.Context) ([]DeployStatus, error) {
+			deployCalls++
+			if deployCalls == 1 {
+				return []DeployStatus{{Model: "old-model", Engine: "vllm", Status: "running"}}, nil
+			}
+			return []DeployStatus{
+				{Model: "old-model", Engine: "vllm", Status: "running"},
+				{Model: "new-model", Engine: "sglang-kt", Status: "running"},
+			}, nil
+		}),
+		WithGatherHardware(func(ctx context.Context) (HardwareInfo, error) {
+			return HardwareInfo{Profile: "test-hw", GPUArch: "Ada", GPUCount: 1, VRAMMiB: 24576}, nil
+		}),
+	)
+	e.planner = planner
+
+	e.handleEvent(context.Background(), ExplorerEvent{Type: EventScheduledGapScan})
+
+	if planner.planCalls != 1 {
+		t.Fatalf("planCalls = %d, want 1", planner.planCalls)
+	}
+	if planner.analyzeCalls != 1 {
+		t.Fatalf("analyzeCalls = %d, want 1", planner.analyzeCalls)
+	}
+	if planner.refreshCalls != 1 {
+		t.Fatalf("refreshCalls = %d, want 1", planner.refreshCalls)
+	}
+	if planner.lastRefreshDeploys != 2 {
+		t.Fatalf("lastRefreshDeploys = %d, want 2", planner.lastRefreshDeploys)
 	}
 }
 
@@ -308,6 +591,100 @@ func TestExplorer_ReconcilesStaleActivePlansDuringEvent(t *testing.T) {
 	}
 	if plans[0].CompletedAt == nil {
 		t.Fatal("completed_at is nil, want reconciliation timestamp")
+	}
+}
+
+func TestExplorer_ReconcileHistoricalExplorationRuns_UsesPlanSummaryAsCanonical(t *testing.T) {
+	dir := t.TempDir()
+	db, err := state.Open(context.Background(), filepath.Join(dir, "explorer.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer db.Close()
+
+	summaryJSON, err := json.Marshal(struct {
+		Tasks []PlanTask
+	}{
+		Tasks: []PlanTask{{
+			Kind:     "validate",
+			Model:    "qwen3.5-27b",
+			Engine:   "vllm",
+			Status:   "failed",
+			Reason:   "timed out",
+			Priority: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal summary: %v", err)
+	}
+
+	now := time.Now()
+	if err := db.InsertExplorationPlan(context.Background(), &state.ExplorationPlanRow{
+		ID:        "plan-1",
+		Tier:      2,
+		Trigger:   "manual",
+		Status:    "completed",
+		PlanJSON:  `{"id":"plan-1"}`,
+		Progress:  1,
+		Total:     1,
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertExplorationPlan: %v", err)
+	}
+	if err := db.UpdateExplorationPlan(context.Background(), &state.ExplorationPlanRow{
+		ID:          "plan-1",
+		Status:      "completed",
+		Progress:    1,
+		CompletedAt: &now,
+		SummaryJSON: string(summaryJSON),
+	}); err != nil {
+		t.Fatalf("UpdateExplorationPlan: %v", err)
+	}
+
+	if err := db.InsertExplorationRun(context.Background(), &state.ExplorationRun{
+		ID:           "run-1",
+		Kind:         "validate",
+		Goal:         "[plan:plan-1] validate qwen3.5-27b on vllm",
+		RequestedBy:  "explorer",
+		Executor:     "go-agent",
+		Planner:      "llm",
+		Status:       "completed",
+		HardwareID:   "nvidia-gb10-arm64",
+		EngineID:     "vllm",
+		ModelID:      "qwen3.5-27b",
+		ApprovalMode: "auto",
+		StartedAt:    now,
+		CompletedAt:  now,
+	}); err != nil {
+		t.Fatalf("InsertExplorationRun: %v", err)
+	}
+
+	e := &Explorer{db: db}
+	e.reconcileHistoricalExplorationRuns(context.Background())
+
+	run, err := db.GetExplorationRun(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("GetExplorationRun: %v", err)
+	}
+	if run.Status != "failed" {
+		t.Fatalf("run status=%q, want failed", run.Status)
+	}
+	if !strings.Contains(run.Error, "reconciled from plan plan-1") {
+		t.Fatalf("run error=%q, want reconciliation marker", run.Error)
+	}
+
+	combos, err := db.ListExploredCombos(context.Background())
+	if err != nil {
+		t.Fatalf("ListExploredCombos: %v", err)
+	}
+	if len(combos) != 1 {
+		t.Fatalf("combos len=%d, want 1", len(combos))
+	}
+	if combos[0].Completed {
+		t.Fatalf("combo completed=%v, want false", combos[0].Completed)
+	}
+	if combos[0].FailCount != 1 {
+		t.Fatalf("combo fail_count=%d, want 1", combos[0].FailCount)
 	}
 }
 
