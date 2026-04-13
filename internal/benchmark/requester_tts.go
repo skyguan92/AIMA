@@ -69,7 +69,7 @@ func (r *AudioSpeechRequester) Do(ctx context.Context, endpoint string, seq int)
 		return &Sample{Seq: seq, Error: fmt.Errorf("marshal TTS request: %w", err)}, nil
 	}
 
-	url := endpoint + "/v1/audio/speech"
+	url := baseEndpoint(endpoint) + "/v1/audio/speech"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return &Sample{Seq: seq, Error: fmt.Errorf("create TTS request: %w", err)}, nil

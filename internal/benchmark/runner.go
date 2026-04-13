@@ -110,7 +110,8 @@ type RunResult struct {
 	AvgInputTokens  int `json:"avg_input_tokens"`
 	AvgOutputTokens int `json:"avg_output_tokens"`
 
-	ErrorRate float64 `json:"error_rate"`
+	ErrorRate  float64 `json:"error_rate"`
+	FirstError string  `json:"first_error,omitempty"`
 
 	Rounds       int           `json:"rounds,omitempty"`
 	RoundResults []RoundResult `json:"round_results,omitempty"`
@@ -282,6 +283,8 @@ func aggregateLLMMetrics(samples []RequestSample, totalDuration time.Duration) *
 	for _, s := range samples {
 		if s.Error == nil {
 			successSamples = append(successSamples, s)
+		} else if result.FirstError == "" {
+			result.FirstError = s.Error.Error()
 		}
 	}
 

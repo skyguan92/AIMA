@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -62,6 +63,15 @@ type Sample struct {
 	VideoSteps      int
 }
 
+// Compile-time interface compliance checks.
+var (
+	_ Requester = (*ChatRequester)(nil)
+	_ Requester = (*AudioSpeechRequester)(nil)
+	_ Requester = (*TranscriptionRequester)(nil)
+	_ Requester = (*ImageGenRequester)(nil)
+	_ Requester = (*VideoGenRequester)(nil)
+)
+
 // AudioInput holds a pre-loaded audio file for ASR benchmarking.
 // Audio data is loaded into memory once at init time to avoid disk I/O
 // interfering with latency measurements.
@@ -69,6 +79,29 @@ type AudioInput struct {
 	Filename  string
 	Data      []byte
 	DurationS float64
+}
+
+// baseEndpoint strips any known API path suffix (/v1/chat/completions, etc.)
+// from an endpoint URL, returning the scheme+host+port base.
+// This lets each requester append its own modality-specific path.
+func baseEndpoint(endpoint string) string {
+	ep := strings.TrimRight(endpoint, "/")
+	for _, suffix := range []string{
+		"/v1/chat/completions",
+		"/v1/audio/speech",
+		"/v1/audio/transcriptions",
+		"/v1/images/generations",
+		"/chat/completions",
+	} {
+		if strings.HasSuffix(ep, suffix) {
+			return strings.TrimSuffix(ep, suffix)
+		}
+	}
+	// Strip trailing /v1 as well
+	if strings.HasSuffix(ep, "/v1") {
+		return strings.TrimSuffix(ep, "/v1")
+	}
+	return ep
 }
 
 // sampleToRequestSample converts a Sample to the legacy RequestSample type

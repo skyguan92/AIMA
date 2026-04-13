@@ -582,3 +582,26 @@ func TestRun_Modality(t *testing.T) {
 		t.Errorf("expected Modality = 'vlm', got %q", result.Modality)
 	}
 }
+
+func TestBaseEndpoint(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"http://localhost:8000/v1/chat/completions", "http://localhost:8000"},
+		{"http://localhost:8000/v1", "http://localhost:8000"},
+		{"http://localhost:8000/v1/", "http://localhost:8000"},
+		{"http://localhost:8000", "http://localhost:8000"},
+		{"http://localhost:8000/", "http://localhost:8000"},
+		{"http://host:6188/v1/audio/speech", "http://host:6188"},
+		{"http://host:6188/v1/audio/transcriptions", "http://host:6188"},
+		{"http://host:6188/v1/images/generations", "http://host:6188"},
+		{"http://host:6188/chat/completions", "http://host:6188"},
+	}
+	for _, tt := range tests {
+		got := baseEndpoint(tt.input)
+		if got != tt.want {
+			t.Errorf("baseEndpoint(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

@@ -27,7 +27,7 @@ type ImageGenRequester struct {
 func (r *ImageGenRequester) Modality() string    { return "image_gen" }
 func (r *ImageGenRequester) WarmupRequests() int  { return 3 }
 
-func (r *ImageGenRequester) Do(ctx context.Context, endpoint string, seq int) Sample {
+func (r *ImageGenRequester) Do(ctx context.Context, endpoint string, seq int) (*Sample, error) {
 	prompt := r.Prompt
 	if prompt == "" {
 		prompt = "A photo of an astronaut riding a horse on Mars"
@@ -56,49 +56,38 @@ func (r *ImageGenRequester) Do(ctx context.Context, endpoint string, seq int) Sa
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Try OpenAI-compatible endpoint first
-	sample := r.tryOpenAI(ctx, endpoint, prompt, width, height, numImages)
-	if sample.Error == nil {
-		sample.StepsCompleted = steps
-		sample.WidthPx = width
-		sample.HeightPx = height
-		return sample
-	}
+	base := baseEndpoint(endpoint)
 
-	// If the endpoint already has a known path, don't fall back
-	if strings.Contains(endpoint, "/v1/images/generations") {
+	// Try OpenAI-compatible endpoint first
+	sample := r.tryOpenAI(ctx, base, prompt, width, height, numImages)
+	if sample.Error == nil {
+		sample.Seq = seq
 		sample.StepsCompleted = steps
 		sample.WidthPx = width
 		sample.HeightPx = height
-		return sample
+		return &sample, nil
 	}
 
 	// Check if error was 404 — fall back to custom format
 	if !isNotFoundError(sample.Error) {
+		sample.Seq = seq
 		sample.StepsCompleted = steps
 		sample.WidthPx = width
 		sample.HeightPx = height
-		return sample
+		return &sample, nil
 	}
 
 	// Fall back to custom format: POST directly to endpoint
 	sample = r.tryCustom(ctx, endpoint, prompt, width, height, steps, numImages)
+	sample.Seq = seq
 	sample.StepsCompleted = steps
 	sample.WidthPx = width
 	sample.HeightPx = height
-	return sample
+	return &sample, nil
 }
 
-func (r *ImageGenRequester) tryOpenAI(ctx context.Context, endpoint, prompt string, width, height, numImages int) Sample {
-	url := endpoint
-	if strings.Contains(endpoint, "/v1/images/generations") {
-		// Already has the path, use as-is
-	} else if !strings.Contains(endpoint, "/v1/") {
-		url = strings.TrimRight(endpoint, "/") + "/v1/images/generations"
-	} else {
-		// Has /v1/ but not /images/generations — append
-		url = strings.TrimRight(endpoint, "/") + "/v1/images/generations"
-	}
+func (r *ImageGenRequester) tryOpenAI(ctx context.Context, base, prompt string, width, height, numImages int) Sample {
+	url := strings.TrimRight(base, "/") + "/v1/images/generations"
 
 	payload := map[string]any{
 		"model":  r.Model,

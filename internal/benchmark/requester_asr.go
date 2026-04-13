@@ -72,7 +72,7 @@ func (r *TranscriptionRequester) Do(ctx context.Context, endpoint string, seq in
 		return &Sample{Seq: seq, Error: fmt.Errorf("close multipart writer: %w", err)}, nil
 	}
 
-	url := endpoint + "/v1/audio/transcriptions"
+	url := baseEndpoint(endpoint) + "/v1/audio/transcriptions"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
 	if err != nil {
 		return &Sample{Seq: seq, Error: fmt.Errorf("create ASR request: %w", err)}, nil

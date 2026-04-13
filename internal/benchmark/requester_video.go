@@ -30,7 +30,7 @@ type VideoGenRequester struct {
 func (r *VideoGenRequester) Modality() string    { return "video_gen" }
 func (r *VideoGenRequester) WarmupRequests() int  { return 1 }
 
-func (r *VideoGenRequester) Do(ctx context.Context, endpoint string, seq int) Sample {
+func (r *VideoGenRequester) Do(ctx context.Context, endpoint string, seq int) (*Sample, error) {
 	durationS := r.DurationS
 	if durationS == 0 {
 		durationS = 5
@@ -75,12 +75,12 @@ func (r *VideoGenRequester) Do(ctx context.Context, endpoint string, seq int) Sa
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return Sample{Error: fmt.Errorf("marshal video request: %w", err)}
+		return &Sample{Seq: seq, Error: fmt.Errorf("marshal video request: %w", err)}, nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	if err != nil {
-		return Sample{Error: fmt.Errorf("create video request: %w", err)}
+		return &Sample{Seq: seq, Error: fmt.Errorf("create video request: %w", err)}, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if r.APIKey != "" {
@@ -92,32 +92,34 @@ func (r *VideoGenRequester) Do(ctx context.Context, endpoint string, seq int) Sa
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-		return Sample{LatencyMs: latencyMs, Error: fmt.Errorf("send video request: %w", err)}
+		return &Sample{Seq: seq, LatencyMs: latencyMs, Error: fmt.Errorf("send video request: %w", err)}, nil
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-		return Sample{LatencyMs: latencyMs, Error: fmt.Errorf("read video response: %w", err)}
+		return &Sample{Seq: seq, LatencyMs: latencyMs, Error: fmt.Errorf("read video response: %w", err)}, nil
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-		return Sample{LatencyMs: latencyMs, Error: fmt.Errorf("video HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 512))}
+		return &Sample{Seq: seq, LatencyMs: latencyMs, Error: fmt.Errorf("video HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 512))}, nil
 	}
 
 	var result map[string]any
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		// Non-JSON response — treat as synchronous completion (raw video data)
 		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-		return r.makeSample(latencyMs, durationS, fps, steps)
+		s := r.makeSample(seq, latencyMs, durationS, fps, steps)
+		return &s, nil
 	}
 
 	// Check if synchronous completion
 	if isVideoCompleted(result) {
 		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-		return r.makeSample(latencyMs, durationS, fps, steps)
+		s := r.makeSample(seq, latencyMs, durationS, fps, steps)
+		return &s, nil
 	}
 
 	// Check for async job ID
@@ -125,16 +127,19 @@ func (r *VideoGenRequester) Do(ctx context.Context, endpoint string, seq int) Sa
 	if jobID == "" {
 		// No job ID and not completed — treat as synchronous
 		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-		return r.makeSample(latencyMs, durationS, fps, steps)
+		s := r.makeSample(seq, latencyMs, durationS, fps, steps)
+		return &s, nil
 	}
 
 	// Async mode: poll for completion
 	pollURL := strings.TrimRight(endpoint, "/") + "/status/" + jobID
 	sample := r.pollForCompletion(ctx, pollURL, pollInterval, start)
 	if sample.Error != nil {
-		return sample
+		sample.Seq = seq
+		return &sample, nil
 	}
-	return r.makeSample(sample.LatencyMs, durationS, fps, steps)
+	s := r.makeSample(seq, sample.LatencyMs, durationS, fps, steps)
+	return &s, nil
 }
 
 func (r *VideoGenRequester) pollForCompletion(ctx context.Context, pollURL string, interval time.Duration, start time.Time) Sample {
@@ -195,8 +200,9 @@ func (r *VideoGenRequester) pollForCompletion(ctx context.Context, pollURL strin
 	}
 }
 
-func (r *VideoGenRequester) makeSample(latencyMs, durationS float64, fps, steps int) Sample {
+func (r *VideoGenRequester) makeSample(seq int, latencyMs, durationS float64, fps, steps int) Sample {
 	return Sample{
+		Seq:             seq,
 		LatencyMs:       latencyMs,
 		VideoDurationS:  durationS,
 		FramesGenerated: int(durationS * float64(fps)),

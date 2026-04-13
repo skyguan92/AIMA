@@ -94,6 +94,9 @@ func (r *ChatRequester) sendStreamingRequest(ctx context.Context, endpoint strin
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Normalize endpoint: strip any known suffix and append /v1/chat/completions
+	endpoint = baseEndpoint(endpoint) + "/v1/chat/completions"
+
 	messages := r.buildMessages()
 
 	maxTokens := r.MaxTokens
