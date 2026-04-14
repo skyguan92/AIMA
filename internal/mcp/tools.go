@@ -94,6 +94,9 @@ var supportedConfigKeys = []string{
 	"support.endpoint",
 	"support.invite_code",
 	"support.worker_code",
+	"onboarding_completed",
+	"version_check_cache",
+	"version_check_dismissed",
 }
 
 var validConfigKeys = func() map[string]bool {
