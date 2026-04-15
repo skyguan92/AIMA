@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/onboarding"
@@ -15,38 +14,6 @@ import (
 type onboardingDeployRequest struct {
 	Model  string `json:"model"`
 	Engine string `json:"engine,omitempty"`
-}
-
-// onboardingDeployResult is retained because buildOnboardingDeps (Step 2 of
-// the refactor) still needs to introspect a decorator-wrapped DeployRun
-// result. The HTTP handler now delegates to onboarding.RunDeploy.
-type onboardingDeployResult struct {
-	Name    string `json:"name"`
-	Model   string `json:"model"`
-	Engine  string `json:"engine"`
-	Address string `json:"address"`
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
-}
-
-func decodeOnboardingDeployResult(raw json.RawMessage) (onboardingDeployResult, error) {
-	var result onboardingDeployResult
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return onboardingDeployResult{}, err
-	}
-	return result, nil
-}
-
-func (r onboardingDeployResult) ready() bool {
-	status := strings.ToLower(strings.TrimSpace(r.Status))
-	switch status {
-	case "ready":
-		return true
-	case "":
-		return strings.TrimSpace(r.Address) != ""
-	default:
-		return false
-	}
 }
 
 // handleOnboardingDeploy is the thin SSE wrapper around onboarding.RunDeploy.

@@ -15,13 +15,6 @@ type onboardingInitRequest struct {
 	AllowDownload *bool  `json:"allow_download,omitempty"`
 }
 
-// normalizeOnboardingInitTier is retained for the buildOnboardingDeps
-// decorator (which still needs to make local decisions about the tier).
-// New code should prefer onboarding.NormalizeInitTier.
-func normalizeOnboardingInitTier(tier string) string {
-	return onboarding.NormalizeInitTier(tier)
-}
-
 func handleOnboardingInit(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !requireOnboardingMutation(ac, w, r) {

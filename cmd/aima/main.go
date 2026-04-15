@@ -1350,7 +1350,6 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	buildDeployDeps(ac, deps, pullModelCore, deployRunCore)
 	buildKnowledgeDeps(ac, deps)
 	buildBenchmarkDeps(ac, deps, resolveEndpoint)
-	buildOnboardingDeps(ac, deps)
 
 	return deps
 }

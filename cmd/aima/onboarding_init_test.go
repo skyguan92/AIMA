@@ -37,7 +37,6 @@ func TestHandleOnboardingInit_CompletesWhenAutoInitIsAllowed(t *testing.T) {
 			return json.RawMessage(`[]`), nil
 		},
 	}
-	buildOnboardingDeps(&appContext{}, deps)
 
 	req := httptest.NewRequest(http.MethodPost, "/ui/api/onboarding-init", strings.NewReader(`{"tier":"k3s","allow_download":true}`))
 	req.Header.Set("Content-Type", "application/json")
