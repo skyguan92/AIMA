@@ -1,4 +1,4 @@
-package main
+package onboarding
 
 import (
 	"encoding/json"

@@ -1,13 +1,10 @@
-package main
+package onboarding
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/jguan/aima/internal/knowledge"
-	"github.com/jguan/aima/internal/mcp"
-	runtimePkg "github.com/jguan/aima/internal/runtime"
 )
 
 func TestComputeFitScore(t *testing.T) {
@@ -16,7 +13,7 @@ func TestComputeFitScore(t *testing.T) {
 		hw             knowledge.HardwareInfo
 		variant        *knowledge.ModelVariant
 		fit            *knowledge.FitReport
-		engineStatus   recommendedEngineStatus
+		engineStatus   RecommendedEngineStatus
 		modelAvailable bool
 		goldenExists   bool
 		wantMin        int
@@ -40,7 +37,7 @@ func TestComputeFitScore(t *testing.T) {
 				Fit:         true,
 				Adjustments: make(map[string]any),
 			},
-			engineStatus:   recommendedEngineStatus{Installed: true},
+			engineStatus:   RecommendedEngineStatus{Installed: true},
 			modelAvailable: true,
 			goldenExists:   true,
 			wantMin:        80,
@@ -64,7 +61,7 @@ func TestComputeFitScore(t *testing.T) {
 				Fit:         true,
 				Adjustments: make(map[string]any),
 			},
-			engineStatus:   recommendedEngineStatus{Installed: false},
+			engineStatus:   RecommendedEngineStatus{Installed: false},
 			modelAvailable: false,
 			goldenExists:   false,
 			wantMin:        50,
@@ -88,7 +85,7 @@ func TestComputeFitScore(t *testing.T) {
 				Fit:         true,
 				Adjustments: make(map[string]any),
 			},
-			engineStatus:   recommendedEngineStatus{Installed: false},
+			engineStatus:   RecommendedEngineStatus{Installed: false},
 			modelAvailable: false,
 			goldenExists:   false,
 			wantMin:        50,
@@ -113,7 +110,7 @@ func TestComputeFitScore(t *testing.T) {
 				Reason:      "insufficient VRAM",
 				Adjustments: make(map[string]any),
 			},
-			engineStatus:   recommendedEngineStatus{Installed: false},
+			engineStatus:   RecommendedEngineStatus{Installed: false},
 			modelAvailable: false,
 			goldenExists:   false,
 			wantMin:        0,
@@ -131,28 +128,21 @@ func TestComputeFitScore(t *testing.T) {
 	}
 }
 
-func TestBuildModelRecommendations_EmptyCatalog(t *testing.T) {
+func TestRecommend_EmptyCatalog(t *testing.T) {
 	cat := &knowledge.Catalog{
-		ModelAssets: []knowledge.ModelAsset{}, // empty
+		ModelAssets: []knowledge.ModelAsset{},
 	}
 
-	deps := &mcp.ToolDeps{}
-	ac := &appContext{
-		cat: cat,
-		rt:  &stubRuntime{},
+	deps := &Deps{
+		Cat: cat,
+		BuildHardwareInfo: func(ctx context.Context) knowledge.HardwareInfo {
+			return knowledge.HardwareInfo{}
+		},
 	}
 
-	data, err := buildModelRecommendations(context.Background(), ac, deps)
+	result, err := Recommend(context.Background(), deps, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var result struct {
-		Recommendations []modelRecommendation `json:"recommendations"`
-		TotalModels     int                   `json:"total_models_evaluated"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
 	}
 
 	if result.TotalModels != 0 {
@@ -162,13 +152,3 @@ func TestBuildModelRecommendations_EmptyCatalog(t *testing.T) {
 		t.Errorf("recommendations length = %d, want 0", len(result.Recommendations))
 	}
 }
-
-// stubRuntime implements runtime.Runtime with no-op methods for testing.
-type stubRuntime struct{}
-
-func (s *stubRuntime) Name() string                                                    { return "docker" }
-func (s *stubRuntime) Deploy(_ context.Context, _ *runtimePkg.DeployRequest) error     { return nil }
-func (s *stubRuntime) Delete(_ context.Context, _ string) error                        { return nil }
-func (s *stubRuntime) Status(_ context.Context, _ string) (*runtimePkg.DeploymentStatus, error) { return nil, nil }
-func (s *stubRuntime) List(_ context.Context) ([]*runtimePkg.DeploymentStatus, error)  { return nil, nil }
-func (s *stubRuntime) Logs(_ context.Context, _ string, _ int) (string, error)         { return "", nil }

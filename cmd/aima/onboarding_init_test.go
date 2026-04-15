@@ -9,15 +9,16 @@ import (
 	"testing"
 
 	"github.com/jguan/aima/internal/mcp"
+	"github.com/jguan/aima/internal/onboarding"
 )
 
 func TestHandleOnboardingInit_CompletesWhenAutoInitIsAllowed(t *testing.T) {
-	origDetect := detectOnboardingInitCapability
-	detectOnboardingInitCapability = func(deps *mcp.ToolDeps) (bool, string) {
+	origDetect := onboarding.DetectOnboardingInitCapability
+	onboarding.DetectOnboardingInitCapability = func(deps *mcp.ToolDeps) (bool, string) {
 		return true, ""
 	}
 	defer func() {
-		detectOnboardingInitCapability = origDetect
+		onboarding.DetectOnboardingInitCapability = origDetect
 	}()
 
 	var scanned bool
@@ -58,12 +59,12 @@ func TestHandleOnboardingInit_CompletesWhenAutoInitIsAllowed(t *testing.T) {
 }
 
 func TestHandleOnboardingInit_RejectsWhenAutoInitIsBlocked(t *testing.T) {
-	origDetect := detectOnboardingInitCapability
-	detectOnboardingInitCapability = func(deps *mcp.ToolDeps) (bool, string) {
+	origDetect := onboarding.DetectOnboardingInitCapability
+	onboarding.DetectOnboardingInitCapability = func(deps *mcp.ToolDeps) (bool, string) {
 		return false, "need privileged helper"
 	}
 	defer func() {
-		detectOnboardingInitCapability = origDetect
+		onboarding.DetectOnboardingInitCapability = origDetect
 	}()
 
 	deps := &mcp.ToolDeps{

@@ -1,4 +1,4 @@
-package main
+package onboarding
 
 import (
 	"context"
@@ -9,74 +9,63 @@ import (
 	"github.com/jguan/aima/internal/mcp"
 )
 
-func TestBuildOnboardingStatusJSON_NoConfig(t *testing.T) {
-	origFetchLatestRelease := fetchLatestRelease
-	fetchLatestRelease = func(ctx context.Context) (*githubRelease, error) {
+func TestBuildStatus_NoConfig(t *testing.T) {
+	orig := FetchLatestRelease
+	FetchLatestRelease = func(ctx context.Context) (*githubRelease, error) {
 		return nil, fmt.Errorf("offline")
 	}
-	defer func() {
-		fetchLatestRelease = origFetchLatestRelease
-	}()
+	defer func() { FetchLatestRelease = orig }()
 
-	// When GetConfig returns an error (no config), onboarding_completed should be false.
-	deps := &mcp.ToolDeps{
+	td := &mcp.ToolDeps{
 		GetConfig: func(ctx context.Context, key string) (string, error) {
-			return "", nil // empty value, not "true"
+			return "", nil
 		},
-		// StackStatus is nil — will be handled gracefully
 	}
-	ac := &appContext{} // no catalog, no db
+	deps := &Deps{ToolDeps: td}
 
-	data, err := buildOnboardingStatusJSON(context.Background(), ac, deps)
+	status, err := BuildStatus(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var status onboardingStatus
-	if err := json.Unmarshal(data, &status); err != nil {
-		t.Fatalf("failed to unmarshal status: %v", err)
 	}
 
 	if status.OnboardingCompleted {
 		t.Error("expected onboarding_completed to be false when config is empty")
 	}
-
-	// Hardware should have empty GPU list, not nil
 	if status.Hardware.GPU == nil {
 		t.Error("expected hardware.gpu to be non-nil empty slice")
 	}
 }
 
-func TestBuildOnboardingVersion_CachesFailedLookup(t *testing.T) {
-	origFetchLatestRelease := fetchLatestRelease
-	defer func() {
-		fetchLatestRelease = origFetchLatestRelease
-	}()
+func TestBuildVersion_CachesFailedLookup(t *testing.T) {
+	orig := FetchLatestRelease
+	defer func() { FetchLatestRelease = orig }()
 
 	fetchCalls := 0
-	fetchLatestRelease = func(ctx context.Context) (*githubRelease, error) {
+	FetchLatestRelease = func(ctx context.Context) (*githubRelease, error) {
 		fetchCalls++
 		return nil, fmt.Errorf("offline")
 	}
 
 	var cached string
-	deps := &mcp.ToolDeps{
-		GetConfig: func(ctx context.Context, key string) (string, error) {
-			if key == "version_check_cache" {
-				return cached, nil
-			}
-			return "", nil
-		},
-		SetConfig: func(ctx context.Context, key, value string) error {
-			if key == "version_check_cache" {
-				cached = value
-			}
-			return nil
+	deps := &Deps{
+		ToolDeps: &mcp.ToolDeps{
+			GetConfig: func(ctx context.Context, key string) (string, error) {
+				if key == "version_check_cache" {
+					return cached, nil
+				}
+				return "", nil
+			},
+			SetConfig: func(ctx context.Context, key, value string) error {
+				if key == "version_check_cache" {
+					cached = value
+				}
+				return nil
+			},
 		},
 	}
 
-	first := buildOnboardingVersion(context.Background(), deps)
-	second := buildOnboardingVersion(context.Background(), deps)
+	first := BuildVersion(context.Background(), deps)
+	second := BuildVersion(context.Background(), deps)
 
 	if first.Latest != "" || second.Latest != "" {
 		t.Fatalf("expected empty latest version when cached failure is used, got %q / %q", first.Latest, second.Latest)
@@ -85,31 +74,31 @@ func TestBuildOnboardingVersion_CachesFailedLookup(t *testing.T) {
 		t.Fatal("expected failed version lookup to populate cache")
 	}
 	if fetchCalls != 1 {
-		t.Fatalf("fetchLatestRelease call count = %d, want 1", fetchCalls)
+		t.Fatalf("FetchLatestRelease call count = %d, want 1", fetchCalls)
 	}
 }
 
-func TestBuildOnboardingStackStatus_ExposesAutoInitCapability(t *testing.T) {
-	origDetect := detectOnboardingInitCapability
-	detectOnboardingInitCapability = func(deps *mcp.ToolDeps) (bool, string) {
+func TestBuildStackStatus_ExposesAutoInitCapability(t *testing.T) {
+	orig := DetectOnboardingInitCapability
+	DetectOnboardingInitCapability = func(deps *mcp.ToolDeps) (bool, string) {
 		return true, ""
 	}
-	defer func() {
-		detectOnboardingInitCapability = origDetect
-	}()
+	defer func() { DetectOnboardingInitCapability = orig }()
 
-	deps := &mcp.ToolDeps{
-		StackInit: func(ctx context.Context, tier string, allowDownload bool) (json.RawMessage, error) {
-			return nil, nil
-		},
-		StackStatus: func(ctx context.Context) (json.RawMessage, error) {
-			return json.RawMessage(`{"components":[{"name":"docker","ready":false},{"name":"k3s","ready":false}],"all_ready":false}`), nil
+	deps := &Deps{
+		ToolDeps: &mcp.ToolDeps{
+			StackInit: func(ctx context.Context, tier string, allowDownload bool) (json.RawMessage, error) {
+				return nil, nil
+			},
+			StackStatus: func(ctx context.Context) (json.RawMessage, error) {
+				return json.RawMessage(`{"components":[{"name":"docker","ready":false},{"name":"k3s","ready":false}],"all_ready":false}`), nil
+			},
 		},
 	}
 
-	status, err := buildOnboardingStackStatus(context.Background(), deps)
+	status, err := BuildStackStatus(context.Background(), deps)
 	if err != nil {
-		t.Fatalf("buildOnboardingStackStatus: %v", err)
+		t.Fatalf("BuildStackStatus: %v", err)
 	}
 	if !status.NeedsInit {
 		t.Fatal("expected NeedsInit=true")
