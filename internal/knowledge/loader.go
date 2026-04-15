@@ -210,6 +210,13 @@ type EngineImage struct {
 	Registries   []string `yaml:"registries"     json:"registries"`
 	Digest       string   `yaml:"digest,omitempty" json:"digest,omitempty"`
 	Distribution string   `yaml:"distribution,omitempty" json:"distribution,omitempty"` // "registry" (default) or "local"
+	// CompatibleTags lists other tags of the same image that are known to be
+	// functionally equivalent for the engine's purpose (e.g. a newer rolling
+	// tag that embeds an older pinned version). If any of them is already
+	// present locally, engine pull aliases it to the primary tag instead of
+	// downloading multi-GB of bytes. Knowledge-driven — no Go branch per
+	// engine type. Default empty: strict pin behavior.
+	CompatibleTags []string `yaml:"compatible_tags,omitempty" json:"compatible_tags,omitempty"`
 }
 
 type EngineHardware struct {

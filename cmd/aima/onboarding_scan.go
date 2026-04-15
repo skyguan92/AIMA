@@ -1,38 +1,11 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"sync"
 
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/onboarding"
 )
-
-// sseWrite sends a single SSE event with a raw data string.
-func sseWrite(w http.ResponseWriter, f http.Flusher, event, data string) {
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
-	f.Flush()
-}
-
-// sseJSON sends a single SSE event with a JSON-marshaled payload.
-func sseJSON(w http.ResponseWriter, f http.Flusher, event string, v any) {
-	b, _ := json.Marshal(v)
-	sseWrite(w, f, event, string(b))
-}
-
-// sseEventSink returns an onboarding.EventSink that writes every event to the
-// SSE response in real time. A mutex serializes concurrent emits coming from
-// the parallel goroutines inside RunScan / DeployRun.
-func sseEventSink(w http.ResponseWriter, f http.Flusher) onboarding.EventSink {
-	var mu sync.Mutex
-	return func(ev onboarding.Event) {
-		mu.Lock()
-		defer mu.Unlock()
-		sseJSON(w, f, ev.Type, ev.Data)
-	}
-}
 
 // handleOnboardingScan is a thin SSE wrapper around onboarding.RunScan.
 // The business logic (parallel engine/model/central sync + event emission)
@@ -57,10 +30,13 @@ func handleOnboardingScan(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
 
+		stream := newSSEStream(w, flusher)
+		stream.startHeartbeat(r.Context(), sseHeartbeatInterval)
+
 		obDeps := buildOnboardingDepsStruct(ac, deps)
-		_, _, err := onboarding.RunScan(r.Context(), obDeps, sseEventSink(w, flusher))
+		_, _, err := onboarding.RunScan(r.Context(), obDeps, stream.sink())
 		if err != nil {
-			sseJSON(w, flusher, "error", map[string]string{"message": err.Error()})
+			stream.writeJSON("error", map[string]string{"message": err.Error()})
 			return
 		}
 	}

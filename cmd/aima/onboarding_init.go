@@ -54,8 +54,11 @@ func handleOnboardingInit(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc {
 			allowDownload = *req.AllowDownload
 		}
 
+		stream := newSSEStream(w, flusher)
+		stream.startHeartbeat(r.Context(), sseHeartbeatInterval)
+
 		var sawError atomic.Bool
-		baseSink := sseEventSink(w, flusher)
+		baseSink := stream.sink()
 		sink := func(ev onboarding.Event) {
 			if ev.Type == "error" {
 				sawError.Store(true)
@@ -66,7 +69,7 @@ func handleOnboardingInit(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc {
 		obDeps := buildOnboardingDepsStruct(ac, deps)
 		_, _, runErr := onboarding.RunInit(r.Context(), obDeps, req.Tier, allowDownload, sink)
 		if runErr != nil && !sawError.Load() {
-			sseJSON(w, flusher, "error", map[string]any{"message": strings.TrimSpace(runErr.Error())})
+			stream.writeJSON("error", map[string]any{"message": strings.TrimSpace(runErr.Error())})
 		}
 	}
 }

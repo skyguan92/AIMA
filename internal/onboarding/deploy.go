@@ -166,6 +166,19 @@ func RunDeploy(
 				"message": msg,
 			})
 		case "reusing":
+			// Reusing an existing ready deployment — emit a skipped marker for
+			// each earlier step so the wizard progress bar lights up all three
+			// lanes instead of jumping from step 1 straight to step 3.
+			emit("step", map[string]any{
+				"step": 1, "total": totalSteps,
+				"name": "engine_check", "status": "reusing",
+				"message": msg,
+			})
+			emit("step", map[string]any{
+				"step": 2, "total": totalSteps,
+				"name": "model_check", "status": "reusing",
+				"message": msg,
+			})
 			emit("step", map[string]any{
 				"step": 3, "total": totalSteps,
 				"name": "deploy", "status": "reusing",

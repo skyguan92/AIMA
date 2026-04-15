@@ -119,6 +119,20 @@ func ImageExistsInDocker(ctx context.Context, image string, runner CommandRunner
 	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
 
+// TagDockerImage aliases src to dst in the Docker store. Used to alias a
+// compatible locally-present tag to the catalog-pinned tag so deploy can
+// reference the pinned name without re-pulling multi-GB of bytes. No-op if
+// src and dst are identical.
+func TagDockerImage(ctx context.Context, src, dst string, runner CommandRunner) error {
+	if src == dst || src == "" || dst == "" {
+		return nil
+	}
+	if _, err := runner.Run(ctx, "docker", "tag", src, dst); err != nil {
+		return fmt.Errorf("docker tag %s %s: %w", src, dst, err)
+	}
+	return nil
+}
+
 // ImportDockerToContainerd transfers an image from Docker store to K3S containerd.
 // Uses runner.Pipe to stream docker save stdout into k3s ctr import stdin.
 // Requires root privileges (containerd socket is root-owned).

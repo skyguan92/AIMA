@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -366,9 +367,21 @@ func run() error {
 			if !requireOnboardingMutation(ac, w, r) {
 				return
 			}
+			locale := ""
+			if r.Body != nil {
+				body, _ := io.ReadAll(io.LimitReader(r.Body, 4*1024))
+				if len(body) > 0 {
+					var req struct {
+						Locale string `json:"locale"`
+					}
+					if json.Unmarshal(body, &req) == nil {
+						locale = strings.TrimSpace(req.Locale)
+					}
+				}
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-cache")
-			data, err := buildModelRecommendations(r.Context(), ac, deps)
+			data, err := buildModelRecommendations(r.Context(), ac, deps, locale)
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -1292,6 +1305,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 			if err := json.Unmarshal(statusData, &status); err == nil {
 				switch {
 				case status.Ready:
+					notify("reusing", deployName)
 					notify("ready", status.Address)
 					runtimeName := plan.Runtime
 					if status.Runtime != "" {

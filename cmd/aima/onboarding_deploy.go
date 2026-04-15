@@ -55,8 +55,11 @@ func handleOnboardingDeploy(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc
 		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
 
+		stream := newSSEStream(w, flusher)
+		stream.startHeartbeat(r.Context(), sseHeartbeatInterval)
+
 		var sawError atomic.Bool
-		baseSink := sseEventSink(w, flusher)
+		baseSink := stream.sink()
 		sink := func(ev onboarding.Event) {
 			if ev.Type == "error" {
 				sawError.Store(true)
@@ -67,7 +70,7 @@ func handleOnboardingDeploy(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc
 		obDeps := buildOnboardingDepsStruct(ac, deps)
 		_, _, runErr := onboarding.RunDeploy(r.Context(), obDeps, req.Model, req.Engine, "", nil, false, sink)
 		if runErr != nil && !sawError.Load() {
-			sseJSON(w, flusher, "error", map[string]any{
+			stream.writeJSON("error", map[string]any{
 				"step":    3,
 				"name":    "deploy",
 				"message": fmt.Sprintf("%s", runErr),
