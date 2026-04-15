@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/onboarding"
@@ -53,31 +54,19 @@ func handleOnboardingInit(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc {
 			allowDownload = *req.AllowDownload
 		}
 
-		obDeps := buildOnboardingDepsStruct(ac, deps)
-		_, events, runErr := onboarding.RunInit(r.Context(), obDeps, req.Tier, allowDownload)
-		for _, ev := range events {
-			sseJSON(w, flusher, ev.Type, ev.Data)
-		}
-		if runErr != nil {
-			msg := runErr.Error()
-			// Only emit a separate error event if no in-band error was already
-			// surfaced (RunInit pushes init_complete on happy paths and
-			// returns nil, so any non-nil err is a genuine failure).
-			if !hasErrorEvent(events) {
-				sseJSON(w, flusher, "error", map[string]any{"message": strings.TrimSpace(msg)})
+		var sawError atomic.Bool
+		baseSink := sseEventSink(w, flusher)
+		sink := func(ev onboarding.Event) {
+			if ev.Type == "error" {
+				sawError.Store(true)
 			}
-			return
+			baseSink(ev)
 		}
-	}
-}
 
-// hasErrorEvent reports whether an event slice already contains an "error"
-// record — used so we don't double-report failure to SSE clients.
-func hasErrorEvent(events []onboarding.Event) bool {
-	for _, ev := range events {
-		if ev.Type == "error" {
-			return true
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		_, _, runErr := onboarding.RunInit(r.Context(), obDeps, req.Tier, allowDownload, sink)
+		if runErr != nil && !sawError.Load() {
+			sseJSON(w, flusher, "error", map[string]any{"message": strings.TrimSpace(runErr.Error())})
 		}
 	}
-	return false
 }

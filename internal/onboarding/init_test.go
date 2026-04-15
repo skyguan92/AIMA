@@ -46,7 +46,7 @@ func TestRunInit_ImportsEnginesAfterReadyK3SInit(t *testing.T) {
 
 	deps := &Deps{ToolDeps: td}
 
-	result, _, err := RunInit(context.Background(), deps, "k3s", true)
+	result, _, err := RunInit(context.Background(), deps, "k3s", true, nil)
 	if err != nil {
 		t.Fatalf("RunInit: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestRunInit_SkipsEngineImportOnDockerTier(t *testing.T) {
 
 	deps := &Deps{ToolDeps: td}
 
-	if _, _, err := RunInit(context.Background(), deps, "docker", true); err != nil {
+	if _, _, err := RunInit(context.Background(), deps, "docker", true, nil); err != nil {
 		t.Fatalf("RunInit: %v", err)
 	}
 	if scanCalls != 0 {

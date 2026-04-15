@@ -15,6 +15,11 @@ type Event struct {
 	Data      map[string]any `json:"data,omitempty"`
 }
 
+// EventSink receives events as they are produced, enabling real-time streaming
+// (e.g. SSE). RunScan/RunInit/RunDeploy still return the full events slice, so
+// non-streaming callers (MCP tool, CLI) pass a nil sink.
+type EventSink func(Event)
+
 // GPU is a single GPU entry in the onboarding status response.
 type GPU struct {
 	Name    string `json:"name"`

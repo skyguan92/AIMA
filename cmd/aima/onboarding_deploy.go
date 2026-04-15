@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/onboarding"
@@ -17,6 +18,9 @@ type onboardingDeployRequest struct {
 }
 
 // handleOnboardingDeploy is the thin SSE wrapper around onboarding.RunDeploy.
+// Events are streamed to the client in real time via an EventSink, so the
+// wizard UI sees per-step progress (engine_pull, model_pull, deploy) while the
+// deployment is happening, not after it has finished.
 func handleOnboardingDeploy(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !requireOnboardingMutation(ac, w, r) {
@@ -51,12 +55,18 @@ func handleOnboardingDeploy(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc
 		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
 
-		obDeps := buildOnboardingDepsStruct(ac, deps)
-		_, events, runErr := onboarding.RunDeploy(r.Context(), obDeps, req.Model, req.Engine, "", nil, false)
-		for _, ev := range events {
-			sseJSON(w, flusher, ev.Type, ev.Data)
+		var sawError atomic.Bool
+		baseSink := sseEventSink(w, flusher)
+		sink := func(ev onboarding.Event) {
+			if ev.Type == "error" {
+				sawError.Store(true)
+			}
+			baseSink(ev)
 		}
-		if runErr != nil && !hasErrorEvent(events) {
+
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		_, _, runErr := onboarding.RunDeploy(r.Context(), obDeps, req.Model, req.Engine, "", nil, false, sink)
+		if runErr != nil && !sawError.Load() {
 			sseJSON(w, flusher, "error", map[string]any{
 				"step":    3,
 				"name":    "deploy",

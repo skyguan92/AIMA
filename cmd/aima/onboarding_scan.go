@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/onboarding"
@@ -21,10 +22,23 @@ func sseJSON(w http.ResponseWriter, f http.Flusher, event string, v any) {
 	sseWrite(w, f, event, string(b))
 }
 
+// sseEventSink returns an onboarding.EventSink that writes every event to the
+// SSE response in real time. A mutex serializes concurrent emits coming from
+// the parallel goroutines inside RunScan / DeployRun.
+func sseEventSink(w http.ResponseWriter, f http.Flusher) onboarding.EventSink {
+	var mu sync.Mutex
+	return func(ev onboarding.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		sseJSON(w, f, ev.Type, ev.Data)
+	}
+}
+
 // handleOnboardingScan is a thin SSE wrapper around onboarding.RunScan.
-// The business logic (parallel engine/model/central sync + event collection)
+// The business logic (parallel engine/model/central sync + event emission)
 // lives in the internal/onboarding package so MCP tools and CLI commands can
-// share it.
+// share it. Events are streamed in real time via an EventSink — the UI wizard
+// sees engine_found / model_found as they happen, not as a post-hoc batch.
 func handleOnboardingScan(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !requireOnboardingMutation(ac, w, r) {
@@ -44,23 +58,10 @@ func handleOnboardingScan(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc {
 		flusher.Flush()
 
 		obDeps := buildOnboardingDepsStruct(ac, deps)
-		_, events, err := onboarding.RunScan(r.Context(), obDeps)
-		for _, ev := range events {
-			if ev.Type == "scan_complete" {
-				// final payload handled below to preserve legacy shape
-				continue
-			}
-			sseJSON(w, flusher, ev.Type, ev.Data)
-		}
+		_, _, err := onboarding.RunScan(r.Context(), obDeps, sseEventSink(w, flusher))
 		if err != nil {
 			sseJSON(w, flusher, "error", map[string]string{"message": err.Error()})
 			return
-		}
-		// Replay scan_complete with the canonical payload shape.
-		for _, ev := range events {
-			if ev.Type == "scan_complete" {
-				sseJSON(w, flusher, ev.Type, ev.Data)
-			}
 		}
 	}
 }

@@ -35,7 +35,7 @@ func TestRunDeploy_MarksCompletedAfterReadyDeploy(t *testing.T) {
 
 	deps := &Deps{ToolDeps: td}
 
-	if _, _, err := RunDeploy(context.Background(), deps, "qwen3-8b", "", "", nil, false); err != nil {
+	if _, _, err := RunDeploy(context.Background(), deps, "qwen3-8b", "", "", nil, false, nil); err != nil {
 		t.Fatalf("RunDeploy: %v", err)
 	}
 	if setCalls != 1 {
@@ -70,7 +70,7 @@ func TestRunDeploy_DoesNotMarkCompletedOnTimeout(t *testing.T) {
 
 	// RunDeploy surfaces the non-ready status as an error (failureMessage()).
 	// The test cares only that SetConfig was not called.
-	if _, _, err := RunDeploy(context.Background(), deps, "qwen3-8b", "", "", nil, false); err == nil {
+	if _, _, err := RunDeploy(context.Background(), deps, "qwen3-8b", "", "", nil, false, nil); err == nil {
 		t.Fatalf("RunDeploy on timeout status: expected error, got nil")
 	}
 	if setCalls != 0 {

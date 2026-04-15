@@ -1369,7 +1369,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	}
 	deps.OnboardingScan = func(ctx context.Context) (json.RawMessage, error) {
 		obDeps := buildOnboardingDepsStruct(ac, deps)
-		result, events, err := onboarding.RunScan(ctx, obDeps)
+		result, events, err := onboarding.RunScan(ctx, obDeps, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -1391,7 +1391,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 		if tier == "" {
 			tier = "auto"
 		}
-		result, events, err := onboarding.RunInit(ctx, obDeps, tier, allowDownload)
+		result, events, err := onboarding.RunInit(ctx, obDeps, tier, allowDownload, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -1399,7 +1399,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	}
 	deps.OnboardingDeploy = func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool) (json.RawMessage, error) {
 		obDeps := buildOnboardingDepsStruct(ac, deps)
-		result, events, err := onboarding.RunDeploy(ctx, obDeps, model, engineType, slot, configOverrides, noPull)
+		result, events, err := onboarding.RunDeploy(ctx, obDeps, model, engineType, slot, configOverrides, noPull, nil)
 		if err != nil {
 			return nil, err
 		}

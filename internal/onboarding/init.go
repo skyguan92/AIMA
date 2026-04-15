@@ -27,10 +27,14 @@ func NormalizeInitTier(tier string) string {
 // handler, returned atomically to MCP/CLI callers). For a k3s install that
 // finishes successfully, we trigger a best-effort engine import scan so the
 // wizard can immediately propose recommendations.
-func RunInit(ctx context.Context, deps *Deps, tier string, allowDownload bool) (InitResult, []Event, error) {
+func RunInit(ctx context.Context, deps *Deps, tier string, allowDownload bool, sink EventSink) (InitResult, []Event, error) {
 	var events []Event
 	emit := func(t string, data map[string]any) {
-		events = append(events, Event{Type: t, Timestamp: time.Now(), Data: data})
+		ev := Event{Type: t, Timestamp: time.Now(), Data: data}
+		events = append(events, ev)
+		if sink != nil {
+			sink(ev)
+		}
 	}
 
 	if deps == nil || deps.ToolDeps == nil {

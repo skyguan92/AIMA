@@ -68,6 +68,7 @@ func RunDeploy(
 	model, engineType, slot string,
 	configOverrides map[string]any,
 	noPull bool,
+	sink EventSink,
 ) (DeployResult, []Event, error) {
 	if deps == nil || deps.ToolDeps == nil {
 		return DeployResult{}, nil, fmt.Errorf("onboarding deploy: deps not initialized")
@@ -81,12 +82,18 @@ func RunDeploy(
 		return DeployResult{}, nil, fmt.Errorf("deploy.run not available")
 	}
 
-	var events []Event
-	var mu sync.Mutex
+	var (
+		mu     sync.Mutex
+		events []Event
+	)
 	emit := func(t string, data map[string]any) {
+		ev := Event{Type: t, Timestamp: time.Now(), Data: data}
 		mu.Lock()
-		events = append(events, Event{Type: t, Timestamp: time.Now(), Data: data})
+		events = append(events, ev)
 		mu.Unlock()
+		if sink != nil {
+			sink(ev)
+		}
 	}
 
 	const totalSteps = 3

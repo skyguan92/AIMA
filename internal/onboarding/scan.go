@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -38,49 +39,53 @@ func parseOnboardingCentralSyncCounts(raw json.RawMessage) (int, int) {
 	return 0, 0
 }
 
-// RunScan runs engine scan, model scan, and central sync in parallel, returning
-// the aggregated result along with a time-ordered slice of progress events.
-// HTTP handlers stream the events via SSE as they happen (they poll the
-// returned slice after completion — MCP/CLI callers simply receive everything).
-func RunScan(ctx context.Context, deps *Deps) (ScanResult, []Event, error) {
-	var events []Event
-	emit := func(t string, data map[string]any) {
-		events = append(events, Event{Type: t, Timestamp: time.Now(), Data: data})
-	}
-
+// RunScan runs engine scan, model scan, and central sync in parallel. Each
+// event is delivered to `sink` (if non-nil) the moment it is produced, so SSE
+// handlers can stream progress in real time. The full ordered slice of events
+// is also returned for MCP/CLI callers that want a single response.
+func RunScan(ctx context.Context, deps *Deps, sink EventSink) (ScanResult, []Event, error) {
 	if deps == nil || deps.ToolDeps == nil {
 		return ScanResult{}, nil, fmt.Errorf("onboarding scan: deps not initialized")
 	}
 	td := deps.ToolDeps
 
-	type engineCollected struct {
-		events  []Event
+	var (
+		mu     sync.Mutex
+		events []Event
+	)
+	emit := func(t string, data map[string]any) {
+		ev := Event{Type: t, Timestamp: time.Now(), Data: data}
+		mu.Lock()
+		events = append(events, ev)
+		mu.Unlock()
+		if sink != nil {
+			sink(ev)
+		}
+	}
+
+	type engineResult struct {
 		engines []ScanEngineEntry
 		err     error
 	}
-	type modelCollected struct {
-		events []Event
+	type modelResult struct {
 		models []ScanModelEntry
 		err    error
 	}
-	type centralCollected struct {
-		events          []Event
+	type centralResult struct {
 		connected       bool
 		configsPulled   int
 		benchmarkPulled int
 		err             error
 	}
 
-	engineCh := make(chan engineCollected, 1)
-	modelCh := make(chan modelCollected, 1)
-	centralCh := make(chan centralCollected, 1)
-
-	now := func() time.Time { return time.Now() }
+	engineCh := make(chan engineResult, 1)
+	modelCh := make(chan modelResult, 1)
+	centralCh := make(chan centralResult, 1)
 
 	// Engine scan goroutine
 	go func() {
-		var result engineCollected
-		result.events = append(result.events, Event{Type: "scan_start", Timestamp: now(), Data: map[string]any{"phase": "engines"}})
+		emit("scan_start", map[string]any{"phase": "engines"})
+		var result engineResult
 		if td.ScanEngines == nil {
 			result.err = fmt.Errorf("engine scan not available")
 			engineCh <- result
@@ -109,32 +114,24 @@ func RunScan(ctx context.Context, deps *Deps) (ScanResult, []Event, error) {
 				RuntimeType: e.RuntimeType,
 			}
 			result.engines = append(result.engines, entry)
-			result.events = append(result.events, Event{
-				Type:      "engine_found",
-				Timestamp: now(),
-				Data: map[string]any{
-					"type":    entry.Type,
-					"image":   entry.Image,
-					"runtime": entry.RuntimeType,
-				},
+			emit("engine_found", map[string]any{
+				"type":    entry.Type,
+				"image":   entry.Image,
+				"runtime": entry.RuntimeType,
 			})
 		}
-		result.events = append(result.events, Event{
-			Type:      "scan_progress",
-			Timestamp: now(),
-			Data: map[string]any{
-				"phase":  "engines",
-				"status": "complete",
-				"count":  len(result.engines),
-			},
+		emit("scan_progress", map[string]any{
+			"phase":  "engines",
+			"status": "complete",
+			"count":  len(result.engines),
 		})
 		engineCh <- result
 	}()
 
 	// Model scan goroutine
 	go func() {
-		var result modelCollected
-		result.events = append(result.events, Event{Type: "scan_start", Timestamp: now(), Data: map[string]any{"phase": "models"}})
+		emit("scan_start", map[string]any{"phase": "models"})
+		var result modelResult
 		if td.ScanModels == nil {
 			result.err = fmt.Errorf("model scan not available")
 			modelCh <- result
@@ -163,32 +160,24 @@ func RunScan(ctx context.Context, deps *Deps) (ScanResult, []Event, error) {
 				SizeBytes: m.SizeBytes,
 			}
 			result.models = append(result.models, entry)
-			result.events = append(result.events, Event{
-				Type:      "model_found",
-				Timestamp: now(),
-				Data: map[string]any{
-					"name":       entry.Name,
-					"format":     entry.Format,
-					"size_bytes": entry.SizeBytes,
-				},
+			emit("model_found", map[string]any{
+				"name":       entry.Name,
+				"format":     entry.Format,
+				"size_bytes": entry.SizeBytes,
 			})
 		}
-		result.events = append(result.events, Event{
-			Type:      "scan_progress",
-			Timestamp: now(),
-			Data: map[string]any{
-				"phase":  "models",
-				"status": "complete",
-				"count":  len(result.models),
-			},
+		emit("scan_progress", map[string]any{
+			"phase":  "models",
+			"status": "complete",
+			"count":  len(result.models),
 		})
 		modelCh <- result
 	}()
 
 	// Central sync goroutine (non-fatal — offline is OK)
 	go func() {
-		var result centralCollected
-		result.events = append(result.events, Event{Type: "scan_start", Timestamp: now(), Data: map[string]any{"phase": "central_sync"}})
+		emit("scan_start", map[string]any{"phase": "central_sync"})
+		var result centralResult
 		if td.SyncPull == nil {
 			result.err = fmt.Errorf("central sync not available")
 			centralCh <- result
@@ -199,53 +188,41 @@ func RunScan(ctx context.Context, deps *Deps) (ScanResult, []Event, error) {
 		raw, err := td.SyncPull(syncCtx)
 		if err != nil {
 			result.err = err
-			result.events = append(result.events, Event{
-				Type:      "central_synced",
-				Timestamp: now(),
-				Data: map[string]any{
-					"connected": false,
-					"error":     err.Error(),
-				},
+			emit("central_synced", map[string]any{
+				"connected": false,
+				"error":     err.Error(),
 			})
 			centralCh <- result
 			return
 		}
 		result.connected = true
 		result.configsPulled, result.benchmarkPulled = parseOnboardingCentralSyncCounts(raw)
-		result.events = append(result.events, Event{
-			Type:      "central_synced",
-			Timestamp: now(),
-			Data: map[string]any{
-				"connected":         true,
-				"configs_pulled":    result.configsPulled,
-				"benchmarks_pulled": result.benchmarkPulled,
-			},
+		emit("central_synced", map[string]any{
+			"connected":         true,
+			"configs_pulled":    result.configsPulled,
+			"benchmarks_pulled": result.benchmarkPulled,
 		})
 		centralCh <- result
 	}()
 
 	var result ScanResult
 
-	// Collect in a loop (no mutex — single goroutine merges)
 	for i := 0; i < 3; i++ {
 		select {
 		case <-ctx.Done():
 			slog.Info("onboarding scan: client disconnected")
 			return result, events, ctx.Err()
 		case er := <-engineCh:
-			events = append(events, er.events...)
 			if er.err != nil {
 				slog.Warn("onboarding scan: engine scan failed", "error", er.err)
 			}
 			result.Engines = er.engines
 		case mr := <-modelCh:
-			events = append(events, mr.events...)
 			if mr.err != nil {
 				slog.Warn("onboarding scan: model scan failed", "error", mr.err)
 			}
 			result.Models = mr.models
 		case cr := <-centralCh:
-			events = append(events, cr.events...)
 			if cr.err != nil {
 				slog.Debug("onboarding scan: central sync failed (offline is OK)", "error", cr.err)
 			}
