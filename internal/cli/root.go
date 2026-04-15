@@ -63,6 +63,7 @@ func NewRootCmd(app *App) *cobra.Command {
 		newOpenClawCmd(app),
 		newScenarioCmd(app),
 		newExplorerCmd(app),
+		newOnboardingCmd(app),
 		newVersionCmd(),
 	)
 
