@@ -210,6 +210,13 @@ type EngineImage struct {
 	Registries   []string `yaml:"registries"     json:"registries"`
 	Digest       string   `yaml:"digest,omitempty" json:"digest,omitempty"`
 	Distribution string   `yaml:"distribution,omitempty" json:"distribution,omitempty"` // "registry" (default) or "local"
+	// CompatibleTags lists other tags of the same image that are known to be
+	// functionally equivalent for the engine's purpose (e.g. a newer rolling
+	// tag that embeds an older pinned version). If any of them is already
+	// present locally, engine pull aliases it to the primary tag instead of
+	// downloading multi-GB of bytes. Knowledge-driven — no Go branch per
+	// engine type. Default empty: strict pin behavior.
+	CompatibleTags []string `yaml:"compatible_tags,omitempty" json:"compatible_tags,omitempty"`
 }
 
 type EngineHardware struct {
@@ -319,6 +326,10 @@ type ModelMetadata struct {
 	Type           string `yaml:"type"`
 	Family         string `yaml:"family"`
 	ParameterCount string `yaml:"parameter_count"`
+	// ReleasedAt is the model's public release date in YYYY-MM or YYYY-MM-DD
+	// form. Optional; when populated it feeds the onboarding recommend recency
+	// bonus so newer models float to the top of the wizard's first-run list.
+	ReleasedAt string `yaml:"released_at,omitempty"`
 }
 
 type OpenClawHints struct {

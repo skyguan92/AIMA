@@ -1,29 +1,19 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/jguan/aima/internal/mcp"
-	"github.com/jguan/aima/internal/stack"
+	"github.com/jguan/aima/internal/onboarding"
 )
 
 type onboardingInitRequest struct {
 	Tier          string `json:"tier,omitempty"`
 	AllowDownload *bool  `json:"allow_download,omitempty"`
-}
-
-func normalizeOnboardingInitTier(tier string) string {
-	switch strings.ToLower(strings.TrimSpace(tier)) {
-	case "k3s":
-		return "k3s"
-	default:
-		return "docker"
-	}
 }
 
 func handleOnboardingInit(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc {
@@ -59,105 +49,27 @@ func handleOnboardingInit(ac *appContext, deps *mcp.ToolDeps) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
 
-		send := func(event string, v any) {
-			sseJSON(w, flusher, event, v)
-		}
-		sendError := func(message string, err error) {
-			if err != nil && strings.TrimSpace(err.Error()) != "" {
-				message = err.Error()
-			}
-			send("error", map[string]any{"message": message})
-		}
-
-		ctx := r.Context()
-		stackStatus, err := buildOnboardingStackStatus(ctx, deps)
-		if err != nil {
-			sendError("check stack status", err)
-			return
-		}
-		if !stackStatus.NeedsInit {
-			send("init_complete", map[string]any{
-				"all_ready":    true,
-				"stack_status": stackStatus,
-			})
-			return
-		}
-		if !stackStatus.CanAutoInit {
-			sendError(stackStatus.InitBlockedReason, nil)
-			return
-		}
-		if deps == nil || deps.StackPreflight == nil || deps.StackInit == nil {
-			sendError("stack init is not available", nil)
-			return
-		}
-
-		tier := normalizeOnboardingInitTier(req.Tier)
-		if strings.TrimSpace(req.Tier) == "" {
-			tier = normalizeOnboardingInitTier(stackStatus.InitTierRecommendation)
-		}
 		allowDownload := true
 		if req.AllowDownload != nil {
 			allowDownload = *req.AllowDownload
 		}
 
-		send("init_phase", map[string]any{
-			"phase":   "preflight",
-			"message": fmt.Sprintf("checking %s stack prerequisites", tier),
-			"tier":    tier,
-		})
+		stream := newSSEStream(w, flusher)
+		stream.startHeartbeat(r.Context(), sseHeartbeatInterval)
 
-		preflightData, err := deps.StackPreflight(ctx, tier)
-		if err != nil {
-			sendError("stack preflight failed", err)
-			return
-		}
-		var downloads []map[string]any
-		_ = json.Unmarshal(preflightData, &downloads)
-		send("init_preflight", map[string]any{
-			"tier":           tier,
-			"allow_download": allowDownload,
-			"downloads":      downloads,
-			"download_count": len(downloads),
-		})
-		if len(downloads) > 0 && !allowDownload {
-			sendError("stack init requires downloads but allow_download=false", nil)
-			return
+		var sawError atomic.Bool
+		baseSink := stream.sink()
+		sink := func(ev onboarding.Event) {
+			if ev.Type == "error" {
+				sawError.Store(true)
+			}
+			baseSink(ev)
 		}
 
-		send("init_phase", map[string]any{
-			"phase":   "init",
-			"message": fmt.Sprintf("installing %s stack components", tier),
-			"tier":    tier,
-		})
-		initData, err := deps.StackInit(ctx, tier, allowDownload)
-		if err != nil {
-			sendError("stack init failed", err)
-			return
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		_, _, runErr := onboarding.RunInit(r.Context(), obDeps, req.Tier, allowDownload, sink)
+		if runErr != nil && !sawError.Load() {
+			stream.writeJSON("error", map[string]any{"message": strings.TrimSpace(runErr.Error())})
 		}
-
-		var result stack.InitResult
-		if err := json.Unmarshal(initData, &result); err != nil {
-			sendError("parse stack init result", err)
-			return
-		}
-		for _, comp := range result.Components {
-			send("init_component", map[string]any{
-				"name":    comp.Name,
-				"ready":   comp.Ready,
-				"skipped": comp.Skipped,
-				"message": comp.Message,
-				"pods":    comp.Pods,
-			})
-		}
-
-		updatedStatus, statusErr := buildOnboardingStackStatus(context.WithoutCancel(ctx), deps)
-		if statusErr != nil {
-			sendError("refresh stack status", statusErr)
-			return
-		}
-		send("init_complete", map[string]any{
-			"all_ready":    result.AllReady,
-			"stack_status": updatedStatus,
-		})
 	}
 }

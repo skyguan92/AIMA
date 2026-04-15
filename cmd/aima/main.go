@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/model"
+	"github.com/jguan/aima/internal/onboarding"
 	"github.com/jguan/aima/internal/openclaw"
 	"github.com/jguan/aima/internal/proxy"
 	"github.com/jguan/aima/internal/runtime"
@@ -346,15 +348,18 @@ func run() error {
 
 		// Onboarding wizard API endpoints
 		mux.HandleFunc("GET /ui/api/onboarding-status", func(w http.ResponseWriter, r *http.Request) {
+			if !requireOnboardingRead(ac, w, r) {
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-cache")
 			data, err := buildOnboardingStatusJSON(r.Context(), ac, deps)
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 				return
 			}
-			w.Write(data)
+			_, _ = w.Write(data)
 		})
 		mux.HandleFunc("POST /ui/api/onboarding-scan", handleOnboardingScan(ac, deps))
 		mux.HandleFunc("POST /ui/api/onboarding-init", handleOnboardingInit(ac, deps))
@@ -362,15 +367,27 @@ func run() error {
 			if !requireOnboardingMutation(ac, w, r) {
 				return
 			}
+			locale := ""
+			if r.Body != nil {
+				body, _ := io.ReadAll(io.LimitReader(r.Body, 4*1024))
+				if len(body) > 0 {
+					var req struct {
+						Locale string `json:"locale"`
+					}
+					if json.Unmarshal(body, &req) == nil {
+						locale = strings.TrimSpace(req.Locale)
+					}
+				}
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-cache")
-			data, err := buildModelRecommendations(r.Context(), ac, deps)
+			data, err := buildModelRecommendations(r.Context(), ac, deps, locale)
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 				return
 			}
-			w.Write(data)
+			_, _ = w.Write(data)
 		})
 		mux.HandleFunc("POST /ui/api/onboarding-deploy", handleOnboardingDeploy(ac, deps))
 
@@ -1169,7 +1186,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	// Business logic lives here so CLI remains a thin presentation layer.
 	var deps *mcp.ToolDeps
 	deployRunCore := func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool,
-		onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent)) (json.RawMessage, error) {
+		onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent), onModelProgress func(downloaded, total int64)) (json.RawMessage, error) {
 
 		notify := func(phase, msg string) {
 			if onPhase != nil {
@@ -1280,6 +1297,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 			if err := json.Unmarshal(statusData, &status); err == nil {
 				switch {
 				case status.Ready:
+					notify("reusing", deployName)
 					notify("ready", status.Address)
 					runtimeName := plan.Runtime
 					if status.Runtime != "" {
@@ -1309,10 +1327,17 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 			}
 		}
 
-		// Step 3: Pull model (non-fatal — may be local or pre-installed)
+		// Step 3: Pull model (non-fatal — may be local or pre-installed). Use
+		// pullModelCore directly so byte-level progress can flow back to the
+		// caller via onModelProgress (the deps.PullModel closure swallows it).
 		if !noPull {
 			notify("pulling_model", model)
-			if err := deps.PullModel(ctx, model); err != nil {
+			modelStatus := func(phase, msg string) {
+				if msg != "" {
+					notify("pulling_model", msg)
+				}
+			}
+			if err := pullModelCore(ctx, model, modelStatus, onModelProgress); err != nil {
 				notify("model_skip", err.Error())
 			}
 		}
@@ -1342,7 +1367,57 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	buildDeployDeps(ac, deps, pullModelCore, deployRunCore)
 	buildKnowledgeDeps(ac, deps)
 	buildBenchmarkDeps(ac, deps, resolveEndpoint)
-	buildOnboardingDeps(ac, deps)
+
+	// Onboarding (multi-action MCP tool). The 5 closures below wrap the
+	// internal/onboarding package entry points; scan/init/deploy collect
+	// Event slices into the response JSON so MCP callers receive the full
+	// progress log in a single request-response cycle.
+	deps.OnboardingStatus = func(ctx context.Context) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		result, err := onboarding.BuildStatus(ctx, obDeps)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+	deps.OnboardingScan = func(ctx context.Context) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		result, events, err := onboarding.RunScan(ctx, obDeps, nil)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"result": result, "events": events})
+	}
+	deps.OnboardingRecommend = func(ctx context.Context, locale string) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		if locale == "" {
+			locale = "en"
+		}
+		result, err := onboarding.Recommend(ctx, obDeps, locale)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+	deps.OnboardingInit = func(ctx context.Context, tier string, allowDownload bool) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		if tier == "" {
+			tier = "auto"
+		}
+		result, events, err := onboarding.RunInit(ctx, obDeps, tier, allowDownload, nil)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"result": result, "events": events})
+	}
+	deps.OnboardingDeploy = func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		result, events, err := onboarding.RunDeploy(ctx, obDeps, model, engineType, slot, configOverrides, noPull, nil)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"result": result, "events": events})
+	}
 
 	return deps
 }
