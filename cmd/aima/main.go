@@ -344,6 +344,36 @@ func run() error {
 			json.NewEncoder(w).Encode(results)
 		})
 
+		// Onboarding wizard API endpoints
+		mux.HandleFunc("GET /ui/api/onboarding-status", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-cache")
+			data, err := buildOnboardingStatusJSON(r.Context(), ac, deps)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			w.Write(data)
+		})
+		mux.HandleFunc("POST /ui/api/onboarding-scan", handleOnboardingScan(ac, deps))
+		mux.HandleFunc("POST /ui/api/onboarding-init", handleOnboardingInit(ac, deps))
+		mux.HandleFunc("POST /ui/api/onboarding-recommend", func(w http.ResponseWriter, r *http.Request) {
+			if !requireOnboardingMutation(ac, w, r) {
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-cache")
+			data, err := buildModelRecommendations(r.Context(), ac, deps)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			w.Write(data)
+		})
+		mux.HandleFunc("POST /ui/api/onboarding-deploy", handleOnboardingDeploy(ac, deps))
+
 		// Start power sampling goroutine (30s interval, 7-day retention)
 		go func() {
 			ticker := time.NewTicker(30 * time.Second)
@@ -1320,6 +1350,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	buildDeployDeps(ac, deps, pullModelCore, deployRunCore)
 	buildKnowledgeDeps(ac, deps)
 	buildBenchmarkDeps(ac, deps, resolveEndpoint)
+	buildOnboardingDeps(ac, deps)
 
 	return deps
 }
