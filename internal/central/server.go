@@ -1,11 +1,13 @@
 package central
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -199,10 +201,45 @@ type IngestNote struct {
 	CreatedAt       string   `json:"created_at"`
 }
 
+type ingestEnvelope struct {
+	SchemaVersion  int               `json:"schema_version"`
+	DeviceID       string            `json:"device_id"`
+	GPUArch        string            `json:"gpu_arch"`
+	Configurations []json.RawMessage `json:"configurations"`
+	Benchmarks     []json.RawMessage `json:"benchmarks"`
+	KnowledgeNotes []json.RawMessage `json:"knowledge_notes"`
+	Data           struct {
+		Configurations   []json.RawMessage `json:"configurations"`
+		BenchmarkResults []json.RawMessage `json:"benchmark_results"`
+		KnowledgeNotes   []json.RawMessage `json:"knowledge_notes"`
+	} `json:"data"`
+}
+
+type ingestConfigAlias struct {
+	ID            string          `json:"id"`
+	HardwareID    string          `json:"hardware_id"`
+	Hardware      string          `json:"hardware"`
+	EngineID      string          `json:"engine_id"`
+	Engine        string          `json:"engine"`
+	EngineVersion string          `json:"engine_version"`
+	ModelID       string          `json:"model_id"`
+	Model         string          `json:"model"`
+	Config        json.RawMessage `json:"config"`
+	ConfigHash    string          `json:"config_hash"`
+	Status        string          `json:"status"`
+	DerivedFrom   string          `json:"derived_from"`
+	CreatedAt     string          `json:"created_at"`
+	UpdatedAt     string          `json:"updated_at"`
+	Slot          string          `json:"slot"`
+	Source        string          `json:"source"`
+	DeviceID      string          `json:"device_id"`
+	Tags          []string        `json:"tags"`
+}
+
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
-	var payload IngestPayload
 	limited := http.MaxBytesReader(w, r.Body, 10<<20) // 10 MiB
-	if err := json.NewDecoder(limited).Decode(&payload); err != nil {
+	payload, err := decodeIngestPayload(limited)
+	if err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -347,6 +384,102 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		"benchmarks": benchIngested,
 		"notes":      noteIngested,
 	})
+}
+
+func decodeIngestPayload(r io.Reader) (IngestPayload, error) {
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return IngestPayload{}, err
+	}
+
+	var envelope ingestEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return IngestPayload{}, err
+	}
+
+	configRows := envelope.Configurations
+	if len(configRows) == 0 {
+		configRows = envelope.Data.Configurations
+	}
+	benchmarkRows := envelope.Benchmarks
+	if len(benchmarkRows) == 0 {
+		benchmarkRows = envelope.Data.BenchmarkResults
+	}
+	noteRows := envelope.KnowledgeNotes
+	if len(noteRows) == 0 {
+		noteRows = envelope.Data.KnowledgeNotes
+	}
+
+	payload := IngestPayload{
+		SchemaVersion: envelope.SchemaVersion,
+		DeviceID:      envelope.DeviceID,
+		GPUArch:       envelope.GPUArch,
+	}
+	payload.Configurations = make([]IngestConfig, 0, len(configRows))
+	for _, raw := range configRows {
+		cfg, err := decodeIngestConfig(raw)
+		if err != nil {
+			return IngestPayload{}, fmt.Errorf("decode config: %w", err)
+		}
+		payload.Configurations = append(payload.Configurations, cfg)
+	}
+	payload.Benchmarks = make([]IngestBenchmark, 0, len(benchmarkRows))
+	for _, raw := range benchmarkRows {
+		var bench IngestBenchmark
+		if err := json.Unmarshal(raw, &bench); err != nil {
+			return IngestPayload{}, fmt.Errorf("decode benchmark: %w", err)
+		}
+		payload.Benchmarks = append(payload.Benchmarks, bench)
+	}
+	payload.KnowledgeNotes = make([]IngestNote, 0, len(noteRows))
+	for _, raw := range noteRows {
+		var note IngestNote
+		if err := json.Unmarshal(raw, &note); err != nil {
+			return IngestPayload{}, fmt.Errorf("decode note: %w", err)
+		}
+		payload.KnowledgeNotes = append(payload.KnowledgeNotes, note)
+	}
+	return payload, nil
+}
+
+func decodeIngestConfig(raw json.RawMessage) (IngestConfig, error) {
+	var alias ingestConfigAlias
+	if err := json.Unmarshal(raw, &alias); err != nil {
+		return IngestConfig{}, err
+	}
+	return IngestConfig{
+		ID:            alias.ID,
+		Hardware:      firstNonEmpty(alias.HardwareID, alias.Hardware),
+		EngineType:    firstNonEmpty(alias.EngineID, alias.Engine),
+		EngineVersion: alias.EngineVersion,
+		Model:         firstNonEmpty(alias.ModelID, alias.Model),
+		Config:        normalizeEmbeddedJSONValue(alias.Config),
+		ConfigHash:    alias.ConfigHash,
+		Status:        alias.Status,
+		DerivedFrom:   alias.DerivedFrom,
+		CreatedAt:     alias.CreatedAt,
+		UpdatedAt:     alias.UpdatedAt,
+		Slot:          alias.Slot,
+		Source:        alias.Source,
+		DeviceID:      alias.DeviceID,
+		Tags:          alias.Tags,
+	}, nil
+}
+
+func normalizeEmbeddedJSONValue(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '"' {
+		return raw
+	}
+	var encoded string
+	if err := json.Unmarshal(trimmed, &encoded); err != nil {
+		return raw
+	}
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" || !json.Valid([]byte(encoded)) {
+		return raw
+	}
+	return json.RawMessage(encoded)
 }
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {

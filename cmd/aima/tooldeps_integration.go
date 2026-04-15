@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -107,32 +108,11 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 		if err != nil {
 			return nil, fmt.Errorf("export failed: %w", err)
 		}
-		// Transform export envelope to central's IngestPayload format.
-		var exportEnvelope struct {
-			Stats map[string]int `json:"stats"`
-			Data  struct {
-				Configurations   []json.RawMessage `json:"configurations"`
-				BenchmarkResults []json.RawMessage `json:"benchmark_results"`
-				KnowledgeNotes   []json.RawMessage `json:"knowledge_notes"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(exportData, &exportEnvelope); err != nil {
-			return nil, fmt.Errorf("parse export data: %w", err)
-		}
-
 		deviceID, _ := deps.GetConfig(ctx, "device.id")
 		hwTarget := edgeHardwareTarget(ctx, ac)
-
-		ingestPayload, err := json.Marshal(map[string]any{
-			"schema_version":  1,
-			"device_id":       deviceID,
-			"gpu_arch":        hwTarget.GPUArch,
-			"configurations":  exportEnvelope.Data.Configurations,
-			"benchmarks":      exportEnvelope.Data.BenchmarkResults,
-			"knowledge_notes": exportEnvelope.Data.KnowledgeNotes,
-		})
+		ingestPayload, exportStats, err := buildCentralIngestPayload(exportData, deviceID, hwTarget.GPUArch)
 		if err != nil {
-			return nil, fmt.Errorf("marshal ingest payload: %w", err)
+			return nil, fmt.Errorf("build ingest payload: %w", err)
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"/api/v1/ingest",
@@ -161,7 +141,7 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 			"device_id":        deviceID,
 			"hardware_profile": hwTarget.HardwareProfile,
 			"gpu_arch":         hwTarget.GPUArch,
-			"export_stats":     exportEnvelope.Stats,
+			"export_stats":     exportStats,
 			"ingest_result":    json.RawMessage(body),
 		})
 	}
@@ -631,6 +611,69 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 			return json.Marshal(questions)
 		}
 	}
+}
+
+func buildCentralIngestPayload(exportData []byte, deviceID, gpuArch string) ([]byte, map[string]int, error) {
+	var exportEnvelope struct {
+		Stats map[string]int `json:"stats"`
+		Data  struct {
+			Configurations   []json.RawMessage `json:"configurations"`
+			BenchmarkResults []json.RawMessage `json:"benchmark_results"`
+			KnowledgeNotes   []json.RawMessage `json:"knowledge_notes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(exportData, &exportEnvelope); err != nil {
+		return nil, nil, fmt.Errorf("parse export data: %w", err)
+	}
+
+	configs := make([]json.RawMessage, 0, len(exportEnvelope.Data.Configurations))
+	for _, raw := range exportEnvelope.Data.Configurations {
+		normalized, err := normalizeCentralIngestConfig(raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("normalize config: %w", err)
+		}
+		configs = append(configs, normalized)
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"schema_version":  1,
+		"device_id":       deviceID,
+		"gpu_arch":        gpuArch,
+		"configurations":  configs,
+		"benchmarks":      exportEnvelope.Data.BenchmarkResults,
+		"knowledge_notes": exportEnvelope.Data.KnowledgeNotes,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal ingest payload: %w", err)
+	}
+	return payload, exportEnvelope.Stats, nil
+}
+
+func normalizeCentralIngestConfig(raw json.RawMessage) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if cfgRaw, ok := fields["config"]; ok {
+		fields["config"] = normalizeEmbeddedJSONValue(cfgRaw)
+	}
+	return json.Marshal(fields)
+}
+
+func normalizeEmbeddedJSONValue(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '"' {
+		return raw
+	}
+	var encoded string
+	if err := json.Unmarshal(trimmed, &encoded); err != nil {
+		return raw
+	}
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" || !json.Valid([]byte(encoded)) {
+		return raw
+	}
+	return json.RawMessage(encoded)
 }
 
 // pullAdvisoriesToEventBus fetches advisories and scenarios from central

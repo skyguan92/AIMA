@@ -242,3 +242,69 @@ func TestBuildSyncURLEncodesSince(t *testing.T) {
 		t.Fatalf("buildSyncURL = %q, want %q", got, want)
 	}
 }
+
+func TestBuildCentralIngestPayloadNormalizesEmbeddedConfigJSON(t *testing.T) {
+	t.Parallel()
+
+	exportData := []byte(`{
+		"stats": {"configurations": 1, "benchmark_results": 1, "knowledge_notes": 1},
+		"data": {
+			"configurations": [
+				{
+					"id": "cfg-1",
+					"hardware_id": "nvidia-gb10-arm64",
+					"engine_id": "vllm-nightly",
+					"model_id": "qwen3-8b",
+					"config": "{\"gpu_memory_utilization\":0.8}",
+					"config_hash": "hash-1"
+				}
+			],
+			"benchmark_results": [
+				{"id": "bench-1", "config_id": "cfg-1", "throughput_tps": 42.5}
+			],
+			"knowledge_notes": [
+				{"id": "note-1", "title": "ok", "content": "done"}
+			]
+		}
+	}`)
+
+	payload, stats, err := buildCentralIngestPayload(exportData, "device-1", "Blackwell")
+	if err != nil {
+		t.Fatalf("buildCentralIngestPayload: %v", err)
+	}
+	if stats["configurations"] != 1 || stats["benchmark_results"] != 1 || stats["knowledge_notes"] != 1 {
+		t.Fatalf("stats = %#v, want all counts = 1", stats)
+	}
+
+	var got struct {
+		SchemaVersion int               `json:"schema_version"`
+		DeviceID      string            `json:"device_id"`
+		GPUArch       string            `json:"gpu_arch"`
+		Configs       []json.RawMessage `json:"configurations"`
+		Benchmarks    []json.RawMessage `json:"benchmarks"`
+		Notes         []json.RawMessage `json:"knowledge_notes"`
+	}
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got.SchemaVersion != 1 || got.DeviceID != "device-1" || got.GPUArch != "Blackwell" {
+		t.Fatalf("header = %+v", got)
+	}
+	if len(got.Configs) != 1 || len(got.Benchmarks) != 1 || len(got.Notes) != 1 {
+		t.Fatalf("payload counts = cfg:%d bench:%d note:%d", len(got.Configs), len(got.Benchmarks), len(got.Notes))
+	}
+
+	var cfg struct {
+		ID     string          `json:"id"`
+		Config json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(got.Configs[0], &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if cfg.ID != "cfg-1" {
+		t.Fatalf("config id = %q, want cfg-1", cfg.ID)
+	}
+	if string(cfg.Config) != `{"gpu_memory_utilization":0.8}` {
+		t.Fatalf("config payload = %s, want raw JSON object", string(cfg.Config))
+	}
+}

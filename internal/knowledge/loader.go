@@ -18,16 +18,16 @@ import (
 
 // Catalog holds all knowledge assets loaded from embedded YAML files.
 type Catalog struct {
-	mu                     sync.Mutex
-	HardwareProfiles       []HardwareProfile
-	PartitionStrategies    []PartitionStrategy
-	EngineAssets           []EngineAsset
-	RawEngineAssets        []EngineAsset // unresolved engine assets before profile inheritance/template expansion
-	ModelAssets            []ModelAsset
-	StackComponents        []StackComponent
-	DeploymentScenarios    []DeploymentScenario
-	EngineProfiles         map[string]*EngineProfile // name -> profile (loaded from engines/profiles/)
-	BenchmarkProfileTiers  []BenchmarkProfileTier    // VRAM-tiered benchmark profiles for Explorer
+	mu                    sync.Mutex
+	HardwareProfiles      []HardwareProfile
+	PartitionStrategies   []PartitionStrategy
+	EngineAssets          []EngineAsset
+	RawEngineAssets       []EngineAsset // unresolved engine assets before profile inheritance/template expansion
+	ModelAssets           []ModelAsset
+	StackComponents       []StackComponent
+	DeploymentScenarios   []DeploymentScenario
+	EngineProfiles        map[string]*EngineProfile // name -> profile (loaded from engines/profiles/)
+	BenchmarkProfileTiers []BenchmarkProfileTier    // VRAM-tiered benchmark profiles for Explorer
 }
 
 // EngineProfile captures the shared identity of an engine type.
@@ -359,6 +359,7 @@ type ModelVariant struct {
 
 type ModelCompatibility struct {
 	RepairInitCommands []string `yaml:"repair_init_commands,omitempty"`
+	UnsupportedReason  string   `yaml:"unsupported_reason,omitempty"`
 }
 
 // ExpectedPerf holds structured performance estimates extracted from a variant's

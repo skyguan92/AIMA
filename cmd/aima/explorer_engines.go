@@ -56,6 +56,9 @@ func gatherExplorerLocalEngines(
 		if asset == nil {
 			continue
 		}
+		if !engineSupportsPlatform(asset, hwInfo.Platform) {
+			continue
+		}
 		requiredRuntime := preferredEngineRuntimeType(asset, hwInfo.Platform)
 		installedEngine := selectExplorerInstalledEngine(installedByType[engineType], requiredRuntime)
 		imageRef := explorerInstalledImageRef(installedEngine)
@@ -500,4 +503,3 @@ func explorerModalityBlockReason(supportedTypes []string, modelType, engineType 
 	return fmt.Sprintf("modality mismatch: engine %s does not support model type %q (supported: %v)",
 		engineType, modelType, supportedTypes)
 }
-

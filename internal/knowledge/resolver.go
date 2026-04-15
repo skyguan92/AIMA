@@ -146,6 +146,10 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 	if err != nil {
 		return nil, err
 	}
+	if variant != nil && strings.TrimSpace(variant.Compatibility.UnsupportedReason) != "" {
+		return nil, fmt.Errorf("model %q with engine %q is marked unsupported: %s",
+			model.Metadata.Name, engineType, strings.TrimSpace(variant.Compatibility.UnsupportedReason))
+	}
 
 	// Format compatibility: reject early if model format is not supported by engine.
 	// This prevents dry-run from reporting fit=true for incompatible combos (e.g. AWQ on Ascend).
@@ -377,6 +381,9 @@ func (c *Catalog) InferEngineType(modelName string, hw HardwareInfo, opts ...Res
 		var candidates []engineCandidate
 
 		for _, v := range ma.Variants {
+			if strings.TrimSpace(v.Compatibility.UnsupportedReason) != "" {
+				continue
+			}
 			if v.Hardware.GPUArch != hw.GPUArch && v.Hardware.GPUArch != "*" {
 				continue
 			}

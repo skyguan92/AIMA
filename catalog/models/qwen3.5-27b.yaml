@@ -15,6 +15,16 @@ storage:
       repo: Qwen/Qwen3.5-27B
       format: safetensors
 variants:
+  # --- generic vllm-nightly qwen3_5 image is not a validated runtime for this model ---
+  - name: qwen3.5-27b-vllm-nightly-unsupported
+    hardware:
+      gpu_arch: "*"
+      vram_min_mib: 20480
+    engine: vllm-nightly
+    format: safetensors
+    compatibility:
+      unsupported_reason: "vllm-nightly currently points to the qwen3_5-cu130 image, which is not a validated runtime for dense Qwen3.5-27B; use SGLang until a generic compatible nightly is cataloged."
+
   # --- linux-1 (Ada, 2× RTX 4090 = 96GB total, TP=2) ---
   # BF16 weights ~54GB, TP=2: each GPU holds ~27GB weights
   # Remaining per GPU: ~21GB for KV cache + overhead

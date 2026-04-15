@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"testing"
 
+	state "github.com/jguan/aima/internal"
 	"github.com/jguan/aima/internal/knowledge"
 )
 
@@ -171,5 +173,44 @@ func TestCatalogModelMaxContextLen(t *testing.T) {
 				t.Errorf("ModelMaxContextLen(%q) = %d, want %d", tt.modelName, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGatherExplorerLocalEnginesSkipsUnsupportedHostAssets(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.UpsertScannedEngine(ctx, &state.Engine{
+		ID:          "llamacpp-local",
+		Type:        "llamacpp",
+		Image:       "local/llama",
+		Tag:         "arm64",
+		RuntimeType: "container",
+		Available:   true,
+	}); err != nil {
+		t.Fatalf("UpsertScannedEngine: %v", err)
+	}
+
+	cat := &knowledge.Catalog{
+		EngineAssets: []knowledge.EngineAsset{
+			{
+				Metadata: knowledge.EngineMetadata{Name: "llamacpp-universal", Type: "llamacpp"},
+				Image:    knowledge.EngineImage{Name: "ghcr.io/ggml-org/llama.cpp", Tag: "server", Platforms: []string{"linux/amd64"}},
+				Hardware: knowledge.EngineHardware{GPUArch: "*"},
+				Runtime:  knowledge.EngineRuntime{Default: "container"},
+			},
+		},
+	}
+
+	got, err := gatherExplorerLocalEngines(ctx, cat, db, &fakeRuntime{name: "docker"}, nil, &fakeRuntime{name: "docker"}, nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("gatherExplorerLocalEngines: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("local engines = %+v, want none because catalog asset does not support host platform", got)
 	}
 }

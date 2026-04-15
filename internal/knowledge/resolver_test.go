@@ -98,6 +98,61 @@ func TestResolveIncludesCompatibilityMetadata(t *testing.T) {
 	}
 }
 
+func TestInferEngineTypeSkipsUnsupportedVariants(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{Name: "blocked-engine", Type: "blocked-engine"},
+				Hardware: EngineHardware{GPUArch: "*"},
+				Amplifier: EngineAmplifier{
+					PerformanceMultiplier: 10,
+				},
+			},
+			{
+				Metadata: EngineMetadata{Name: "good-engine", Type: "good-engine"},
+				Hardware: EngineHardware{GPUArch: "*"},
+				Amplifier: EngineAmplifier{
+					PerformanceMultiplier: 1,
+				},
+			},
+		},
+		ModelAssets: []ModelAsset{
+			{
+				Metadata: ModelMetadata{Name: "demo-model"},
+				Variants: []ModelVariant{
+					{
+						Name:   "demo-model-blocked",
+						Engine: "blocked-engine",
+						Format: "safetensors",
+						Hardware: ModelVariantHardware{
+							GPUArch: "*",
+						},
+						Compatibility: ModelCompatibility{
+							UnsupportedReason: "blocked by catalog",
+						},
+					},
+					{
+						Name:   "demo-model-good",
+						Engine: "good-engine",
+						Format: "safetensors",
+						Hardware: ModelVariantHardware{
+							GPUArch: "*",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	engine, err := cat.InferEngineType("demo-model", HardwareInfo{GPUArch: "Blackwell"})
+	if err != nil {
+		t.Fatalf("InferEngineType: %v", err)
+	}
+	if engine != "good-engine" {
+		t.Fatalf("InferEngineType = %q, want good-engine", engine)
+	}
+}
+
 func TestResolveWildcardEngine(t *testing.T) {
 	cat := mustLoadCatalog(t)
 

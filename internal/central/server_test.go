@@ -199,3 +199,89 @@ func TestServerIngestAndSyncPreservesKnowledgeFields(t *testing.T) {
 		t.Fatalf("knowledge note fidelity lost: %+v", note)
 	}
 }
+
+func TestServerIngestAcceptsKnowledgeExportEnvelope(t *testing.T) {
+	srv, err := New(Config{
+		APIKey: "test-key",
+		DBPath: filepath.Join(t.TempDir(), "central.db"),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer srv.Close()
+
+	httpSrv := httptest.NewServer(srv.mux)
+	defer httpSrv.Close()
+
+	payload := map[string]any{
+		"schema_version": 1,
+		"device_id":      "device-b",
+		"gpu_arch":       "Blackwell",
+		"data": map[string]any{
+			"configurations": []map[string]any{
+				{
+					"id":          "cfg-export-1",
+					"hardware_id": "nvidia-gb10-arm64",
+					"engine_id":   "vllm-nightly",
+					"model_id":    "qwen3-8b",
+					"config":      "{\"gpu_memory_utilization\":0.75}",
+					"config_hash": "hash-export-1",
+				},
+			},
+			"benchmark_results": []map[string]any{
+				{
+					"id":             "bench-export-1",
+					"config_id":      "cfg-export-1",
+					"throughput_tps": 33.5,
+				},
+			},
+			"knowledge_notes": []map[string]any{
+				{
+					"id":      "note-export-1",
+					"title":   "Imported note",
+					"content": "ok",
+				},
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal payload: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, httpSrv.URL+"/api/v1/ingest", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest ingest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do ingest: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ingest status = %d, want 200", resp.StatusCode)
+	}
+
+	var stats struct {
+		Configurations int `json:"configurations"`
+		Benchmarks     int `json:"benchmarks"`
+		KnowledgeNotes int `json:"knowledge_notes"`
+	}
+	statsReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, httpSrv.URL+"/api/v1/stats", nil)
+	if err != nil {
+		t.Fatalf("NewRequest stats: %v", err)
+	}
+	statsResp, err := http.DefaultClient.Do(statsReq)
+	if err != nil {
+		t.Fatalf("Do stats: %v", err)
+	}
+	defer statsResp.Body.Close()
+	if err := json.NewDecoder(statsResp.Body).Decode(&stats); err != nil {
+		t.Fatalf("Decode stats: %v", err)
+	}
+	if stats.Configurations != 1 || stats.Benchmarks != 1 || stats.KnowledgeNotes != 1 {
+		t.Fatalf("stats = %+v, want 1/1/1", stats)
+	}
+}

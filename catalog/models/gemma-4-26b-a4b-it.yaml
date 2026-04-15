@@ -16,6 +16,16 @@ storage:
     - type: local_path
       path: ""
 variants:
+  # --- generic vllm-nightly qwen3_5 image is not a Gemma 4 runtime ---
+  - name: gemma-4-26b-a4b-it-vllm-nightly-unsupported
+    hardware:
+      gpu_arch: "*"
+      vram_min_mib: 40960
+    engine: vllm-nightly
+    format: safetensors
+    compatibility:
+      unsupported_reason: "vllm-nightly currently points to the qwen3_5-cu130 image and is not a validated Gemma 4 runtime; use vllm-gemma4-blackwell or another explicitly cataloged Gemma path."
+
   # --- GB10 / DGX Spark (Blackwell, 128GB unified, custom Gemma4 vLLM image) ---
   # Official BF16 weights fit in unified memory, but stable serving on GB10 required:
   #   1. a Gemma 4-capable ARM64 vLLM runtime on Blackwell SM121
