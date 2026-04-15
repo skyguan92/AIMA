@@ -389,7 +389,7 @@ func TestWorkspaceReadOnlyGuard(t *testing.T) {
 	dir := t.TempDir()
 	ws := NewExplorerWorkspace(dir)
 	_ = ws.Init()
-	for _, name := range []string{"index.md", "device-profile.md", "available-combos.md", "knowledge-base.md"} {
+	for _, name := range []string{"index.md", "device-profile.md", "available-combos.md", "knowledge-base.md", "experiment-facts.md"} {
 		if err := ws.WriteFile(name, "hack"); err == nil {
 			t.Errorf("WriteFile(%s) should fail for read-only doc", name)
 		}
@@ -578,6 +578,55 @@ func TestExtractRecommendations_NoSummary(t *testing.T) {
 	}
 }
 
+func TestLoadExperimentRecords(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	_, err := ws.WriteExperimentResult(1, TaskSpec{
+		Kind:   "validate",
+		Model:  "test-model",
+		Engine: "vllm",
+	}, ExperimentResult{
+		Status: "completed",
+		Benchmarks: []BenchmarkEntry{{
+			Concurrency:   1,
+			InputTokens:   128,
+			MaxTokens:     256,
+			ThroughputTPS: 88.0,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("WriteExperimentResult: %v", err)
+	}
+
+	records, err := ws.LoadExperimentRecords()
+	if err != nil {
+		t.Fatalf("LoadExperimentRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records len=%d, want 1", len(records))
+	}
+	if records[0].Task.Model != "test-model" || records[0].Result.Status != "completed" {
+		t.Fatalf("record = %+v, want parsed task/result", records[0])
+	}
+}
+
+func TestNormalizeSummaryMarkdown_AppendsRequiredSections(t *testing.T) {
+	got := normalizeSummaryMarkdown("# Exploration Summary\n\n## Key Findings\n\n- one fact\n")
+	for _, want := range []string{
+		"## Bugs And Failures",
+		"## Confirmed Blockers",
+		"## Evidence Ledger",
+		"## Recommended Configurations",
+		"## Next Cycle Candidates",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("normalized summary missing %q: %s", want, got)
+		}
+	}
+}
+
 func TestRefreshFactDocuments(t *testing.T) {
 	dir := t.TempDir()
 	ws := NewExplorerWorkspace(dir)
@@ -660,6 +709,13 @@ func TestRefreshFactDocuments(t *testing.T) {
 	}
 	if !strings.Contains(index, "Ready Combos") {
 		t.Error("index.md missing ready-combo rule")
+	}
+	if !strings.Contains(index, "experiment-facts.md") {
+		t.Error("index.md missing experiment-facts read order")
+	}
+	ef, _ := ws.ReadFile("experiment-facts.md")
+	if !strings.Contains(ef, "No experiments yet") {
+		t.Error("experiment-facts missing empty-state summary")
 	}
 }
 

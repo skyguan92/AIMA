@@ -55,6 +55,12 @@ func TestExplorer_WithAgentDetectsTier(t *testing.T) {
 	if status.Tier != 1 {
 		t.Errorf("status tier = %d, want 1", status.Tier)
 	}
+
+	a.mode = toolModeEnabled
+	status = e.Status()
+	if status.Tier != 2 {
+		t.Errorf("status tier after refresh = %d, want 2", status.Tier)
+	}
 }
 
 func TestExplorer_BuildPlanInputGathersData(t *testing.T) {

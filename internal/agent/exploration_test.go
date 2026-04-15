@@ -135,7 +135,7 @@ func TestExplorationManagerExecuteBenchmarkMatrix_PreservesArtifacts(t *testing.
 
 	manager := NewExplorationManager(db, nil, tools)
 	result, err := manager.executeBenchmarkMatrix(ctx, &state.ExplorationRun{ID: "run-matrix"}, ExplorationPlan{
-		Target: ExplorationTarget{Model: "test-model", Engine: "vllm"},
+		Target: ExplorationTarget{Model: "test-model", Engine: "vllm", ModelType: "embedding"},
 		BenchmarkProfiles: []ExplorationBenchmarkProfile{{
 			Label:             "latency",
 			ConcurrencyLevels: []int{4},
@@ -164,6 +164,47 @@ func TestExplorationManagerExecuteBenchmarkMatrix_PreservesArtifacts(t *testing.
 	}
 	if !reflect.DeepEqual(matrixRequest["deploy_config"], map[string]any{"concurrency": float64(4), "max_tokens": float64(512)}) {
 		t.Fatalf("benchmark.matrix deploy_config = %#v, want ready deployment config", matrixRequest["deploy_config"])
+	}
+	if matrixRequest["modality"] != "embedding" {
+		t.Fatalf("benchmark.matrix modality = %#v, want embedding", matrixRequest["modality"])
+	}
+}
+
+func TestExplorationManagerExecuteBenchmarkStep_PropagatesModelModality(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	var benchRequest map[string]any
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			if name != "benchmark.run" {
+				t.Fatalf("unexpected tool %q", name)
+			}
+			if err := json.Unmarshal(arguments, &benchRequest); err != nil {
+				t.Fatalf("Unmarshal benchmark.run args: %v", err)
+			}
+			return &ToolResult{Content: `{"benchmark_id":"bench-001","config_id":"cfg-001","result":{"throughput_tps":12.3,"successful_requests":1,"total_requests":1,"config":{"concurrency":1,"rounds":1}}}`}, nil
+		},
+	}
+
+	manager := NewExplorationManager(db, nil, tools)
+	_, err = manager.executeBenchmarkStep(ctx, &state.ExplorationRun{ID: "run-single"}, ExplorationPlan{
+		Target: ExplorationTarget{Model: "test-model", Engine: "vllm", ModelType: "asr"},
+		BenchmarkProfiles: []ExplorationBenchmarkProfile{{
+			Endpoint:    "http://127.0.0.1:6188/v1/chat/completions",
+			Concurrency: 1,
+			Rounds:      1,
+		}},
+	}, "validate", 0)
+	if err != nil {
+		t.Fatalf("executeBenchmarkStep: %v", err)
+	}
+	if benchRequest["modality"] != "asr" {
+		t.Fatalf("benchmark.run modality = %#v, want asr", benchRequest["modality"])
 	}
 }
 
@@ -741,6 +782,203 @@ func TestExplorationManagerStartAndWait_RespectsCallerDeadline(t *testing.T) {
 	}
 	if elapsed > time.Second {
 		t.Fatalf("StartAndWait elapsed = %v, want < 1s", elapsed)
+	}
+}
+
+func TestExplorationManagerStartAndWait_WaitsForCleanupAfterTerminalState(t *testing.T) {
+	ctx := context.Background()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
+
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	var applied, deleted bool
+	deleteCalls := 0
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "deploy.status":
+				if deleted {
+					return nil, fmt.Errorf("not found")
+				}
+				if !applied {
+					return nil, fmt.Errorf("not found")
+				}
+				return &ToolResult{Content: fmt.Sprintf(`{"phase":"running","ready":true,"engine":"vllm","runtime":"container","address":%q}`, addr)}, nil
+			case "deploy.apply":
+				applied = true
+				return &ToolResult{Content: `{"name":"target-model","config":{"gpu_memory_utilization":0.8}}`}, nil
+			case "benchmark.run":
+				return &ToolResult{Content: `{"benchmark_id":"bench-001","config_id":"cfg-001","result":{"throughput_tps":42.0,"successful_requests":1,"total_requests":1,"config":{"concurrency":1,"rounds":1}}}`}, nil
+			case "deploy.delete":
+				deleteCalls++
+				time.Sleep(120 * time.Millisecond)
+				deleted = true
+				return &ToolResult{Content: `{"deleted":true}`}, nil
+			default:
+				return nil, fmt.Errorf("unexpected tool: %s", name)
+			}
+		},
+	}
+
+	manager := NewExplorationManager(db, nil, tools)
+	start := time.Now()
+	status, err := manager.StartAndWait(context.Background(), ExplorationStart{
+		Kind: "validate",
+		Target: ExplorationTarget{
+			Model:   "target-model",
+			Engine:  "vllm",
+			Runtime: "container",
+		},
+		BenchmarkProfiles: []ExplorationBenchmarkProfile{{
+			Concurrency: 1,
+			Rounds:      1,
+		}},
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("StartAndWait: %v", err)
+	}
+	if status.Run.Status != "completed" {
+		t.Fatalf("run status = %q, want completed", status.Run.Status)
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("deploy.delete calls = %d, want 1", deleteCalls)
+	}
+	if elapsed < 100*time.Millisecond {
+		t.Fatalf("StartAndWait elapsed = %v, want cleanup wait >= 100ms", elapsed)
+	}
+}
+
+func TestExplorationManagerExecuteValidate_FailedMatrixPreservesSummaryArtifacts(t *testing.T) {
+	ctx := context.Background()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
+
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	plan := ExplorationPlan{
+		Kind: "validate",
+		Target: ExplorationTarget{
+			Model:   "target-model",
+			Engine:  "vllm",
+			Runtime: "container",
+		},
+		BenchmarkProfiles: []ExplorationBenchmarkProfile{{
+			Label:             "latency",
+			ConcurrencyLevels: []int{1},
+			InputTokenLevels:  []int{128},
+			MaxTokenLevels:    []int{256},
+			RequestsPerCombo:  1,
+			Rounds:            1,
+		}},
+	}
+	planJSON, _ := json.Marshal(plan)
+	run := &state.ExplorationRun{
+		ID:       "run-failed-matrix",
+		Kind:     "validate",
+		ModelID:  "target-model",
+		EngineID: "vllm",
+		PlanJSON: string(planJSON),
+		Status:   "queued",
+	}
+	if err := db.InsertExplorationRun(ctx, run); err != nil {
+		t.Fatalf("InsertExplorationRun: %v", err)
+	}
+
+	var applied bool
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "deploy.status":
+				if !applied {
+					return nil, fmt.Errorf("not found")
+				}
+				return &ToolResult{Content: fmt.Sprintf(`{"phase":"running","ready":true,"engine":"vllm","runtime":"container","address":%q,"config":{"gpu_memory_utilization":0.8}}`, addr)}, nil
+			case "deploy.apply":
+				applied = true
+				return &ToolResult{Content: `{"name":"target-model","config":{"gpu_memory_utilization":0.8}}`}, nil
+			case "benchmark.matrix":
+				return &ToolResult{Content: `{"cells":[{"concurrency":1,"input_tokens":128,"max_tokens":256,"benchmark_id":"bench-zero","config_id":"cfg-zero","result":{"throughput_tps":0,"successful_requests":0,"total_requests":1}}],"total":1}`}, nil
+			case "deploy.delete":
+				return &ToolResult{Content: `{"deleted":true}`}, nil
+			default:
+				return nil, fmt.Errorf("unexpected tool: %s", name)
+			}
+		},
+	}
+
+	manager := NewExplorationManager(db, nil, tools)
+	manager.executeValidate(ctx, run)
+
+	if run.Status != "failed" {
+		t.Fatalf("run status = %q, want failed", run.Status)
+	}
+	if !strings.Contains(run.Error, "no successful cells") {
+		t.Fatalf("run error = %q, want no successful cells", run.Error)
+	}
+	if !strings.Contains(run.SummaryJSON, `"benchmark_id":"bench-zero"`) {
+		t.Fatalf("summary missing benchmark artifact: %s", run.SummaryJSON)
+	}
+	if !strings.Contains(run.SummaryJSON, `"total_cells":1`) {
+		t.Fatalf("summary missing total_cells: %s", run.SummaryJSON)
+	}
+}
+
+func TestStartAndWaitFallbackTimeout_ExtendsValidateRuns(t *testing.T) {
+	if got := startAndWaitFallbackTimeout("tune"); got != 30*time.Minute {
+		t.Fatalf("tune fallback timeout = %v, want 30m", got)
+	}
+	if got := startAndWaitFallbackTimeout("validate"); got != 90*time.Minute {
+		t.Fatalf("validate fallback timeout = %v, want 90m", got)
+	}
+	if got := startAndWaitFallbackTimeout("open_question"); got != 90*time.Minute {
+		t.Fatalf("open_question fallback timeout = %v, want 90m", got)
+	}
+}
+
+func TestExplorationManagerWaitForTerminalStatus_ReturnsTerminalRun(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	run := &state.ExplorationRun{
+		ID:      "run-terminal",
+		Kind:    "validate",
+		ModelID: "target-model",
+		Status:  "running",
+	}
+	if err := db.InsertExplorationRun(ctx, run); err != nil {
+		t.Fatalf("InsertExplorationRun: %v", err)
+	}
+
+	manager := NewExplorationManager(db, nil, &mockTools{})
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		run.Status = "cancelled"
+		run.CompletedAt = time.Now()
+		_ = db.UpdateExplorationRun(context.Background(), run)
+	}()
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	status, err := manager.waitForTerminalStatus(waitCtx, run.ID)
+	if err != nil {
+		t.Fatalf("waitForTerminalStatus: %v", err)
+	}
+	if status.Run.Status != "cancelled" {
+		t.Fatalf("terminal status = %q, want cancelled", status.Run.Status)
 	}
 }
 

@@ -19,7 +19,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const gpuReleaseGrace = 3 * time.Second // grace period for GPU memory to fully release from driver
+const (
+	gpuReleaseGrace                = 3 * time.Second // grace period for GPU memory to fully release from driver
+	defaultStartAndWaitTimeout     = 30 * time.Minute
+	extendedStartAndWaitTimeout    = 90 * time.Minute
+	startAndWaitStopCleanupTimeout = 45 * time.Second
+)
 
 type ExplorationTarget struct {
 	Hardware        string   `json:"hardware,omitempty"`
@@ -77,6 +82,28 @@ func firstProfile(profiles []ExplorationBenchmarkProfile) ExplorationBenchmarkPr
 	return ExplorationBenchmarkProfile{}
 }
 
+func benchmarkModality(modelType string) string {
+	return strings.ToLower(strings.TrimSpace(modelType))
+}
+
+func startAndWaitFallbackTimeout(kind string) time.Duration {
+	switch kind {
+	case "validate", "open_question":
+		return extendedStartAndWaitTimeout
+	default:
+		return defaultStartAndWaitTimeout
+	}
+}
+
+func isTerminalRunStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
 type benchmarkStepResult struct {
 	RequestJSON   string
 	ResponseJSON  string
@@ -95,6 +122,22 @@ type deploymentLease struct {
 	Name    string
 	Config  map[string]any
 	Created bool
+}
+
+func meaningfulBenchmarkResult(summary map[string]any) bool {
+	if summary == nil {
+		return false
+	}
+	if tp := readFloatField(summary, "throughput_tps"); tp > 0 {
+		return true
+	}
+	if reqs := readFloatField(summary, "successful_requests"); reqs > 0 {
+		return true
+	}
+	if outputs := readFloatField(summary, "avg_output_tokens"); outputs > 0 {
+		return true
+	}
+	return false
 }
 
 func (m *ExplorationManager) resolveCurrentDeployConfig(ctx context.Context, model, engine string) map[string]any {
@@ -236,26 +279,35 @@ func (m *ExplorationManager) StartAndWait(ctx context.Context, req ExplorationSt
 	defer ticker.Stop()
 	var timeout <-chan time.Time
 	var timeoutTimer *time.Timer
+	timeoutLabel := time.Duration(0)
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		timeoutTimer = time.NewTimer(30 * time.Minute)
+		timeoutLabel = startAndWaitFallbackTimeout(req.Kind)
+		timeoutTimer = time.NewTimer(timeoutLabel)
 		timeout = timeoutTimer.C
 		defer timeoutTimer.Stop()
 	}
 	for {
 		select {
 		case <-ctx.Done():
-			_, _ = m.Stop(context.Background(), run.ID)
+			stopCtx, cancel := context.WithTimeout(context.Background(), startAndWaitStopCleanupTimeout)
+			_, _ = m.stopAndWaitForTerminal(stopCtx, run.ID)
+			cancel()
 			return nil, fmt.Errorf("exploration %s canceled: %w", run.ID, ctx.Err())
 		case <-timeout:
-			_, _ = m.Stop(context.Background(), run.ID)
-			return nil, fmt.Errorf("exploration %s timed out after 30 minutes", run.ID)
+			stopCtx, cancel := context.WithTimeout(context.Background(), startAndWaitStopCleanupTimeout)
+			status, waitErr := m.stopAndWaitForTerminal(stopCtx, run.ID)
+			cancel()
+			timeoutErr := fmt.Errorf("exploration %s timed out after %s", run.ID, timeoutLabel)
+			if waitErr == nil || errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(waitErr, context.Canceled) {
+				return status, timeoutErr
+			}
+			return status, fmt.Errorf("%w (stop wait: %v)", timeoutErr, waitErr)
 		case <-ticker.C:
 			status, err := m.Status(ctx, run.ID)
 			if err != nil {
 				return nil, err
 			}
-			switch status.Run.Status {
-			case "completed", "failed", "cancelled":
+			if isTerminalRunStatus(status.Run.Status) && !m.isRunActive(run.ID) {
 				return status, nil
 			}
 		}
@@ -331,6 +383,43 @@ func (m *ExplorationManager) Status(ctx context.Context, runID string) (*Explora
 
 func (m *ExplorationManager) Result(ctx context.Context, runID string) (*ExplorationStatus, error) {
 	return m.Status(ctx, runID)
+}
+
+func (m *ExplorationManager) isRunActive(runID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.activeRuns[runID]
+	return ok
+}
+
+func (m *ExplorationManager) waitForTerminalStatus(ctx context.Context, runID string) (*ExplorationStatus, error) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		status, err := m.Status(ctx, runID)
+		if err != nil {
+			return nil, err
+		}
+		if isTerminalRunStatus(status.Run.Status) && !m.isRunActive(runID) {
+			return status, nil
+		}
+		select {
+		case <-ctx.Done():
+			return status, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *ExplorationManager) stopAndWaitForTerminal(ctx context.Context, runID string) (*ExplorationStatus, error) {
+	status, err := m.Stop(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if status != nil && isTerminalRunStatus(status.Run.Status) {
+		return status, nil
+	}
+	return m.waitForTerminalStatus(ctx, runID)
 }
 
 func (m *ExplorationManager) execute(ctx context.Context, run *state.ExplorationRun) {
@@ -539,6 +628,9 @@ func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.Exp
 
 	stepResult, err := m.executeBenchmarkStep(ctx, run, plan, "validate", 0)
 	if err != nil {
+		if stepResult != nil {
+			run.SummaryJSON = stepResult.ResponseJSON
+		}
 		m.finishRunWithError(run, err)
 		return
 	}
@@ -916,8 +1008,7 @@ func (m *ExplorationManager) waitForReady(ctx context.Context, model string) err
 	return fmt.Errorf("timeout waiting for %s to become ready (safety net %v)", model, safetyNet)
 }
 
-// resolveDeployEndpoint queries deploy.status to get the actual inference address.
-// Returns an OpenAI-compatible endpoint URL or empty string.
+// resolveDeployEndpoint queries deploy.status to get the actual inference base address.
 func (m *ExplorationManager) resolveDeployEndpoint(ctx context.Context, model string) string {
 	statusArgs, _ := json.Marshal(map[string]string{"name": model})
 	result, err := m.tools.ExecuteTool(ctx, "deploy.status", statusArgs)
@@ -931,7 +1022,7 @@ func (m *ExplorationManager) resolveDeployEndpoint(ctx context.Context, model st
 	if json.Unmarshal([]byte(result.Content), &status) != nil || status.Address == "" {
 		return ""
 	}
-	return fmt.Sprintf("http://%s/v1/chat/completions", status.Address)
+	return fmt.Sprintf("http://%s", status.Address)
 }
 
 // probeInferenceEndpoint verifies the inference engine is actually serving.
@@ -942,7 +1033,7 @@ func (m *ExplorationManager) probeInferenceEndpoint(ctx context.Context, model s
 	if addr == "" {
 		return false
 	}
-	baseURL := strings.Replace(addr, "/v1/chat/completions", "", 1)
+	baseURL := strings.TrimRight(addr, "/")
 	probePath := "/v1/models"
 	if hp := m.healthCheckPath(model); hp != "" {
 		probePath = hp
@@ -1394,7 +1485,7 @@ func extractRepresentativeCell(matrixJSON string) (map[string]any, bool) {
 			continue
 		}
 		for _, c := range profile.Cells {
-			if c.Error != "" || c.Result == nil {
+			if c.Error != "" || !meaningfulBenchmarkResult(c.Result) {
 				continue
 			}
 			score := c.Concurrency * repCellConcurrencyPenalty
@@ -1545,6 +1636,9 @@ func (m *ExplorationManager) executeOpenQuestion(ctx context.Context, run *state
 
 	stepResult, err := m.executeBenchmarkStep(ctx, run, plan, "resolve_open_question", 0)
 	if err != nil {
+		if stepResult != nil {
+			run.SummaryJSON = stepResult.ResponseJSON
+		}
 		m.finishRunWithError(run, err)
 		return
 	}
@@ -1695,6 +1789,9 @@ func (m *ExplorationManager) executeBenchmarkStep(ctx context.Context, run *stat
 		"concurrency": bp.Concurrency,
 		"rounds":      bp.Rounds,
 	}
+	if modality := benchmarkModality(plan.Target.ModelType); modality != "" {
+		benchArgs["modality"] = modality
+	}
 	if bp.Endpoint != "" {
 		benchArgs["endpoint"] = bp.Endpoint
 	} else if deployStep != nil && deployStep.Endpoint != "" {
@@ -1800,6 +1897,9 @@ func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *st
 			"rounds":             profile.Rounds,
 			"save":               true,
 		}
+		if modality := benchmarkModality(plan.Target.ModelType); modality != "" {
+			matrixArgs["modality"] = modality
+		}
 		if len(deployConfig) > 0 {
 			matrixArgs["deploy_config"] = deployConfig
 		}
@@ -1866,13 +1966,8 @@ func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *st
 
 		for _, cell := range matrixResp.Cells {
 			totalCells++
-			if cell.Error == "" && cell.Result != nil {
-				// A cell with zero throughput is not a real success — the
-				// endpoint was unreachable or not yet ready. Only count cells
-				// where inference actually produced output.
-				if tp, ok := cell.Result["throughput_tps"].(float64); ok && tp > 0 {
-					successCells++
-				}
+			if cell.Error == "" && meaningfulBenchmarkResult(cell.Result) {
+				successCells++
 			}
 		}
 
@@ -1891,10 +1986,6 @@ func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *st
 			ToolName:     "benchmark.matrix",
 			ResponseJSON: result.Content,
 		})
-	}
-
-	if totalCells == 0 || successCells == 0 {
-		return nil, fmt.Errorf("benchmark matrix: no successful cells (total=%d)", totalCells)
 	}
 
 	payload := map[string]any{
@@ -1929,7 +2020,7 @@ func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *st
 	}
 	combinedJSON, _ = json.Marshal(payload)
 
-	return &benchmarkStepResult{
+	stepResult := &benchmarkStepResult{
 		ResponseJSON:  string(combinedJSON),
 		MatrixJSON:    string(combinedJSON),
 		BenchmarkID:   firstNonEmptyJSON(payload, "benchmark_id"),
@@ -1940,7 +2031,14 @@ func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *st
 		DeployConfig:  cloneAnyMap(mapValue(payload, "deploy_config")),
 		TotalCells:    totalCells,
 		SuccessCells:  successCells,
-	}, nil
+	}
+	if totalCells == 0 {
+		return nil, fmt.Errorf("benchmark matrix: no cells returned")
+	}
+	if successCells == 0 {
+		return stepResult, fmt.Errorf("benchmark matrix: no successful cells (total=%d)", totalCells)
+	}
+	return stepResult, nil
 }
 
 func mapValue(payload map[string]any, key string) map[string]any {

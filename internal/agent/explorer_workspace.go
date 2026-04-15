@@ -19,6 +19,7 @@ var readOnlyDocs = map[string]bool{
 	"device-profile.md":   true,
 	"available-combos.md": true,
 	"knowledge-base.md":   true,
+	"experiment-facts.md": true,
 }
 
 // ExplorerWorkspace manages the file workspace for an Explorer session.
@@ -396,6 +397,7 @@ func (w *ExplorerWorkspace) RefreshFactDocuments(input PlanInput) error {
 		"device-profile.md":   w.generateDeviceProfile(input, now),
 		"available-combos.md": w.generateAvailableCombos(input, now),
 		"knowledge-base.md":   w.generateKnowledgeBase(input, now),
+		"experiment-facts.md": w.generateExperimentFacts(now),
 	}
 	for name, content := range docs {
 		if err := w.writeFactDocument(name, content); err != nil {
@@ -422,8 +424,9 @@ func (w *ExplorerWorkspace) generateIndex(input PlanInput, now string) string {
 	fmt.Fprintf(&sb, "2. `available-combos.md`\n")
 	fmt.Fprintf(&sb, "3. `device-profile.md`\n")
 	fmt.Fprintf(&sb, "4. `knowledge-base.md`\n")
-	fmt.Fprintf(&sb, "5. `summary.md`\n")
-	fmt.Fprintf(&sb, "6. `experiments/`\n\n")
+	fmt.Fprintf(&sb, "5. `experiment-facts.md`\n")
+	fmt.Fprintf(&sb, "6. `summary.md`\n")
+	fmt.Fprintf(&sb, "7. `experiments/`\n\n")
 
 	fmt.Fprintf(&sb, "## Source Of Truth\n\n")
 	fmt.Fprintf(&sb, "| Document | Owner | Writable | Purpose |\n")
@@ -432,6 +435,7 @@ func (w *ExplorerWorkspace) generateIndex(input PlanInput, now string) string {
 	fmt.Fprintf(&sb, "| available-combos.md | AIMA | no | Authoritative ready/blocked combo frontier |\n")
 	fmt.Fprintf(&sb, "| device-profile.md | AIMA | no | Hardware, local models, local engines, deployed state |\n")
 	fmt.Fprintf(&sb, "| knowledge-base.md | AIMA | no | History, advisories, catalog capability hints |\n")
+	fmt.Fprintf(&sb, "| experiment-facts.md | AIMA | no | Machine-generated digest of experiment outcomes and benchmark evidence |\n")
 	fmt.Fprintf(&sb, "| plan.md | Agent | yes | Current executable plan for the next Do phase |\n")
 	fmt.Fprintf(&sb, "| summary.md | Agent | yes | Running memory of findings, bugs, doubts, and strategy |\n")
 	fmt.Fprintf(&sb, "| experiments/*.md | AIMA + Agent Notes | append notes only | Raw experiment outcomes |\n\n")
@@ -727,6 +731,100 @@ func (w *ExplorerWorkspace) generateKnowledgeBase(input PlanInput, now string) s
 	return sb.String()
 }
 
+type ExperimentRecord struct {
+	Path   string
+	Task   TaskSpec
+	Result ExperimentResult
+}
+
+func (w *ExplorerWorkspace) LoadExperimentRecords() ([]ExperimentRecord, error) {
+	pattern, err := w.safePath("experiments/*.md")
+	if err != nil {
+		return nil, err
+	}
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("glob experiments: %w", err)
+	}
+	records := make([]ExperimentRecord, 0, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read experiment %s: %w", path, err)
+		}
+		task, result, err := parseExperimentRecordMarkdown(string(data))
+		if err != nil {
+			return nil, fmt.Errorf("parse experiment %s: %w", path, err)
+		}
+		rel, _ := filepath.Rel(w.root, path)
+		records = append(records, ExperimentRecord{
+			Path:   filepath.ToSlash(rel),
+			Task:   task,
+			Result: result,
+		})
+	}
+	return records, nil
+}
+
+func parseExperimentRecordMarkdown(md string) (TaskSpec, ExperimentResult, error) {
+	var task TaskSpec
+	var result ExperimentResult
+
+	taskSection := extractSection(md, "## Task")
+	taskBlock := yamlBlockRe.FindStringSubmatch(taskSection)
+	if len(taskBlock) >= 2 {
+		if err := yaml.Unmarshal([]byte(taskBlock[1]), &task); err != nil {
+			return TaskSpec{}, ExperimentResult{}, fmt.Errorf("parse task yaml: %w", err)
+		}
+	}
+
+	resultSection := extractSection(md, "## Result")
+	resultBlock := yamlBlockRe.FindStringSubmatch(resultSection)
+	if len(resultBlock) < 2 {
+		return task, result, fmt.Errorf("missing result yaml block")
+	}
+	if err := yaml.Unmarshal([]byte(resultBlock[1]), &result); err != nil {
+		return task, ExperimentResult{}, fmt.Errorf("parse result yaml: %w", err)
+	}
+	return task, result, nil
+}
+
+func (w *ExplorerWorkspace) generateExperimentFacts(now string) string {
+	records, err := w.LoadExperimentRecords()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "# Experiment Facts\n\n_Generated: %s_\n\n", now)
+	if err != nil {
+		fmt.Fprintf(&sb, "_Unavailable: %v_\n", err)
+		return sb.String()
+	}
+	if len(records) == 0 {
+		fmt.Fprintf(&sb, "_No experiments yet._\n")
+		return sb.String()
+	}
+	fmt.Fprintf(&sb, "| Experiment | Model | Engine | Status | Benchmarks | Best TPS | Success Cells | Error |\n")
+	fmt.Fprintf(&sb, "|------------|-------|--------|--------|------------|----------|---------------|-------|\n")
+	for _, rec := range records {
+		bestTPS := 0.0
+		for _, bench := range rec.Result.Benchmarks {
+			if bench.ThroughputTPS > bestTPS {
+				bestTPS = bench.ThroughputTPS
+			}
+		}
+		errText := strings.TrimSpace(rec.Result.Error)
+		if errText == "" {
+			errText = "—"
+		}
+		fmt.Fprintf(&sb, "| %s | %s | %s | %s | %d | %.1f | %d/%d | %s |\n",
+			filepath.Base(rec.Path), rec.Task.Model, rec.Task.Engine, rec.Result.Status,
+			len(rec.Result.Benchmarks), bestTPS, rec.Result.SuccessCells, rec.Result.MatrixCells, errText)
+	}
+	fmt.Fprintf(&sb, "\n## Hard Facts\n\n")
+	fmt.Fprintf(&sb, "- Treat this file as the machine-generated digest of experiments/*.md.\n")
+	fmt.Fprintf(&sb, "- If summary.md conflicts with this file, this file wins.\n")
+	fmt.Fprintf(&sb, "- A recommendation without a matching successful experiment in this file must stay provisional.\n")
+	return sb.String()
+}
+
 func comboFactCounts(input PlanInput) (ready, blocked, explored int) {
 	skipSet := make(map[string]struct{}, len(input.SkipCombos))
 	for _, s := range input.SkipCombos {
@@ -816,6 +914,37 @@ func defaultSummaryTemplate() string {
 		"Start from Ready Combos only. Treat Confirmed Blockers and Do Not Retry This Cycle as hard constraints.\n\n" +
 		"## Next Cycle Candidates\n\n" +
 		"_No candidates yet._\n"
+}
+
+func normalizeSummaryMarkdown(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return defaultSummaryTemplate()
+	}
+	required := []struct {
+		heading string
+		body    string
+	}{
+		{"## Key Findings", "_No findings yet._"},
+		{"## Bugs And Failures", "_No bugs recorded yet._"},
+		{"## Confirmed Blockers", "```yaml\n[]\n```"},
+		{"## Do Not Retry This Cycle", "```yaml\n[]\n```"},
+		{"## Evidence Ledger", "```yaml\n[]\n```"},
+		{"## Design Doubts", "_No design doubts recorded yet._"},
+		{"## Recommended Configurations", "```yaml\n[]\n```"},
+		{"## Current Strategy", "Start from Ready Combos only. Treat Confirmed Blockers and Do Not Retry This Cycle as hard constraints."},
+		{"## Next Cycle Candidates", "_No candidates yet._"},
+	}
+	var sb strings.Builder
+	sb.WriteString(strings.TrimRight(trimmed, "\n"))
+	for _, section := range required {
+		if strings.Contains(trimmed, section.heading) {
+			continue
+		}
+		fmt.Fprintf(&sb, "\n\n%s\n\n%s", section.heading, section.body)
+	}
+	sb.WriteString("\n")
+	return sb.String()
 }
 
 // ExperimentResult records the outcome of a single experiment task.

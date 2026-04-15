@@ -689,13 +689,19 @@ func TestExplorer_ReconcileHistoricalExplorationRuns_UsesPlanSummaryAsCanonical(
 	}
 }
 
-func TestParseAdvisoryTaskCarriesConfigAndHardware(t *testing.T) {
+func TestParseAdvisoryTaskCarriesScalarConfigAndHardware(t *testing.T) {
 	taskInfo, task, err := parseAdvisoryTask(json.RawMessage(`{
 		"id":"adv-1",
 		"type":"recommendation",
 		"target_model":"qwen3-8b",
 		"target_engine":"vllm",
-		"content_json":{"gpu_memory_utilization":0.8}
+		"content_json":{
+			"gpu_memory_utilization":0.8,
+			"max_model_len":4096,
+			"enable_prefix_caching":true,
+			"nested":{"bad":"value"},
+			"list":[1,2,3]
+		}
 	}`), "nvidia-gb10-arm64")
 	if err != nil {
 		t.Fatalf("parseAdvisoryTask: %v", err)
@@ -709,9 +715,179 @@ func TestParseAdvisoryTaskCarriesConfigAndHardware(t *testing.T) {
 	if task.Params["gpu_memory_utilization"] != 0.8 {
 		t.Fatalf("params = %v, want gpu_memory_utilization", task.Params)
 	}
+	if task.Params["max_model_len"] != 4096.0 {
+		t.Fatalf("params = %v, want max_model_len", task.Params)
+	}
+	if task.Params["enable_prefix_caching"] != true {
+		t.Fatalf("params = %v, want enable_prefix_caching", task.Params)
+	}
+	if _, ok := task.Params["nested"]; ok {
+		t.Fatalf("params = %v, want nested config dropped", task.Params)
+	}
+	if _, ok := task.Params["list"]; ok {
+		t.Fatalf("params = %v, want list config dropped", task.Params)
+	}
 	if task.SourceRef != "adv-1" {
 		t.Fatalf("source_ref = %q, want adv-1", task.SourceRef)
 	}
+}
+
+func TestTaskBlockedByExecutableFacts(t *testing.T) {
+	tests := []struct {
+		name       string
+		model      string
+		engine     string
+		comboFacts []ComboFact
+		skipCombos []SkipCombo
+		wantReason string
+		wantBlock  bool
+	}{
+		{
+			name:       "ready combo allowed",
+			model:      "qwen3-8b",
+			engine:     "vllm",
+			comboFacts: []ComboFact{{Model: "qwen3-8b", Engine: "vllm", Status: "ready"}},
+			wantBlock:  false,
+		},
+		{
+			name:       "blocked combo rejected",
+			model:      "qwen3-8b",
+			engine:     "vllm",
+			comboFacts: []ComboFact{{Model: "qwen3-8b", Engine: "vllm", Status: "blocked", Reason: "image missing required op"}},
+			wantReason: "image missing required op",
+			wantBlock:  true,
+		},
+		{
+			name:       "combo outside ready set rejected",
+			model:      "qwen3-8b",
+			engine:     "vllm",
+			comboFacts: []ComboFact{{Model: "glm-4.1v", Engine: "sglang", Status: "ready"}},
+			wantReason: "not in ready combos",
+			wantBlock:  true,
+		},
+		{
+			name:       "skip combo reason wins",
+			model:      "qwen3-8b",
+			engine:     "vllm",
+			skipCombos: []SkipCombo{{Model: "qwen3-8b", Engine: "vllm", Reason: "already explored in this round"}},
+			wantReason: "already explored in this round",
+			wantBlock:  true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, blocked := taskBlockedByExecutableFacts(tc.model, tc.engine, tc.comboFacts, tc.skipCombos)
+			if blocked != tc.wantBlock {
+				t.Fatalf("blocked = %v, want %v (reason=%q)", blocked, tc.wantBlock, reason)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestExplorerHandleEvent_RejectsBudgetExhaustedAdvisory(t *testing.T) {
+	bus := NewEventBus()
+	var gotID, gotStatus, gotReason string
+	e := NewExplorer(ExplorerConfig{
+		Enabled:   true,
+		Mode:      "budget",
+		MaxRounds: 1,
+		Schedule:  DefaultScheduleConfig(),
+	}, nil, nil, nil, bus,
+		WithRoundsUsed(1),
+		WithAdvisoryFeedback(func(ctx context.Context, advisoryID, status, reason string) error {
+			gotID, gotStatus, gotReason = advisoryID, status, reason
+			return nil
+		}),
+	)
+	e.tokenResetDate = time.Now().Format("2006-01-02")
+
+	e.handleEvent(context.Background(), ExplorerEvent{
+		Type: EventCentralAdvisory,
+		Advisory: json.RawMessage(`{
+			"id":"adv-budget",
+			"type":"recommendation",
+			"target_model":"qwen3-8b",
+			"target_engine":"vllm"
+		}`),
+	})
+
+	if gotID != "adv-budget" {
+		t.Fatalf("advisory id = %q, want adv-budget", gotID)
+	}
+	if gotStatus != "rejected" {
+		t.Fatalf("status = %q, want rejected", gotStatus)
+	}
+	if !strings.Contains(gotReason, "budget exhausted") {
+		t.Fatalf("reason = %q, want budget exhausted", gotReason)
+	}
+	if phase := e.Status().Phase; phase != "budget_exhausted" {
+		t.Fatalf("phase = %q, want budget_exhausted", phase)
+	}
+}
+
+func TestExplorerAdvisoryTaskAllowed(t *testing.T) {
+	t.Run("rejects combo outside ready set", func(t *testing.T) {
+		e := &Explorer{
+			gatherHardware: func(ctx context.Context) (HardwareInfo, error) {
+				return HardwareInfo{Profile: "nvidia-gb10-arm64", GPUArch: "blackwell"}, nil
+			},
+			gatherLocalModels: func(ctx context.Context) ([]LocalModel, error) {
+				return []LocalModel{{Name: "qwen3-8b", Type: "llm"}}, nil
+			},
+			gatherLocalEngines: func(ctx context.Context) ([]LocalEngine, error) {
+				return []LocalEngine{{Name: "sglang", Type: "sglang"}}, nil
+			},
+			gatherComboFacts: func(ctx context.Context, hardware HardwareInfo, models []LocalModel, engines []LocalEngine) ([]ComboFact, error) {
+				return []ComboFact{{Model: "glm-4.1v", Engine: "sglang", Status: "ready"}}, nil
+			},
+		}
+
+		ok, reason := e.advisoryTaskAllowed(context.Background(), PlanTask{Model: "qwen3-8b", Engine: "vllm"})
+		if ok {
+			t.Fatal("expected advisory task to be rejected")
+		}
+		if reason != "not in ready combos" {
+			t.Fatalf("reason = %q, want not in ready combos", reason)
+		}
+	})
+
+	t.Run("rejects completed history", func(t *testing.T) {
+		db, err := state.Open(context.Background(), ":memory:")
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer db.Close()
+		now := time.Now()
+		if err := db.InsertExplorationRun(context.Background(), &state.ExplorationRun{
+			ID:           "run-completed",
+			Kind:         "validate",
+			Goal:         "validate qwen3-8b on vllm",
+			RequestedBy:  "explorer",
+			Executor:     "go-agent",
+			Planner:      "llm",
+			Status:       "completed",
+			HardwareID:   "nvidia-gb10-arm64",
+			EngineID:     "vllm",
+			ModelID:      "qwen3-8b",
+			ApprovalMode: "auto",
+			StartedAt:    now,
+			CompletedAt:  now,
+		}); err != nil {
+			t.Fatalf("InsertExplorationRun: %v", err)
+		}
+		e := &Explorer{db: db}
+
+		ok, reason := e.advisoryTaskAllowed(context.Background(), PlanTask{Model: "qwen3-8b", Engine: "vllm"})
+		if ok {
+			t.Fatal("expected advisory task to be rejected")
+		}
+		if reason != "already completed on this device" {
+			t.Fatalf("reason = %q, want already completed on this device", reason)
+		}
+	})
 }
 
 func TestDefaultBenchmarkProfiles(t *testing.T) {
@@ -982,10 +1158,6 @@ func TestExplorerParseExplorationResult_PreservesArtifactsAndMatrix(t *testing.T
 }
 
 func TestExplorerAgentPlanner_AnalyzeRejectsInvalidValidatedConfidence(t *testing.T) {
-	dir := t.TempDir()
-	ws := NewExplorerWorkspace(dir)
-	_ = ws.Init()
-
 	validSummary := "# Exploration Summary\n\n" +
 		"## Key Findings\n\n" +
 		"- benchmark evidence exists\n\n" +
@@ -1064,29 +1236,64 @@ func TestExplorerAgentPlanner_AnalyzeRejectsInvalidValidatedConfidence(t *testin
 		"- none\n"
 
 	cases := []struct {
-		name         string
-		summary      string
-		wantErr      bool
-		wantFeedback string
+		name            string
+		summary         string
+		addExperiment   bool
+		experimentModel string
+		wantErr         bool
+		wantFeedback    string
 	}{
 		{
-			name:         "validated_with_benchmark_evidence",
-			summary:      validSummary,
-			wantErr:      false,
-			wantFeedback: "",
+			name:            "validated_with_benchmark_evidence",
+			summary:         validSummary,
+			addExperiment:   true,
+			experimentModel: "test-model",
+			wantErr:         false,
+			wantFeedback:    "",
 		},
 		{
-			name:         "validated_without_benchmark_evidence",
-			summary:      invalidSummary,
-			wantErr:      false,
-			wantFeedback: "validated without benchmark evidence",
+			name:            "validated_without_benchmark_evidence",
+			summary:         invalidSummary,
+			addExperiment:   false,
+			experimentModel: "",
+			wantErr:         false,
+			wantFeedback:    "validated without benchmark evidence",
+		},
+		{
+			name:            "validated_without_matching_experiment",
+			summary:         validSummary,
+			addExperiment:   true,
+			experimentModel: "other-model",
+			wantErr:         false,
+			wantFeedback:    "validated without matching successful experiment",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ws := NewExplorerWorkspace(dir)
+			_ = ws.Init()
 			if err := ws.WriteFile("summary.md", tc.summary); err != nil {
 				t.Fatalf("WriteFile summary.md: %v", err)
+			}
+			if tc.addExperiment {
+				if _, err := ws.WriteExperimentResult(1, TaskSpec{
+					Kind:   "validate",
+					Model:  tc.experimentModel,
+					Engine: "vllm",
+				}, ExperimentResult{
+					Status: "completed",
+					Benchmarks: []BenchmarkEntry{{
+						Concurrency:   1,
+						InputTokens:   128,
+						MaxTokens:     256,
+						ThroughputTPS: 120.0,
+						TTFTP95Ms:     35,
+					}},
+				}); err != nil {
+					t.Fatalf("WriteExperimentResult: %v", err)
+				}
 			}
 			mock := &mockStreamingLLM{
 				responses: []Response{{Content: tc.summary}},
@@ -1199,8 +1406,16 @@ func TestExtractRepresentativeCell(t *testing.T) {
 		{
 			"single_cell",
 			`{"matrix_profiles":[{"label":"latency","cells":[
-				{"concurrency":2,"input_tokens":512,"max_tokens":256,"result":{"throughput_tps":100}}
-			]}]}`,
+					{"concurrency":2,"input_tokens":512,"max_tokens":256,"result":{"throughput_tps":100}}
+				]}]}`,
+			true, 512,
+		},
+		{
+			"skips_no_output_cells",
+			`{"matrix_profiles":[{"label":"latency","cells":[
+					{"concurrency":1,"input_tokens":1024,"max_tokens":1024,"result":{"throughput_tps":0,"successful_requests":0,"avg_output_tokens":0}},
+					{"concurrency":1,"input_tokens":512,"max_tokens":512,"result":{"throughput_tps":88,"successful_requests":2,"avg_output_tokens":256}}
+				]}]}`,
 			true, 512,
 		},
 	}

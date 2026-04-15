@@ -32,6 +32,7 @@ type ExplorerConfig struct {
 type ExplorerStatus struct {
 	Running          bool           `json:"running"`
 	Enabled          bool           `json:"enabled"`
+	Phase            string         `json:"phase"`
 	Tier             int            `json:"tier"`
 	ActivePlan       *ExplorerPlan  `json:"active_plan,omitempty"`
 	Schedule         ScheduleConfig `json:"schedule"`
@@ -105,6 +106,7 @@ type Explorer struct {
 	mu            sync.RWMutex
 	running       bool
 	tier          int
+	phase         string
 	activePlan    *ExplorerPlan
 	cachedGPUArch string // cached from gatherHardware for overlay YAML (O13)
 	lastRun       time.Time
@@ -214,6 +216,7 @@ func NewExplorer(config ExplorerConfig, agent *Agent, explMgr *ExplorationManage
 		explMgr: explMgr,
 		db:      db,
 		bus:     bus,
+		phase:   "idle",
 	}
 	for _, o := range opts {
 		o(e)
@@ -299,11 +302,13 @@ func (e *Explorer) Start(ctx context.Context) {
 	}
 	ctx, e.cancel = context.WithCancel(ctx)
 	e.running = true
+	e.phase = "idle"
 	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
 		e.running = false
 		e.activePlan = nil
+		e.phase = "stopped"
 		e.mu.Unlock()
 	}()
 
@@ -357,15 +362,21 @@ func (e *Explorer) Stop() {
 		e.cancel()
 	}
 	e.running = false
+	e.phase = "stopped"
 }
 
 // Status returns the Explorer's current state.
 func (e *Explorer) Status() ExplorerStatus {
+	e.refreshTier(context.Background())
+	if _, err := e.refreshBlockedDeploys(context.Background()); err != nil {
+		slog.Debug("explorer: status blocked deploy refresh failed", "error", err)
+	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return ExplorerStatus{
 		Running:          e.running,
 		Enabled:          e.config.Enabled,
+		Phase:            e.phase,
 		Tier:             e.tier,
 		ActivePlan:       e.activePlan,
 		Schedule:         e.config.Schedule,
@@ -380,6 +391,33 @@ func (e *Explorer) Status() ExplorerStatus {
 		LastPlanMetrics:  e.lastPlanMetrics,
 		BlockedByDeploys: e.blockedByDeploys,
 	}
+}
+
+func (e *Explorer) setPhase(phase string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.phase = phase
+}
+
+func (e *Explorer) refreshBlockedDeploys(ctx context.Context) ([]DeployStatus, error) {
+	if e.gatherDeploys == nil {
+		e.mu.Lock()
+		e.blockedByDeploys = nil
+		e.mu.Unlock()
+		return nil, nil
+	}
+	deploys, err := e.gatherDeploys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	if len(deploys) == 0 {
+		e.blockedByDeploys = nil
+	} else {
+		e.blockedByDeploys = append([]DeployStatus(nil), deploys...)
+	}
+	e.mu.Unlock()
+	return deploys, nil
 }
 
 // CleanupDeploys stops all active deployments to free GPU memory.
@@ -459,6 +497,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 
 	if !e.isEnabled() {
 		slog.Debug("explorer disabled, skipping event", "type", ev.Type)
+		e.rejectAdvisoryEvent(ctx, ev, "explorer is disabled on this device")
 		return
 	}
 
@@ -484,17 +523,26 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	if mode == "once" && roundsUsed >= 1 {
 		e.mu.Lock()
 		e.config.Enabled = false
+		e.phase = "once_complete"
 		e.mu.Unlock()
 		e.persistConfigKey(ctx, "enabled", "false")
 		slog.Info("explorer: once mode completed, auto-disabling")
+		e.rejectAdvisoryEvent(ctx, ev, "explorer once mode already completed on this device")
 		return
 	}
 	if mode == "budget" && maxRounds > 0 && roundsUsed >= maxRounds {
+		e.setPhase("budget_exhausted")
+		if _, err := e.refreshBlockedDeploys(ctx); err != nil {
+			slog.Debug("explorer: refresh blocked deploys failed after budget exhaustion", "error", err)
+		}
 		slog.Info("explorer: budget exhausted", "rounds_used", roundsUsed, "max_rounds", maxRounds)
+		e.rejectAdvisoryEvent(ctx, ev, "explorer budget exhausted on this device")
 		return
 	}
 	if maxTokens > 0 && tokensUsed >= maxTokens {
+		e.setPhase("token_budget_exhausted")
 		slog.Info("explorer: daily token budget exhausted", "used", tokensUsed, "max", maxTokens)
+		e.rejectAdvisoryEvent(ctx, ev, "explorer daily token budget exhausted on this device")
 		return
 	}
 
@@ -521,28 +569,25 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	// The user must explicitly call explorer action=cleanup to proceed.
 	// Only gated when cleanupDeploys is wired — otherwise no action available.
 	if e.cleanupDeploys != nil && e.gatherDeploys != nil {
-		deploys, gErr := e.gatherDeploys(ctx)
+		deploys, gErr := e.refreshBlockedDeploys(ctx)
 		if gErr == nil && len(deploys) > 0 {
 			names := make([]string, 0, len(deploys))
 			for _, d := range deploys {
 				names = append(names, d.Model+"("+d.Engine+")")
 			}
+			e.setPhase("blocked_by_deploys")
 			slog.Warn("explorer: cycle blocked — active deployments occupy GPU memory",
 				"count", len(deploys), "deployments", strings.Join(names, ", "))
-			e.mu.Lock()
-			e.blockedByDeploys = deploys
-			e.mu.Unlock()
 			return
 		}
-		e.mu.Lock()
-		e.blockedByDeploys = nil
-		e.mu.Unlock()
 	}
 
 	// Build plan input from current state
+	e.setPhase("planning")
 	slog.Info("explorer: building plan input")
 	input, err := e.buildPlanInput(ctx, &ev)
 	if err != nil {
+		e.setPhase("idle")
 		slog.Warn("explorer: build plan input failed", "error", err)
 		return
 	}
@@ -557,6 +602,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	plan, planTokens, err := planner.Plan(ctx, *input)
 	degraded := false
 	if err != nil {
+		e.setPhase("idle")
 		if tier >= 2 {
 			slog.Warn("explorer: tier 2 planner failed", "error", err)
 		} else {
@@ -634,6 +680,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		if mode == "once" {
 			slog.Info("explorer: once mode completed, auto-disabling")
 		}
+		e.setPhase("idle")
 		return
 	}
 
@@ -655,6 +702,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	e.mu.Lock()
 	e.activePlan = plan
 	e.lastRun = time.Now()
+	e.phase = "do"
 	e.mu.Unlock()
 
 	// No hard timeout — PDCA runs until completion, budget exhaustion, or user-initiated Stop().
@@ -691,6 +739,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 			}
 
 			slog.Info("explorer: PDCA Check phase", "cycle", cycle+1)
+			e.setPhase("check")
 			verdict, extraTasks, analyzeTokens, err := ap.Analyze(ctx)
 			if analyzeTokens > 0 {
 				e.mu.Lock()
@@ -736,6 +785,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 			}
 			e.mu.Lock()
 			e.activePlan = extraPlan
+			e.phase = "do"
 			e.mu.Unlock()
 			e.executePlan(ctx, extraPlan)
 		}
@@ -754,8 +804,10 @@ pdcaDone:
 	e.mu.Lock()
 	e.lastPlanMetrics = metrics
 	e.activePlan = nil // D9: clear after execution
+	e.phase = "idle"
 	if mode == "once" {
 		e.config.Enabled = false
+		e.phase = "once_complete"
 	}
 	e.mu.Unlock()
 	if mode == "once" {
@@ -765,7 +817,19 @@ pdcaDone:
 
 	// D10: log what's still deployed when budget exhausted
 	if mode == "budget" && maxRounds > 0 && e.roundsUsed >= maxRounds {
-		slog.Info("explorer: budget exhausted — any active deployments remain running")
+		e.setPhase("budget_exhausted")
+		if deploys, err := e.refreshBlockedDeploys(ctx); err == nil && len(deploys) > 0 {
+			e.setPhase("blocked_by_deploys")
+			names := make([]string, 0, len(deploys))
+			for _, d := range deploys {
+				names = append(names, d.Model+"("+d.Engine+")")
+			}
+			slog.Warn("explorer: budget exhausted with active deployments still running",
+				"count", len(deploys), "deployments", strings.Join(names, ", "))
+		} else if err != nil {
+			slog.Debug("explorer: post-cycle deploy refresh failed", "error", err)
+		}
+		slog.Info("explorer: budget exhausted")
 	}
 }
 
@@ -793,26 +857,25 @@ func (e *Explorer) handleAdvisory(ctx context.Context, ev ExplorerEvent) {
 	// If no exploration manager, just log and send feedback that we can't validate
 	if e.explMgr == nil || e.tier == 0 {
 		slog.Info("explorer: cannot validate advisory (no exploration manager or tier 0)")
-		e.sendAdvisoryFeedback(ctx, advisory.ID, "deferred", "no exploration capability on this device")
+		e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", "no exploration capability on this device")
 		return
 	}
 
-	harvester := e.currentHarvester()
 	go func() {
-		result := e.executeTask(ctx, task, "") // advisory tasks aren't from plans
-
-		if result.Success {
-			reason := fmt.Sprintf("validated: %.1f tok/s, TTFT P95 %.0fms", result.Throughput, result.TTFTP95)
-			e.sendAdvisoryFeedback(ctx, advisory.ID, "accepted", reason)
-		} else {
-			e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", "validation failed: "+result.Error)
-		}
-
-		actions := harvester.Harvest(ctx, HarvestInput{Task: task, Result: result})
-		for _, a := range actions {
-			slog.Info("explorer: advisory harvest action", "type", a.Type, "detail", a.Detail)
-		}
+		e.executeAdvisoryValidation(ctx, advisory, task)
 	}()
+}
+
+func (e *Explorer) rejectAdvisoryEvent(ctx context.Context, ev ExplorerEvent, reason string) {
+	if ev.Type != EventCentralAdvisory || len(ev.Advisory) == 0 {
+		return
+	}
+	advisory, _, err := parseAdvisoryTask(ev.Advisory, "")
+	if err != nil {
+		slog.Debug("explorer: advisory rejection parse skipped", "error", err)
+		return
+	}
+	e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", reason)
 }
 
 // handleScenario processes a central scenario event: parses the scenario,
@@ -862,40 +925,196 @@ func (e *Explorer) sendAdvisoryFeedback(ctx context.Context, advisoryID, status,
 		slog.Debug("explorer: no advisory feedback callback, skipping")
 		return
 	}
+	switch status {
+	case "accepted", "validated", "rejected":
+	default:
+		slog.Warn("explorer: unsupported advisory feedback status, normalizing to rejected",
+			"advisory_id", advisoryID, "status", status)
+		status = "rejected"
+	}
 	if err := e.advisoryFeedback(ctx, advisoryID, status, reason); err != nil {
 		slog.Warn("explorer: advisory feedback failed",
 			"advisory_id", advisoryID, "error", err)
 	}
 }
 
+func (e *Explorer) advisoryTaskAllowed(ctx context.Context, task PlanTask) (bool, string) {
+	var (
+		hardware HardwareInfo
+		models   []LocalModel
+		engines  []LocalEngine
+	)
+	if e.gatherHardware != nil {
+		if hw, err := e.gatherHardware(ctx); err == nil {
+			hardware = hw
+		}
+	}
+	if e.gatherLocalModels != nil {
+		if localModels, err := e.gatherLocalModels(ctx); err == nil {
+			models = localModels
+		}
+	}
+	if e.gatherLocalEngines != nil {
+		if localEngines, err := e.gatherLocalEngines(ctx); err == nil {
+			engines = localEngines
+		}
+	}
+	if e.gatherComboFacts != nil {
+		if comboFacts, err := e.gatherComboFacts(ctx, hardware, models, engines); err == nil {
+			if reason, blocked := taskBlockedByExecutableFacts(task.Model, task.Engine, comboFacts, nil); blocked {
+				return false, reason
+			}
+		}
+	}
+	if e.db != nil {
+		completed, _ := e.db.HasCompletedExploration(ctx, task.Model, task.Engine)
+		if completed {
+			return false, "already completed on this device"
+		}
+		structural, _ := e.db.HasStructuralExplorationFailure(ctx, task.Model, task.Engine)
+		if structural {
+			return false, "combo already has a structural exploration failure on this device"
+		}
+		failCount, _ := e.db.CountFailedExplorations(ctx, task.Model, task.Engine)
+		if failCount >= maxExplorationFailures {
+			return false, fmt.Sprintf("combo already failed %d times on this device", failCount)
+		}
+	}
+	return true, ""
+}
+
+func taskStatusFromHarvest(result HarvestResult) string {
+	if result.Success {
+		return "completed"
+	}
+	if result.Cancelled {
+		return "cancelled"
+	}
+	return "failed"
+}
+
+func (e *Explorer) finalizeExplorationPlanRecord(ctx context.Context, plan *ExplorerPlan, terminalStatus string) {
+	if e.db == nil || plan == nil {
+		return
+	}
+	updateCtx := ctx
+	if updateCtx == nil || updateCtx.Err() != nil {
+		updateCtx = context.Background()
+	}
+	now := time.Now()
+	summaryJSON := ""
+	if planJSON, err := json.Marshal(plan); err == nil {
+		summaryJSON = string(planJSON)
+	}
+	if err := e.db.UpdateExplorationPlan(updateCtx, &state.ExplorationPlanRow{
+		ID:          plan.ID,
+		Status:      terminalStatus,
+		Progress:    len(plan.Tasks),
+		CompletedAt: &now,
+		SummaryJSON: summaryJSON,
+	}); err != nil {
+		slog.Debug("explorer: finalize plan failed", "error", err, "plan_id", plan.ID, "status", terminalStatus)
+	}
+}
+
+func (e *Explorer) executeAdvisoryValidation(ctx context.Context, advisory advisoryTask, task PlanTask) {
+	if e.cleanupDeploys != nil && e.gatherDeploys != nil {
+		if deploys, err := e.refreshBlockedDeploys(ctx); err == nil && len(deploys) > 0 {
+			e.setPhase("blocked_by_deploys")
+			e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", "active deployments already occupy this device")
+			return
+		}
+	}
+
+	if ok, reason := e.advisoryTaskAllowed(ctx, task); !ok {
+		slog.Info("explorer: advisory validation rejected by local execution facts",
+			"id", advisory.ID, "model", task.Model, "engine", task.Engine, "reason", reason)
+		e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", reason)
+		return
+	}
+
+	e.mu.RLock()
+	mode := e.config.Mode
+	maxRounds := e.config.MaxRounds
+	e.mu.RUnlock()
+	if mode == "budget" && maxRounds > 0 {
+		if roundsUsed, ok := e.claimPlanRound(ctx, mode, maxRounds); !ok {
+			e.setPhase("budget_exhausted")
+			e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", fmt.Sprintf("explorer budget exhausted on this device (%d/%d rounds)", roundsUsed, maxRounds))
+			return
+		}
+	}
+
+	plan := &ExplorerPlan{
+		ID:        "advisory-" + firstNonEmpty(advisory.ID, strconv.FormatInt(time.Now().UnixNano(), 10)),
+		Tier:      e.Status().Tier,
+		Tasks:     []PlanTask{task},
+		Reasoning: "central advisory validation",
+	}
+	if e.db != nil {
+		if err := e.persistExplorationPlan(ctx, plan, string(EventCentralAdvisory)); err != nil {
+			slog.Debug("explorer: persist advisory plan failed", "error", err, "plan_id", plan.ID)
+		}
+	}
+
+	e.mu.Lock()
+	e.activePlan = plan
+	e.lastRun = time.Now()
+	e.phase = "advisory"
+	e.mu.Unlock()
+
+	taskStart := time.Now()
+	result := e.executeTask(ctx, task, plan.ID)
+	taskElapsed := time.Since(taskStart)
+	plan.Tasks[0].Status = taskStatusFromHarvest(result)
+
+	harvester := e.currentHarvester()
+	if harvester != nil {
+		actions := harvester.Harvest(ctx, HarvestInput{Task: task, Result: result})
+		for _, a := range actions {
+			slog.Info("explorer: advisory harvest action", "type", a.Type, "detail", a.Detail)
+		}
+	}
+
+	if e.workspace != nil {
+		if _, err := e.workspace.WriteExperimentResult(1, taskSpecFromPlanTask(task), harvestToExperimentResult(plan.Tasks[0].Status, taskStart, taskElapsed, result)); err != nil {
+			slog.Debug("explorer: write advisory experiment result failed", "error", err)
+		}
+	}
+
+	terminalStatus := plan.Tasks[0].Status
+	if ctx.Err() != nil {
+		terminalStatus = "cancelled"
+	}
+	e.finalizeExplorationPlanRecord(ctx, plan, terminalStatus)
+
+	e.mu.Lock()
+	e.activePlan = nil
+	e.phase = "idle"
+	e.mu.Unlock()
+
+	if e.cleanupDeploys != nil && e.gatherDeploys != nil {
+		if deploys, err := e.refreshBlockedDeploys(ctx); err == nil && len(deploys) > 0 {
+			e.setPhase("blocked_by_deploys")
+		}
+	}
+
+	if result.Success {
+		reason := fmt.Sprintf("validated: %.1f tok/s, TTFT P95 %.0fms", result.Throughput, result.TTFTP95)
+		e.sendAdvisoryFeedback(ctx, advisory.ID, "accepted", reason)
+		return
+	}
+	e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", "validation failed: "+result.Error)
+}
+
 func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 	harvester := e.currentHarvester()
 	terminalStatus := "completed"
 	defer func() {
-		if e.db == nil || plan == nil {
-			return
-		}
-		updateCtx := ctx
-		if updateCtx.Err() != nil {
-			updateCtx = context.Background()
-		}
 		if ctx.Err() != nil {
 			terminalStatus = "cancelled"
 		}
-		now := time.Now()
-		summaryJSON := ""
-		if planJSON, err := json.Marshal(plan); err == nil {
-			summaryJSON = string(planJSON)
-		}
-		if err := e.db.UpdateExplorationPlan(updateCtx, &state.ExplorationPlanRow{
-			ID:          plan.ID,
-			Status:      terminalStatus,
-			Progress:    len(plan.Tasks),
-			CompletedAt: &now,
-			SummaryJSON: summaryJSON,
-		}); err != nil {
-			slog.Debug("explorer: finalize plan failed", "error", err, "plan_id", plan.ID, "status", terminalStatus)
-		}
+		e.finalizeExplorationPlanRecord(ctx, plan, terminalStatus)
 	}()
 	// Track deploy-level failures so we can skip doomed tasks within the same plan.
 	// Key: "model|engine", only set for deploy crashes (not benchmark/param failures).
@@ -1548,15 +1767,20 @@ func (e *Explorer) executeTask(ctx context.Context, task PlanTask, planID string
 		}
 	}
 
+	result := e.parseExplorationResult(status)
 	if status.Run.Status == "failed" {
-		return HarvestResult{Success: false, Error: status.Run.Error}
+		result.Success = false
+		result.Error = status.Run.Error
+		return result
 	}
 	if status.Run.Status == "cancelled" {
-		return HarvestResult{Success: false, Cancelled: true, Error: status.Run.Error}
+		result.Success = false
+		result.Cancelled = true
+		result.Error = status.Run.Error
+		return result
 	}
 
 	// Parse benchmark results from exploration summary
-	result := e.parseExplorationResult(status)
 	if len(task.Params) > 0 {
 		result.Config = make(map[string]any, len(task.Params))
 		for key, value := range task.Params {
@@ -1988,15 +2212,44 @@ func extractAdvisoryConfig(payload map[string]any) map[string]any {
 		}
 		switch typed := value.(type) {
 		case map[string]any:
-			return typed
+			return sanitizeAdvisoryConfig(typed)
 		case string:
 			var parsed map[string]any
 			if err := json.Unmarshal([]byte(typed), &parsed); err == nil {
-				return parsed
+				return sanitizeAdvisoryConfig(parsed)
 			}
 		}
 	}
 	return nil
+}
+
+func sanitizeAdvisoryConfig(config map[string]any) map[string]any {
+	if len(config) == 0 {
+		return nil
+	}
+	sanitized := make(map[string]any, len(config))
+	for key, value := range config {
+		if advisoryScalarValue(value) {
+			sanitized[key] = value
+		}
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func advisoryScalarValue(value any) bool {
+	switch value.(type) {
+	case string, bool,
+		float64, float32,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		json.Number:
+		return true
+	default:
+		return false
+	}
 }
 
 func firstNonEmptyJSON(payload map[string]any, keys ...string) string {
