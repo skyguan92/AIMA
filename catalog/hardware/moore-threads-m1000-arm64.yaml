@@ -6,6 +6,7 @@ hardware:
   gpu:
     arch: MUSA
     vram_mib: 63488
+    bandwidth_gbps: 50
     compute_id: ""
     compute_units: 0
     resource_name: ""

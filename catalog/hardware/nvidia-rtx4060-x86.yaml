@@ -6,6 +6,7 @@ hardware:
   gpu:
     arch: Ada
     vram_mib: 8192
+    bandwidth_gbps: 272
     compute_id: "8.9"
     compute_units: 3072
     resource_name: "nvidia.com/gpu"

@@ -38,6 +38,9 @@ func TestComputeFitScore(t *testing.T) {
 		wantMax        int
 	}{
 		{
+			// D1=30(LLM) + D2a=10(65%util) + D2b=6(bw=0→neutral) + D2c=5(Ada)
+			// + D3=20(model+engine+golden) + D4a=8(30/30) + D4b=0(no date)
+			// + D5=10(single) = 89
 			name: "exact arch + golden + local engine = high score",
 			ma:   llmBigAsset,
 			hw: knowledge.HardwareInfo{
@@ -60,11 +63,13 @@ func TestComputeFitScore(t *testing.T) {
 			modelAvailable: true,
 			goldenExists:   true,
 			maxFitBillion:  30,
-			wantMin:        700,
-			wantMax:        1100,
+			wantMin:        82,
+			wantMax:        95,
 		},
 		{
-			name: "LLM ranks above ASR with same hardware fit",
+			// D1=30(LLM) + D2a=5(33%util) + D2b=6(bw=0) + D2c=5(Ada)
+			// + D3=0 + D4a=2(8/30) + D4b=0 + D5=10(single) = 58
+			name: "LLM no local assets = medium score",
 			ma:   llmAsset,
 			hw: knowledge.HardwareInfo{
 				GPUArch:    "Ada",
@@ -83,11 +88,13 @@ func TestComputeFitScore(t *testing.T) {
 				Adjustments: make(map[string]any),
 			},
 			maxFitBillion: 30,
-			wantMin:       300,
-			wantMax:       500,
+			wantMin:       50,
+			wantMax:       65,
 		},
 		{
-			name: "multi-GPU requirement lowers score",
+			// D1=30(LLM) + D2a=12(81%util) + D2b=6(bw=0) + D2c=5(Ada)
+			// + D3=0 + D4a=2(8/30) + D4b=0 + D5=5(dual) = 60
+			name: "multi-GPU: better VRAM util offset by D5 penalty",
 			ma:   llmAsset,
 			hw: knowledge.HardwareInfo{
 				GPUArch:    "Ada",
@@ -106,11 +113,13 @@ func TestComputeFitScore(t *testing.T) {
 				Adjustments: make(map[string]any),
 			},
 			maxFitBillion: 30,
-			wantMin:       250,
-			wantMax:       450,
+			wantMin:       52,
+			wantMax:       66,
 		},
 		{
-			name: "no performance data still scores non-zero",
+			// D1=5(ASR) + D2a=5(49%util) + D2b=6(bw=0) + D2c=5(CUDA)
+			// + D3=0 + D4a=0(1.7/30) + D4b=0 + D5=10(single) = 31
+			name: "ASR scores far below LLM",
 			ma:   asrAsset,
 			hw: knowledge.HardwareInfo{
 				GPUArch:    "CUDA",
@@ -129,8 +138,58 @@ func TestComputeFitScore(t *testing.T) {
 				Adjustments: make(map[string]any),
 			},
 			maxFitBillion: 30,
-			wantMin:       150,
-			wantMax:       350,
+			wantMin:       25,
+			wantMax:       40,
+		},
+		{
+			// llamacpp on 16GB M4 — 8B Q4 fits well in RAM
+			// D1=30(LLM) + D2a=5(ram 6144/16384=37%util) + D2b=6(bw=0) + D2c=0(arch="*")
+			// + D3=0 + D4a=0(int(8/80*8)=0) + D4b=0 + D5=10(single) = 51
+			name: "llamacpp 8B on M4: RAM util good fit",
+			ma:   llmAsset,
+			hw: knowledge.HardwareInfo{
+				RAMTotalMiB: 16384,
+				GPUCount:    0,
+			},
+			variant: &knowledge.ModelVariant{
+				Hardware: knowledge.ModelVariantHardware{
+					GPUArch:    "*",
+					VRAMMinMiB: 0,
+					RAMMinMiB:  6144,
+				},
+			},
+			fit: &knowledge.FitReport{
+				Fit:         true,
+				Adjustments: make(map[string]any),
+			},
+			maxFitBillion: 80,
+			wantMin:       45,
+			wantMax:       58,
+		},
+		{
+			// llamacpp on 16GB M4 — 80B Q4 overflows RAM
+			// D1=30(LLM) + D2a=0(ram 53248/16384=325%!) + D2b=6(bw=0) + D2c=0(arch="*")
+			// + D3=0 + D4a=8(80/80) + D4b=0 + D5=10(single) = 54
+			name: "llamacpp 80B on M4: RAM overflow penalized",
+			ma:   llmBigAsset,
+			hw: knowledge.HardwareInfo{
+				RAMTotalMiB: 16384,
+				GPUCount:    0,
+			},
+			variant: &knowledge.ModelVariant{
+				Hardware: knowledge.ModelVariantHardware{
+					GPUArch:    "*",
+					VRAMMinMiB: 0,
+					RAMMinMiB:  53248,
+				},
+			},
+			fit: &knowledge.FitReport{
+				Fit:         true,
+				Adjustments: make(map[string]any),
+			},
+			maxFitBillion: 80,
+			wantMin:       48,
+			wantMax:       60,
 		},
 		{
 			name: "fit=false returns zero",
@@ -166,6 +225,180 @@ func TestComputeFitScore(t *testing.T) {
 			score := computeFitScore(tt.ma, tt.hw, tt.variant, tt.fit, tt.engineStatus, tt.modelAvailable, tt.goldenExists, tt.maxFitBillion)
 			if score < tt.wantMin || score > tt.wantMax {
 				t.Errorf("computeFitScore() = %d, want [%d, %d]", score, tt.wantMin, tt.wantMax)
+			}
+		})
+	}
+}
+
+func TestBandwidthAffinity(t *testing.T) {
+	moeAsset := &knowledge.ModelAsset{}
+	moeAsset.Metadata.Name = "qwen3-30b-a3b"
+	moeAsset.Metadata.Type = "llm"
+	moeAsset.Metadata.ParameterCount = "30B-A3B"
+
+	denseAsset := &knowledge.ModelAsset{}
+	denseAsset.Metadata.Name = "qwen3-8b"
+	denseAsset.Metadata.Type = "llm"
+	denseAsset.Metadata.ParameterCount = "8B"
+
+	tests := []struct {
+		name     string
+		hw       knowledge.HardwareInfo
+		ma       *knowledge.ModelAsset
+		wantMin  int
+		wantMax  int
+	}{
+		{
+			// GB10: 128GB unified / 273 GB/s → ratio=0.469 → VRAM-rich
+			// MoE on VRAM-rich → 8
+			name: "VRAM-rich + MoE = 8",
+			hw: knowledge.HardwareInfo{
+				GPUBandwidthGbps: 273,
+				GPUVRAMMiB:       15360,
+				RAMTotalMiB:      131072,
+				UnifiedMemory:    true,
+				GPUCount:         1,
+			},
+			ma:      moeAsset,
+			wantMin: 8,
+			wantMax: 8,
+		},
+		{
+			// GB10: same device, Dense → 2
+			name: "VRAM-rich + Dense = 2",
+			hw: knowledge.HardwareInfo{
+				GPUBandwidthGbps: 273,
+				GPUVRAMMiB:       15360,
+				RAMTotalMiB:      131072,
+				UnifiedMemory:    true,
+				GPUCount:         1,
+			},
+			ma:      denseAsset,
+			wantMin: 2,
+			wantMax: 2,
+		},
+		{
+			// RTX 4090: 24GB / 1008 GB/s → ratio=0.024 → BW-rich
+			// Dense on BW-rich → 8
+			name: "BW-rich + Dense = 8",
+			hw: knowledge.HardwareInfo{
+				GPUBandwidthGbps: 1008,
+				GPUVRAMMiB:       24576,
+				UnifiedMemory:    false,
+				GPUCount:         1,
+			},
+			ma:      denseAsset,
+			wantMin: 8,
+			wantMax: 8,
+		},
+		{
+			// RTX 4090: BW-rich + MoE → 5
+			name: "BW-rich + MoE = 5",
+			hw: knowledge.HardwareInfo{
+				GPUBandwidthGbps: 1008,
+				GPUVRAMMiB:       24576,
+				UnifiedMemory:    false,
+				GPUCount:         1,
+			},
+			ma:      moeAsset,
+			wantMin: 5,
+			wantMax: 5,
+		},
+		{
+			// Apple M4: 16GB / 120 GB/s → ratio=0.133 → Neutral → 6
+			name: "Neutral device = 6 for both",
+			hw: knowledge.HardwareInfo{
+				GPUBandwidthGbps: 120,
+				GPUVRAMMiB:       0,
+				RAMTotalMiB:      16384,
+				UnifiedMemory:    true,
+				GPUCount:         1,
+			},
+			ma:      denseAsset,
+			wantMin: 6,
+			wantMax: 6,
+		},
+		{
+			// Unknown bandwidth → 6 (neutral fallback, matches the neutral ratio band)
+			name: "unknown bandwidth = 6",
+			hw: knowledge.HardwareInfo{
+				GPUBandwidthGbps: 0,
+				GPUVRAMMiB:       24576,
+				GPUCount:         1,
+			},
+			ma:      denseAsset,
+			wantMin: 6,
+			wantMax: 6,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := bandwidthAffinityScore(tt.hw, tt.ma)
+			if score < tt.wantMin || score > tt.wantMax {
+				t.Errorf("bandwidthAffinityScore() = %d, want [%d, %d]", score, tt.wantMin, tt.wantMax)
+			}
+		})
+	}
+}
+
+func TestEffectiveVRAMMiB(t *testing.T) {
+	tests := []struct {
+		name string
+		hw   knowledge.HardwareInfo
+		want int
+	}{
+		{
+			name: "GB10 unified uses RAMTotal",
+			hw:   knowledge.HardwareInfo{UnifiedMemory: true, GPUVRAMMiB: 15360, RAMTotalMiB: 131072, GPUCount: 1},
+			want: 131072,
+		},
+		{
+			name: "Apple M4 unified GPU=0",
+			hw:   knowledge.HardwareInfo{UnifiedMemory: true, GPUVRAMMiB: 0, RAMTotalMiB: 16384, GPUCount: 1},
+			want: 16384,
+		},
+		{
+			name: "RTX 4090 x2 discrete",
+			hw:   knowledge.HardwareInfo{UnifiedMemory: false, GPUVRAMMiB: 24576, GPUCount: 2},
+			want: 49152,
+		},
+		{
+			name: "single discrete GPU default count",
+			hw:   knowledge.HardwareInfo{UnifiedMemory: false, GPUVRAMMiB: 8192, GPUCount: 0},
+			want: 8192,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := effectiveVRAMMiB(tt.hw)
+			if got != tt.want {
+				t.Errorf("effectiveVRAMMiB() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModalityScore(t *testing.T) {
+	tests := []struct {
+		modelType string
+		want      int
+	}{
+		{"llm", 30},
+		{"LLM", 30},
+		{"vlm", 25},
+		{"embedding", 8},
+		{"rerank", 8},
+		{"asr", 5},
+		{"tts", 5},
+		{"image_gen", 3},
+		{"video_gen", 3},
+		{"unknown", 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.modelType, func(t *testing.T) {
+			if got := modalityScore(tt.modelType); got != tt.want {
+				t.Errorf("modalityScore(%q) = %d, want %d", tt.modelType, got, tt.want)
 			}
 		})
 	}

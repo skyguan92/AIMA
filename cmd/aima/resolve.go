@@ -174,6 +174,7 @@ func buildHardwareInfo(ctx context.Context, cat *knowledge.Catalog, rtName strin
 			hwInfo.HardwareProfile = hp.Metadata.Name
 		}
 		hwInfo.TDPWatts = cat.FindHardwareTDP(hwInfo)
+		hwInfo.GPUBandwidthGbps = cat.FindGPUBandwidth(hwInfo)
 	}
 	return hwInfo
 }

@@ -73,6 +73,7 @@ type HardwareSpec struct {
 type GPUSpec struct {
 	Arch             string `yaml:"arch"`
 	VRAMMiB          int    `yaml:"vram_mib"`
+	BandwidthGbps    int    `yaml:"bandwidth_gbps"`               // Per-GPU memory bandwidth in GB/s (unified mem: shared bus; discrete: GDDR/HBM)
 	ComputeID        string `yaml:"compute_id"`
 	ComputeUnits     int    `yaml:"compute_units"`
 	ResourceName     string `yaml:"resource_name,omitempty"`      // K8s GPU resource name, e.g. "nvidia.com/gpu", "amd.com/gpu"
@@ -411,6 +412,7 @@ type ModelVariantHardware struct {
 	GPUArch       string `yaml:"gpu_arch"`
 	GPUModel      string `yaml:"gpu_model,omitempty"`
 	VRAMMinMiB    int    `yaml:"vram_min_mib"`
+	RAMMinMiB     int    `yaml:"ram_min_mib,omitempty"` // system RAM needed (llamacpp CPU inference); used for scoring when vram_min_mib=0
 	GPUCountMin   int    `yaml:"gpu_count_min,omitempty"` // minimum GPUs required (0 = any; typically matches tensor_parallel_size)
 	UnifiedMemory *bool  `yaml:"unified_memory,omitempty"`
 }

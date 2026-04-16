@@ -274,6 +274,7 @@ variants:
     hardware:
       gpu_arch: "*"
       vram_min_mib: 0
+      ram_min_mib: 20480
     engine: llamacpp
     format: gguf
     default_config:

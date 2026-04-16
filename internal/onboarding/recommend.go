@@ -292,18 +292,15 @@ func buildMinimalResolvedConfig(variant *knowledge.ModelVariant, engine *knowled
 	return rc
 }
 
-// computeFitScore returns an unbounded integer score so meaningful gaps are
-// preserved (the previous 0-100 clamp produced ten-way ties at 100). Higher
-// is better. Components:
+// computeFitScore returns a 0-100 score across five dimensions:
 //
-//	+100 base for any model that fits
-//	+modality bonus (LLM dominates, then VLM/embedding/asr/tts)
-//	+local-asset bonuses (cached weights, installed engine, golden config)
-//	+hardware-match bonuses (arch, vram sweet-spot)
-//	+largest-fittable bonus (proportional to params/maxFit on this box)
-//	+recency bonus (newer release date wins)
-//	-multi-gpu penalty (per extra GPU required)
-//	-vram-oversubscribed penalty
+//	D1 modality    [0-30]  LLM/VLM dominate onboarding
+//	D2 hw match    [0-25]  VRAM utilization + bandwidth affinity + arch match
+//	D3 local ready [0-20]  model downloaded + engine installed + golden config
+//	D4 model qual  [0-15]  largest fittable ratio + recency
+//	D5 simplicity  [0-10]  single GPU preferred
+//
+// Returns 0 when the model does not fit the hardware.
 func computeFitScore(
 	ma *knowledge.ModelAsset,
 	hw knowledge.HardwareInfo,
@@ -318,77 +315,159 @@ func computeFitScore(
 		return 0
 	}
 
-	score := 100 // Base: hardware fits
+	score := 0
 
-	score += modalityWeight(ma.Metadata.Type)
+	// D1: Modality (0-30)
+	score += modalityScore(ma.Metadata.Type)
 
+	// D2: Hardware match (0-25) = D2a + D2b + D2c
+	score += vramUtilizationScore(hw, variant)
+	score += bandwidthAffinityScore(hw, ma)
+	if variant.Hardware.GPUArch != "*" && variant.Hardware.GPUArch == hw.GPUArch {
+		score += 5 // D2c: arch match
+	}
+
+	// D3: Local readiness (0-20)
 	if modelAvailable {
-		score += 200
+		score += 10
 	}
 	if engineStatus.Installed {
-		score += 100
+		score += 6
 	}
 	if goldenExists {
-		score += 80
+		score += 4
 	}
 
-	if variant.Hardware.GPUArch == hw.GPUArch {
-		score += 60
-	}
+	// D4: Model quality (0-15) = D4a + D4b
+	score += largestFittableScore(ma, maxFitBillion)
+	score += recencyScore(ma.Metadata.ReleasedAt)
 
-	if hw.GPUVRAMMiB > 0 && variant.Hardware.VRAMMinMiB > 0 {
-		utilization := float64(variant.Hardware.VRAMMinMiB) / float64(hw.GPUVRAMMiB) * 100
-		switch {
-		case utilization <= 50:
-			score += 20
-		case utilization <= 85:
-			score += 50
-		case utilization <= 95:
-			score += 30
-		default:
-			score -= 50
-		}
-	}
+	// D5: Deployment simplicity (0-10)
+	score += simplicityScore(variant)
 
-	score += largestFittableBonus(ma, maxFitBillion)
-	score += recencyBonus(ma.Metadata.ReleasedAt)
-
-	if variant.Hardware.GPUCountMin > 1 {
-		score -= 30 * (variant.Hardware.GPUCountMin - 1)
-	}
-
-	if score < 0 {
-		score = 0
+	if score > 100 {
+		score = 100
 	}
 	return score
 }
 
-// modalityWeight implements the "LLM first" rule by giving each modality
-// a different additive bonus. LLM dominates because that is the default
-// answer for a fresh edge box; the other modalities still receive points
-// so they can surface when no LLM fits.
-func modalityWeight(modelType string) int {
-	switch strings.ToLower(strings.TrimSpace(modelType)) {
-	case "llm":
-		return 200
-	case "vlm":
-		return 150
-	case "embedding", "rerank":
-		return 90
-	case "asr", "tts":
-		return 60
-	case "image", "video", "t2i", "t2v", "i2v":
-		return 70
+// effectiveVRAMMiB computes total usable VRAM. For unified memory devices
+// (GB10, Apple M4, AMD APU) the GPU can use all system RAM. For discrete
+// GPUs, effective VRAM = per-GPU × count.
+func effectiveVRAMMiB(hw knowledge.HardwareInfo) int {
+	if hw.UnifiedMemory {
+		if hw.RAMTotalMiB > hw.GPUVRAMMiB {
+			return hw.RAMTotalMiB
+		}
+		return hw.GPUVRAMMiB
+	}
+	count := hw.GPUCount
+	if count <= 0 {
+		count = 1
+	}
+	return hw.GPUVRAMMiB * count
+}
+
+// vramUtilizationScore returns 0-12 based on how well the model fills available
+// VRAM. The inverted-U curve rewards the 70-85% sweet spot where the model uses
+// hardware capacity without risking OOM.
+func vramUtilizationScore(hw knowledge.HardwareInfo, variant *knowledge.ModelVariant) int {
+	requirement := variant.Hardware.VRAMMinMiB
+	effective := effectiveVRAMMiB(hw)
+
+	// llamacpp CPU inference: use RAM requirement against system RAM
+	if requirement <= 0 && variant.Hardware.RAMMinMiB > 0 {
+		requirement = variant.Hardware.RAMMinMiB
+		effective = hw.RAMTotalMiB
+	}
+
+	if effective <= 0 || requirement <= 0 {
+		return 2 // unknown → low default
+	}
+	util := float64(requirement) / float64(effective) * 100
+	switch {
+	case util <= 30:
+		return 2
+	case util <= 50:
+		return 5
+	case util <= 70:
+		return 10
+	case util <= 85:
+		return 12
+	case util <= 95:
+		return 6
 	default:
-		return 40
+		return 0
 	}
 }
 
-// largestFittableBonus rewards the largest model that still fits the box.
-// Bonus scales linearly with params/maxFit, capped at +120. A 30B model
-// on a box whose maxFit is 30B gets the full +120; a 4B model on the same
-// box gets +16. Falls back to 0 when params are unparseable.
-func largestFittableBonus(ma *knowledge.ModelAsset, maxFitBillion float64) int {
+// bandwidthAffinityScore returns 0-8 based on how well the model architecture
+// (MoE vs Dense) matches the device's VRAM/bandwidth ratio.
+//
+// ratio = effectiveVRAM(GB) / gpuBandwidth(GB/s)
+//
+//	<0.1  BW-rich  → Dense preferred (8) over MoE (5)
+//	0.1-0.3 Neutral → both get 6
+//	>0.3  VRAM-rich → MoE preferred (8) over Dense (2)
+func bandwidthAffinityScore(hw knowledge.HardwareInfo, ma *knowledge.ModelAsset) int {
+	bw := hw.GPUBandwidthGbps
+	if bw <= 0 {
+		return 6 // unknown bandwidth → neutral (matches the neutral ratio band)
+	}
+
+	effective := effectiveVRAMMiB(hw)
+	effectiveGB := float64(effective) / 1024
+	totalBW := float64(bw)
+	if !hw.UnifiedMemory {
+		count := hw.GPUCount
+		if count <= 0 {
+			count = 1
+		}
+		totalBW = float64(bw) * float64(count)
+	}
+
+	ratio := effectiveGB / totalBW
+	moe := extractActiveParams(ma) != ""
+
+	switch {
+	case ratio < 0.1: // BW-rich
+		if moe {
+			return 5
+		}
+		return 8
+	case ratio <= 0.3: // Neutral
+		return 6
+	default: // VRAM-rich
+		if moe {
+			return 8
+		}
+		return 2
+	}
+}
+
+// modalityScore returns 0-30 for D1 modality priority. LLM dominates
+// the onboarding wizard; the gap to ASR/TTS (25 points) is impossible
+// to overcome through other dimensions alone.
+func modalityScore(modelType string) int {
+	switch strings.ToLower(strings.TrimSpace(modelType)) {
+	case "llm":
+		return 30
+	case "vlm":
+		return 25
+	case "embedding", "rerank":
+		return 8
+	case "asr", "tts":
+		return 5
+	case "image_gen", "video_gen":
+		return 3
+	default:
+		return 2
+	}
+}
+
+// largestFittableScore returns 0-8 for D4a. Rewards the largest model that
+// fits the box relative to the absolute maximum fittable model.
+func largestFittableScore(ma *knowledge.ModelAsset, maxFitBillion float64) int {
 	if maxFitBillion <= 0 {
 		return 0
 	}
@@ -400,15 +479,12 @@ func largestFittableBonus(ma *knowledge.ModelAsset, maxFitBillion float64) int {
 	if ratio > 1 {
 		ratio = 1
 	}
-	return int(ratio * 120)
+	return int(ratio * 8)
 }
 
-// recencyBonus rewards newer models. A model released this month gets the
-// full +100; the bonus drops by ~3 points per month and reaches 0 around
-// 33 months. Models without released_at metadata get no bonus (and no
-// penalty) so the catalog can be backfilled incrementally without
-// destabilizing rankings.
-func recencyBonus(releasedAt string) int {
+// recencyScore returns 0-7 for D4b. Newer models score higher; decays by
+// 1 point every 4 months. Models without released_at get 0.
+func recencyScore(releasedAt string) int {
 	t := parseReleasedAt(releasedAt)
 	if t.IsZero() {
 		return 0
@@ -417,11 +493,24 @@ func recencyBonus(releasedAt string) int {
 	if months < 0 {
 		months = 0
 	}
-	bonus := 100 - months*3
+	bonus := 7 - months/4
 	if bonus < 0 {
 		bonus = 0
 	}
 	return bonus
+}
+
+// simplicityScore returns 0-10 for D5. Single-GPU deployments are strongly
+// preferred in the onboarding wizard to avoid TP/PP complexity.
+func simplicityScore(variant *knowledge.ModelVariant) int {
+	switch {
+	case variant.Hardware.GPUCountMin <= 1:
+		return 10
+	case variant.Hardware.GPUCountMin == 2:
+		return 5
+	default:
+		return 2
+	}
 }
 
 // parseParamBillion turns a free-form parameter_count string ("8B", "1.7B",

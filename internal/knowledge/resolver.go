@@ -23,6 +23,7 @@ type HardwareInfo struct {
 	RuntimeType     string // "k3s" or "native"
 	SwapTotalMiB    int    // Total swap space (0 = unknown or none)
 	TDPWatts        int    // hardware TDP from profile (0 = unknown)
+	GPUBandwidthGbps int   // Per-GPU memory bandwidth in GB/s from profile (0 = unknown)
 	// Dynamic fields from runtime metrics (0 = not collected, graceful degradation)
 	GPUMemUsedMiB int // Currently used GPU memory
 	GPUMemFreeMiB int // Currently free GPU memory
@@ -636,6 +637,15 @@ func (c *Catalog) findRuntimeClassName(hw HardwareInfo) string {
 func (c *Catalog) FindHardwareTDP(hw HardwareInfo) int {
 	if hp := c.findHardwareProfileFor(hw); hp != nil {
 		return hp.Constraints.TDPWatts
+	}
+	return 0
+}
+
+// FindGPUBandwidth returns the per-GPU memory bandwidth (GB/s) from the matching
+// hardware profile. Returns 0 if no matching profile or bandwidth is not set.
+func (c *Catalog) FindGPUBandwidth(hw HardwareInfo) int {
+	if hp := c.findHardwareProfileFor(hw); hp != nil {
+		return hp.Hardware.GPU.BandwidthGbps
 	}
 	return 0
 }
