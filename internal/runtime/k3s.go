@@ -27,12 +27,14 @@ type K3SRuntime struct {
 	client          *k3s.Client
 	engineAssets    []knowledge.EngineAsset
 	progressTracker *ProgressTracker
+	warmupCache     *warmupReadyCache
 }
 
 func NewK3SRuntime(client *k3s.Client, opts ...K3SOption) *K3SRuntime {
 	r := &K3SRuntime{
 		client:          client,
 		progressTracker: NewProgressTracker(),
+		warmupCache:     newWarmupReadyCache(),
 	}
 	for _, o := range opts {
 		o(r)
@@ -43,6 +45,10 @@ func NewK3SRuntime(client *k3s.Client, opts ...K3SOption) *K3SRuntime {
 func (r *K3SRuntime) Name() string { return "k3s" }
 
 func (r *K3SRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
+	podName := knowledge.SanitizePodName(req.Name + "-" + req.Engine)
+	if r.warmupCache != nil {
+		r.warmupCache.Forget(podName)
+	}
 	resolved := toResolvedConfig(req)
 	podYAML, err := knowledge.GeneratePod(resolved)
 	if err != nil {
@@ -52,7 +58,6 @@ func (r *K3SRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	if err != nil && (strings.Contains(err.Error(), "immutable") || strings.Contains(err.Error(), "Forbidden")) {
 		// Pod spec has immutable fields that changed (e.g. QoS class, schedulerName).
 		// Delete the existing pod and recreate it.
-		podName := knowledge.SanitizePodName(req.Name + "-" + req.Engine)
 		slog.Warn("deploy: immutable field conflict, deleting and recreating pod", "pod", podName)
 		if delErr := r.client.Delete(ctx, podName); delErr != nil {
 			slog.Error("deploy: failed to delete conflicting pod", "pod", podName, "error", delErr)
@@ -65,6 +70,9 @@ func (r *K3SRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 func (r *K3SRuntime) Delete(ctx context.Context, name string) error {
 	err := r.client.Delete(ctx, name)
 	r.progressTracker.Remove(name)
+	if r.warmupCache != nil {
+		r.warmupCache.Forget(name)
+	}
 	return err
 }
 
@@ -74,7 +82,17 @@ func (r *K3SRuntime) Status(ctx context.Context, name string) (*DeploymentStatus
 		return nil, err
 	}
 	ds := podToStatus(pod)
+	asset := findEngineAsset(r.engineAssets, ds.Labels["aima.dev/engine"])
+	if asset != nil && ds.EstimatedTotalS == 0 && len(asset.TimeConstraints.ColdStartS) >= 2 {
+		ds.EstimatedTotalS = asset.TimeConstraints.ColdStartS[1]
+	}
 	r.enrichStartupProgress(ctx, pod, ds)
+	applyWarmupReadiness(ctx, ds, asset, r.warmupCache)
+	if !ds.Ready && ds.StartupPhase == "warmup" {
+		stalled, lastAt := r.progressTracker.Update(ds.Name, ds.StartupProgress, ds.EstimatedTotalS)
+		ds.Stalled = stalled
+		ds.LastProgressAt = lastAt.Unix()
+	}
 	return ds, nil
 }
 
@@ -86,7 +104,17 @@ func (r *K3SRuntime) List(ctx context.Context) ([]*DeploymentStatus, error) {
 	statuses := make([]*DeploymentStatus, len(pods))
 	for i, p := range pods {
 		ds := podToStatus(p)
+		asset := findEngineAsset(r.engineAssets, ds.Labels["aima.dev/engine"])
+		if asset != nil && ds.EstimatedTotalS == 0 && len(asset.TimeConstraints.ColdStartS) >= 2 {
+			ds.EstimatedTotalS = asset.TimeConstraints.ColdStartS[1]
+		}
 		r.enrichStartupProgress(ctx, p, ds)
+		applyWarmupReadiness(ctx, ds, asset, r.warmupCache)
+		if !ds.Ready && ds.StartupPhase == "warmup" {
+			stalled, lastAt := r.progressTracker.Update(ds.Name, ds.StartupProgress, ds.EstimatedTotalS)
+			ds.Stalled = stalled
+			ds.LastProgressAt = lastAt.Unix()
+		}
 		statuses[i] = ds
 	}
 	return statuses, nil

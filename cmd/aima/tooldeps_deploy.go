@@ -727,9 +727,7 @@ func firstPositiveInt(values ...int) int {
 func resolvedServedModelName(modelName string, config map[string]any) string {
 	if config != nil {
 		if raw, ok := config["served_model_name"].(string); ok {
-			if served := strings.TrimSpace(raw); served != "" {
-				return served
-			}
+			return normalizeServedModelName(modelName, raw)
 		}
 	}
 	return modelName
@@ -737,7 +735,7 @@ func resolvedServedModelName(modelName string, config map[string]any) string {
 
 func deploymentUpstreamModel(ds *runtime.DeploymentStatus, fallback string) string {
 	if ds != nil && ds.Labels != nil {
-		if served := strings.TrimSpace(ds.Labels[proxy.LabelServedModel]); served != "" {
+		if served := normalizeServedModelName("", ds.Labels[proxy.LabelServedModel]); served != "" {
 			return served
 		}
 	}
@@ -750,4 +748,19 @@ func deploymentUpstreamModel(ds *runtime.DeploymentStatus, fallback string) stri
 		}
 	}
 	return ""
+}
+
+func normalizeServedModelName(modelName, raw string) string {
+	served := strings.TrimSpace(raw)
+	if served == "" {
+		return modelName
+	}
+	if modelName != "" {
+		served = strings.ReplaceAll(served, "{{.ModelName}}", modelName)
+	}
+	served = strings.TrimSpace(served)
+	if served == "" || strings.Contains(served, "{{") || strings.Contains(served, "}}") {
+		return modelName
+	}
+	return served
 }

@@ -20,12 +20,14 @@ import (
 type DockerRuntime struct {
 	engineAssets    []knowledge.EngineAsset
 	progressTracker *ProgressTracker
+	warmupCache     *warmupReadyCache
 }
 
 func NewDockerRuntime(engineAssets []knowledge.EngineAsset) *DockerRuntime {
 	return &DockerRuntime{
 		engineAssets:    engineAssets,
 		progressTracker: NewProgressTracker(),
+		warmupCache:     newWarmupReadyCache(),
 	}
 }
 
@@ -44,6 +46,9 @@ func DockerAvailable(ctx context.Context) bool {
 
 func (r *DockerRuntime) Deploy(ctx context.Context, req *DeployRequest) error {
 	name := knowledge.SanitizePodName(req.Name + "-" + req.Engine)
+	if r.warmupCache != nil {
+		r.warmupCache.Forget(name)
+	}
 
 	// Idempotent redeploy: remove existing container if any
 	r.removeContainer(ctx, name)
@@ -263,6 +268,9 @@ func (r *DockerRuntime) Delete(ctx context.Context, name string) error {
 		return fmt.Errorf("docker rm %s: %w\n%s", name, err, string(out))
 	}
 	r.progressTracker.Remove(name)
+	if r.warmupCache != nil {
+		r.warmupCache.Forget(name)
+	}
 	return nil
 }
 
@@ -282,6 +290,10 @@ func (r *DockerRuntime) Status(ctx context.Context, name string) (*DeploymentSta
 
 	di := inspects[0]
 	ds := r.inspectToStatus(di)
+	asset := findEngineAsset(r.engineAssets, ds.Labels["aima.dev/engine"])
+	if asset != nil && ds.EstimatedTotalS == 0 && len(asset.TimeConstraints.ColdStartS) >= 2 {
+		ds.EstimatedTotalS = asset.TimeConstraints.ColdStartS[1]
+	}
 
 	// Enrich with log-based startup progress
 	if !ds.Ready {
@@ -290,6 +302,12 @@ func (r *DockerRuntime) Status(ctx context.Context, name string) (*DeploymentSta
 			ds.Ready = false
 			ds.Message = errMsg
 		}
+	}
+	applyWarmupReadiness(ctx, ds, asset, r.warmupCache)
+	if !ds.Ready && ds.StartupPhase == "warmup" {
+		stalled, lastAt := r.progressTracker.Update(ds.Name, ds.StartupProgress, ds.EstimatedTotalS)
+		ds.Stalled = stalled
+		ds.LastProgressAt = lastAt.Unix()
 	}
 
 	return ds, nil
@@ -341,6 +359,10 @@ func (r *DockerRuntime) List(ctx context.Context) ([]*DeploymentStatus, error) {
 			Runtime: "docker",
 		}
 		setDeploymentStartFromString(ds, ps.CreatedAt)
+		asset := findEngineAsset(r.engineAssets, labels["aima.dev/engine"])
+		if asset != nil && ds.EstimatedTotalS == 0 && len(asset.TimeConstraints.ColdStartS) >= 2 {
+			ds.EstimatedTotalS = asset.TimeConstraints.ColdStartS[1]
+		}
 
 		if !ready {
 			if errMsg := r.enrichDockerProgress(ctx, ds); errMsg != "" {
@@ -348,6 +370,12 @@ func (r *DockerRuntime) List(ctx context.Context) ([]*DeploymentStatus, error) {
 				ds.Ready = false
 				ds.Message = errMsg
 			}
+		}
+		applyWarmupReadiness(ctx, ds, asset, r.warmupCache)
+		if !ds.Ready && ds.StartupPhase == "warmup" {
+			stalled, lastAt := r.progressTracker.Update(ds.Name, ds.StartupProgress, ds.EstimatedTotalS)
+			ds.Stalled = stalled
+			ds.LastProgressAt = lastAt.Unix()
 		}
 
 		statuses = append(statuses, ds)
