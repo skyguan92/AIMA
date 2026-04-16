@@ -566,11 +566,7 @@ func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string)
 		totalVRAM = hw.VRAMMiB
 	}
 
-	// Build skip set for quick lookup
-	skipSet := make(map[string]string) // "model|engine" → reason
-	for _, s := range input.SkipCombos {
-		skipSet[s.Model+"|"+s.Engine] = s.Reason
-	}
+	skipSet, modelSkipSet := splitSkipCombos(input.SkipCombos)
 
 	type comboRow struct {
 		model, engine, reason string
@@ -596,6 +592,10 @@ func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string)
 				continue
 			}
 
+			if reason, ok := modelSkipSet[m.Name]; ok {
+				explored = append(explored, comboRow{m.Name, e.Type, reason})
+				continue
+			}
 			if reason, ok := skipSet[key]; ok {
 				explored = append(explored, comboRow{m.Name, e.Type, reason})
 				continue
@@ -646,14 +646,16 @@ func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string)
 }
 
 func (w *ExplorerWorkspace) generateResolvedAvailableCombos(input PlanInput, now string) string {
-	skipSet := make(map[string]string, len(input.SkipCombos))
-	for _, s := range input.SkipCombos {
-		skipSet[s.Model+"|"+s.Engine] = s.Reason
-	}
+	skipSet, modelSkipSet := splitSkipCombos(input.SkipCombos)
 
 	var ready, explored, blocked []ComboFact
 	for _, fact := range input.ComboFacts {
 		key := fact.Model + "|" + fact.Engine
+		if reason, ok := modelSkipSet[fact.Model]; ok {
+			fact.Reason = reason
+			explored = append(explored, fact)
+			continue
+		}
 		if reason, ok := skipSet[key]; ok {
 			fact.Reason = reason
 			explored = append(explored, fact)
@@ -867,9 +869,9 @@ func (w *ExplorerWorkspace) generateExperimentFacts(now string) string {
 		if errText == "" {
 			errText = "—"
 		}
-		fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %d | %.1f | %d/%d | %s |\n",
+		fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %d | %s | %d/%d | %s |\n",
 			filepath.Base(rec.Path), rec.Task.Model, rec.Task.Engine, rec.Result.Status,
-			experimentSignal(rec), len(rec.Result.Benchmarks), bestRate, rec.Result.SuccessCells, rec.Result.MatrixCells, errText)
+			experimentSignal(rec), len(rec.Result.Benchmarks), formatBestRate(bestRate), rec.Result.SuccessCells, rec.Result.MatrixCells, errText)
 	}
 	fmt.Fprintf(&sb, "\n## Hard Facts\n\n")
 	fmt.Fprintf(&sb, "- Treat this file as the machine-generated digest of experiments/*.md.\n")
@@ -907,20 +909,53 @@ func experimentSignal(rec ExperimentRecord) string {
 	}
 }
 
+func formatBestRate(rate float64) string {
+	switch {
+	case rate <= 0:
+		return "0.0"
+	case rate < 0.1:
+		return fmt.Sprintf("%.3f", rate)
+	case rate < 1:
+		return fmt.Sprintf("%.2f", rate)
+	default:
+		return fmt.Sprintf("%.1f", rate)
+	}
+}
+
 type coverageRow struct {
 	Model   string
 	Engines []string
 	Recent  bool
 }
 
+func splitSkipCombos(skipCombos []SkipCombo) (map[string]string, map[string]string) {
+	exact := make(map[string]string, len(skipCombos))
+	models := make(map[string]string)
+	for _, skip := range skipCombos {
+		model := strings.TrimSpace(skip.Model)
+		if model == "" {
+			continue
+		}
+		reason := strings.TrimSpace(skip.Reason)
+		if strings.TrimSpace(skip.Engine) == "" {
+			if _, exists := models[model]; !exists {
+				models[model] = reason
+			}
+			continue
+		}
+		key := model + "|" + strings.TrimSpace(skip.Engine)
+		if _, exists := exact[key]; !exists {
+			exact[key] = reason
+		}
+	}
+	return exact, models
+}
+
 func readyCoverageRows(input PlanInput) []coverageRow {
 	if len(input.ComboFacts) == 0 {
 		return nil
 	}
-	skipSet := make(map[string]struct{}, len(input.SkipCombos))
-	for _, s := range input.SkipCombos {
-		skipSet[s.Model+"|"+s.Engine] = struct{}{}
-	}
+	skipSet, modelSkipSet := splitSkipCombos(input.SkipCombos)
 	recentModels := make(map[string]bool, len(input.History))
 	for _, h := range input.History {
 		model := strings.TrimSpace(h.ModelID)
@@ -931,6 +966,9 @@ func readyCoverageRows(input PlanInput) []coverageRow {
 	engineSetByModel := make(map[string]map[string]struct{})
 	for _, fact := range input.ComboFacts {
 		if fact.Status != "ready" {
+			continue
+		}
+		if _, skippedModel := modelSkipSet[fact.Model]; skippedModel {
 			continue
 		}
 		key := fact.Model + "|" + fact.Engine
@@ -968,14 +1006,15 @@ func readyCoverageRows(input PlanInput) []coverageRow {
 }
 
 func comboFactCounts(input PlanInput) (ready, blocked, explored int) {
-	skipSet := make(map[string]struct{}, len(input.SkipCombos))
-	for _, s := range input.SkipCombos {
-		skipSet[s.Model+"|"+s.Engine] = struct{}{}
-	}
+	skipSet, modelSkipSet := splitSkipCombos(input.SkipCombos)
 	if len(input.ComboFacts) == 0 {
 		return 0, 0, len(input.SkipCombos)
 	}
 	for _, fact := range input.ComboFacts {
+		if _, ok := modelSkipSet[fact.Model]; ok {
+			explored++
+			continue
+		}
 		if _, ok := skipSet[fact.Model+"|"+fact.Engine]; ok {
 			explored++
 			continue
@@ -1116,7 +1155,10 @@ type BenchmarkEntry struct {
 	InputTokens   int            `yaml:"input_tokens"`
 	MaxTokens     int            `yaml:"max_tokens"`
 	ThroughputTPS float64        `yaml:"throughput_tps,omitempty"`
+	LatencyP50Ms  float64        `yaml:"latency_p50_ms,omitempty"`
+	TTFTP50Ms     float64        `yaml:"ttft_p50_ms,omitempty"`
 	TTFTP95Ms     float64        `yaml:"ttft_p95_ms,omitempty"`
+	TPOTP50Ms     float64        `yaml:"tpot_p50_ms,omitempty"`
 	TPOTP95Ms     float64        `yaml:"tpot_p95_ms,omitempty"`
 	BenchmarkID   string         `yaml:"benchmark_id,omitempty"`
 	ConfigID      string         `yaml:"config_id,omitempty"`

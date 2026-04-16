@@ -23,8 +23,11 @@ type HarvestResult struct {
 	ExecutionPath   string
 	Throughput      float64
 	QPS             float64
+	TTFTP50         float64
 	TTFTP95         float64
+	TPOTP50         float64
 	TPOTP95         float64
+	LatencyP50      float64
 	VRAMMiB         float64
 	RAMMiB          float64
 	CPUUsagePct     float64
@@ -384,4 +387,3 @@ func classifyError(errMsg string) string {
 		return "error"
 	}
 }
-

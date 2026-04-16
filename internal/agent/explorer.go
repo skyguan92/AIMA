@@ -265,6 +265,7 @@ func (e *Explorer) setupPlannerLocked() {
 		opts := []ExplorerAgentPlannerOption{
 			WithAgentMaxCycles(e.config.MaxCycles),
 			WithAgentMaxTasks(e.config.MaxTasks),
+			WithAgentPhaseObserver(e.setPhase),
 		}
 		if e.queryFn != nil {
 			opts = append(opts, WithAgentQueryFunc(e.queryFn))
@@ -715,6 +716,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	e.mu.RUnlock()
 
 	planStart := time.Now()
+	executedPlans := []*ExplorerPlan{plan}
 	e.executePlan(ctx, plan)
 
 	// PDCA Check+Act loop (only for AnalyzablePlanner, i.e., Tier 2 agent planner)
@@ -789,6 +791,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 			e.activePlan = extraPlan
 			e.phase = "do"
 			e.mu.Unlock()
+			executedPlans = append(executedPlans, extraPlan)
 			e.executePlan(ctx, extraPlan)
 		}
 	}
@@ -802,7 +805,7 @@ pdcaDone:
 	tokensAfter := e.tokensUsedToday
 	e.mu.Unlock()
 
-	metrics := e.computePlanMetrics(plan, elapsed, tokensAfter-tokensBefore)
+	metrics := e.computePlanMetrics(executedPlans, elapsed, tokensAfter-tokensBefore)
 	e.mu.Lock()
 	e.lastPlanMetrics = metrics
 	e.activePlan = nil // D9: clear after execution
@@ -1799,8 +1802,10 @@ func (e *Explorer) parseExplorationResult(status *ExplorationStatus) HarvestResu
 		var summary map[string]any
 		if err := json.Unmarshal([]byte(status.Run.SummaryJSON), &summary); err == nil {
 			readBenchmarkMetrics(summary, &result)
+			readBenchmarkConfig(summary, &result)
 			if nested, ok := summary["result"].(map[string]any); ok {
 				readBenchmarkMetrics(nested, &result)
+				readBenchmarkConfig(nested, &result)
 			}
 			result.BenchmarkID = firstNonEmptyJSON(summary, "benchmark_id")
 			result.ConfigID = firstNonEmptyJSON(summary, "config_id")
@@ -1994,6 +1999,9 @@ func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*Plan
 				Reason: reason,
 			})
 		}
+		for _, skip := range deriveModelScopeSkipCombos(input.ComboFacts, input.SkipCombos) {
+			input.SkipCombos = append(input.SkipCombos, skip)
+		}
 		sort.Slice(input.SkipCombos, func(i, j int) bool {
 			if input.SkipCombos[i].Model != input.SkipCombos[j].Model {
 				return strings.ToLower(input.SkipCombos[i].Model) < strings.ToLower(input.SkipCombos[j].Model)
@@ -2008,23 +2016,103 @@ func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*Plan
 	return input, nil
 }
 
-func (e *Explorer) computePlanMetrics(plan *ExplorerPlan, elapsed time.Duration, tokensUsed int) *PlanMetrics {
+func deriveModelScopeSkipCombos(comboFacts []ComboFact, skipCombos []SkipCombo) []SkipCombo {
+	if len(comboFacts) == 0 {
+		return nil
+	}
+	exactSkips := make(map[string]string, len(skipCombos))
+	modelSkips := make(map[string]struct{}, len(skipCombos))
+	for _, skip := range skipCombos {
+		model := strings.TrimSpace(skip.Model)
+		if model == "" {
+			continue
+		}
+		if strings.TrimSpace(skip.Engine) == "" {
+			modelSkips[strings.ToLower(model)] = struct{}{}
+			continue
+		}
+		exactSkips[strings.ToLower(planTaskComboKey(model, skip.Engine))] = strings.TrimSpace(skip.Reason)
+	}
+
+	type readyCombo struct {
+		engine string
+		reason string
+	}
+	readyByModel := make(map[string][]readyCombo)
+	for _, fact := range comboFacts {
+		if !strings.EqualFold(strings.TrimSpace(fact.Status), "ready") {
+			continue
+		}
+		model := strings.TrimSpace(fact.Model)
+		engine := strings.TrimSpace(fact.Engine)
+		if model == "" || engine == "" {
+			continue
+		}
+		reason := exactSkips[strings.ToLower(planTaskComboKey(model, engine))]
+		readyByModel[model] = append(readyByModel[model], readyCombo{engine: engine, reason: reason})
+	}
+
+	var derived []SkipCombo
+	for model, combos := range readyByModel {
+		if _, exists := modelSkips[strings.ToLower(model)]; exists {
+			continue
+		}
+		if len(combos) == 0 {
+			continue
+		}
+		allExhausted := true
+		reasons := make([]string, 0, len(combos))
+		seenReasons := make(map[string]struct{}, len(combos))
+		for _, combo := range combos {
+			if strings.TrimSpace(combo.reason) == "" {
+				allExhausted = false
+				break
+			}
+			if _, exists := seenReasons[combo.reason]; !exists {
+				seenReasons[combo.reason] = struct{}{}
+				reasons = append(reasons, combo.reason)
+			}
+		}
+		if !allExhausted {
+			continue
+		}
+		reason := "all ready combos exhausted on this device"
+		if len(reasons) == 1 {
+			reason = reasons[0]
+		}
+		derived = append(derived, SkipCombo{
+			Model:  model,
+			Reason: reason,
+		})
+	}
+	sort.Slice(derived, func(i, j int) bool {
+		return strings.ToLower(derived[i].Model) < strings.ToLower(derived[j].Model)
+	})
+	return derived
+}
+
+func (e *Explorer) computePlanMetrics(plans []*ExplorerPlan, elapsed time.Duration, tokensUsed int) *PlanMetrics {
 	m := &PlanMetrics{
-		TotalTasks: len(plan.Tasks),
 		DurationS:  elapsed.Seconds(),
 		TokensUsed: tokensUsed,
 	}
-	for _, t := range plan.Tasks {
-		switch {
-		case t.Status == "completed":
-			m.Completed++
-			m.DiscoveryCount++
-		case t.Status == "failed":
-			m.Failed++
-		case t.Status == "cancelled":
-			m.Skipped++
-		case strings.HasPrefix(t.Status, "skipped") || t.Status == "":
-			m.Skipped++
+	for _, plan := range plans {
+		if plan == nil {
+			continue
+		}
+		m.TotalTasks += len(plan.Tasks)
+		for _, t := range plan.Tasks {
+			switch {
+			case t.Status == "completed":
+				m.Completed++
+				m.DiscoveryCount++
+			case t.Status == "failed":
+				m.Failed++
+			case t.Status == "cancelled":
+				m.Skipped++
+			case strings.HasPrefix(t.Status, "skipped") || t.Status == "":
+				m.Skipped++
+			}
 		}
 	}
 	if m.TotalTasks > 0 {
@@ -2331,7 +2419,10 @@ func harvestToExperimentResult(status string, start time.Time, elapsed time.Dura
 			InputTokens:   r.InputTokens,
 			MaxTokens:     r.MaxTokens,
 			ThroughputTPS: r.Throughput,
+			LatencyP50Ms:  r.LatencyP50,
+			TTFTP50Ms:     r.TTFTP50,
 			TTFTP95Ms:     r.TTFTP95,
+			TPOTP50Ms:     r.TPOTP50,
 			TPOTP95Ms:     r.TPOTP95,
 			BenchmarkID:   r.BenchmarkID,
 			ConfigID:      r.ConfigID,
@@ -2385,7 +2476,10 @@ func benchmarkEntriesFromMatrixJSON(matrixJSON string) []BenchmarkEntry {
 			}
 			if cell.Result != nil {
 				entry.ThroughputTPS = primaryBenchmarkRate(cell.Result)
+				entry.LatencyP50Ms = primaryLatencyP50(cell.Result, cell.MaxTokens)
+				entry.TTFTP50Ms = readFloatField(cell.Result, "ttft_p50_ms")
 				entry.TTFTP95Ms = readFloatField(cell.Result, "ttft_p95_ms")
+				entry.TPOTP50Ms = readFloatField(cell.Result, "tpot_p50_ms")
 				entry.TPOTP95Ms = readFloatField(cell.Result, "tpot_p95_ms")
 			}
 			entries = append(entries, entry)
@@ -2420,6 +2514,33 @@ func primaryBenchmarkRate(summary map[string]any) float64 {
 	return 0
 }
 
+func primaryLatencyP50(summary map[string]any, maxTokens int) float64 {
+	if summary == nil {
+		return 0
+	}
+	for _, key := range []string{
+		"latency_p50_ms",
+		"embedding_latency_p50_ms",
+		"rerank_latency_p50_ms",
+	} {
+		if value := readFloatField(summary, key); value > 0 {
+			return value
+		}
+	}
+	if value := readFloatField(summary, "video_latency_p50_s"); value > 0 {
+		return value * 1000
+	}
+	ttft := readFloatField(summary, "ttft_p50_ms")
+	tpot := readFloatField(summary, "tpot_p50_ms")
+	if ttft <= 0 && tpot <= 0 {
+		return 0
+	}
+	if maxTokens < 0 {
+		maxTokens = 0
+	}
+	return ttft + (float64(maxTokens) * tpot)
+}
+
 func readBenchmarkMetrics(summary map[string]any, result *HarvestResult) {
 	if result == nil {
 		return
@@ -2427,13 +2548,44 @@ func readBenchmarkMetrics(summary map[string]any, result *HarvestResult) {
 	if tp := primaryBenchmarkRate(summary); tp > 0 {
 		result.Throughput = tp
 	}
+	if ttft := readFloatField(summary, "ttft_p50_ms"); ttft > 0 {
+		result.TTFTP50 = ttft
+	}
 	if ttft := readFloatField(summary, "ttft_p95_ms"); ttft > 0 {
 		result.TTFTP95 = ttft
+	}
+	if tpot := readFloatField(summary, "tpot_p50_ms"); tpot > 0 {
+		result.TPOTP50 = tpot
 	}
 	if tpot := readFloatField(summary, "tpot_p95_ms"); tpot > 0 {
 		result.TPOTP95 = tpot
 	}
+	if latency := primaryLatencyP50(summary, result.MaxTokens); latency > 0 {
+		result.LatencyP50 = latency
+	}
 	if vram := readFloatField(summary, "vram_usage_mib"); vram > 0 {
 		result.VRAMMiB = vram
+	}
+}
+
+func readBenchmarkConfig(summary map[string]any, result *HarvestResult) {
+	if result == nil || summary == nil {
+		return
+	}
+	cfg, _ := summary["config"].(map[string]any)
+	if cfg == nil {
+		return
+	}
+	if concurrency, ok := cfg["concurrency"].(float64); ok && result.Concurrency <= 0 {
+		result.Concurrency = int(concurrency)
+	}
+	if inputTokens, ok := cfg["input_tokens"].(float64); ok && result.InputTokens <= 0 {
+		result.InputTokens = int(inputTokens)
+	}
+	if maxTokens, ok := cfg["max_tokens"].(float64); ok && result.MaxTokens <= 0 {
+		result.MaxTokens = int(maxTokens)
+	}
+	if latency := primaryLatencyP50(summary, result.MaxTokens); latency > 0 && result.LatencyP50 <= 0 {
+		result.LatencyP50 = latency
 	}
 }

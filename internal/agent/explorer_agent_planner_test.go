@@ -325,6 +325,89 @@ Done for now.
 	}
 }
 
+func TestAgentPlannerAnalyze_NotifiesPhaseObserver(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	summaryContent := `# Exploration Summary
+
+## Key Findings
+- one finding
+
+## Bugs And Failures
+- none
+
+## Confirmed Blockers
+` + "```yaml\n[]\n```\n\n" + `## Do Not Retry This Cycle
+` + "```yaml\n[]\n```\n\n" + `## Evidence Ledger
+` + "```yaml\n[]\n```\n\n" + `## Design Doubts
+- none
+
+## Recommended Configurations
+` + "```yaml\n[]\n```\n\n" + `## Current Strategy
+keep going
+
+## Next Cycle Candidates
+- test-model / vllm
+`
+	planContent := `# Exploration Plan
+
+## Objective
+Follow up.
+
+## Fact Snapshot
+- one fact
+
+## Task Board
+- [ ] validate test-model
+
+## Tasks
+` + "```yaml\n" + `- kind: validate
+  model: test-model
+  engine: vllm
+  engine_params: {}
+  benchmark:
+    concurrency: [1]
+    input_tokens: [128]
+    max_tokens: [256]
+    requests_per_combo: 3
+  reason: "follow-up"
+` + "```\n"
+
+	mock := &mockStreamingLLM{
+		responses: []Response{
+			{ToolCalls: []ToolCall{
+				{ID: "1", Name: "write", Arguments: `{"path":"summary.md","content":` + jsonEscape(summaryContent) + `}`},
+				{ID: "2", Name: "done", Arguments: `{"verdict":"continue"}`},
+			}},
+			{ToolCalls: []ToolCall{
+				{ID: "3", Name: "write", Arguments: `{"path":"plan.md","content":` + jsonEscape(planContent) + `}`},
+				{ID: "4", Name: "done", Arguments: `{}`},
+			}},
+		},
+	}
+
+	var phases []string
+	planner := NewExplorerAgentPlanner(mock, ws, WithAgentPhaseObserver(func(phase string) {
+		phases = append(phases, phase)
+	}))
+
+	verdict, extraTasks, _, err := planner.Analyze(context.Background())
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if verdict != "continue" {
+		t.Fatalf("verdict = %q, want continue", verdict)
+	}
+	if len(extraTasks) != 1 || extraTasks[0].Model != "test-model" {
+		t.Fatalf("extraTasks = %+v, want one follow-up task", extraTasks)
+	}
+	if strings.Join(phases, ",") != "check,act" {
+		t.Fatalf("phases = %v, want [check act]", phases)
+	}
+}
+
 func TestAgentPlannerAnalyze_AssistantOnlyContentDefaultsDone(t *testing.T) {
 	dir := t.TempDir()
 	ws := NewExplorerWorkspace(dir)

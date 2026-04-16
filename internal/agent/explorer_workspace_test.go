@@ -719,6 +719,22 @@ func TestGenerateExperimentFacts_ClassifiesSignals(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WriteExperimentResult deploy-fail-model: %v", err)
 	}
+	if _, err := ws.WriteExperimentResult(4, TaskSpec{
+		Kind: "validate", Model: "image-model", Engine: "z-image-diffusers",
+	}, ExperimentResult{
+		Status:       "completed",
+		MatrixCells:  1,
+		SuccessCells: 1,
+		Benchmarks: []BenchmarkEntry{{
+			Concurrency:   1,
+			InputTokens:   128,
+			MaxTokens:     256,
+			ThroughputTPS: 0.017,
+			BenchmarkID:   "bench-img",
+		}},
+	}); err != nil {
+		t.Fatalf("WriteExperimentResult image-model: %v", err)
+	}
 
 	if err := ws.RefreshFactDocuments(PlanInput{}); err != nil {
 		t.Fatalf("RefreshFactDocuments: %v", err)
@@ -731,6 +747,9 @@ func TestGenerateExperimentFacts_ClassifiesSignals(t *testing.T) {
 		if !strings.Contains(ef, want) {
 			t.Fatalf("experiment-facts.md missing %q: %s", want, ef)
 		}
+	}
+	if !strings.Contains(ef, "0.017") {
+		t.Fatalf("experiment-facts.md missing low-rate precision: %s", ef)
 	}
 }
 
@@ -844,6 +863,63 @@ func TestRefreshFactDocuments(t *testing.T) {
 	ef, _ := ws.ReadFile("experiment-facts.md")
 	if !strings.Contains(ef, "No experiments yet") {
 		t.Error("experiment-facts missing empty-state summary")
+	}
+}
+
+func TestRefreshFactDocuments_ModelScopeSkipRemovesReadyFrontier(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	input := PlanInput{
+		Hardware: HardwareInfo{
+			Profile:  "nvidia-gb10-arm64",
+			GPUArch:  "blackwell",
+			GPUCount: 1,
+			VRAMMiB:  120000,
+		},
+		LocalModels: []LocalModel{
+			{Name: "qwen3-8b", Format: "safetensors", Type: "llm", SizeBytes: 7_500_000_000},
+			{Name: "glm-4.1v", Format: "safetensors", Type: "llm", SizeBytes: 19_000_000_000},
+		},
+		LocalEngines: []LocalEngine{
+			{Name: "vllm", Type: "vllm"},
+			{Name: "sglang", Type: "sglang"},
+		},
+		ComboFacts: []ComboFact{
+			{Model: "qwen3-8b", Engine: "vllm", Status: "ready"},
+			{Model: "qwen3-8b", Engine: "sglang", Status: "ready"},
+			{Model: "glm-4.1v", Engine: "sglang", Status: "ready"},
+		},
+		SkipCombos: []SkipCombo{
+			{Model: "qwen3-8b", Reason: "all ready combos exhausted on this device"},
+		},
+	}
+
+	if err := ws.RefreshFactDocuments(input); err != nil {
+		t.Fatalf("RefreshFactDocuments: %v", err)
+	}
+
+	ac, err := ws.ReadFile("available-combos.md")
+	if err != nil {
+		t.Fatalf("ReadFile available-combos.md: %v", err)
+	}
+	if strings.Contains(ac, "| qwen3-8b | vllm | resolver and local no-pull runtime checks passed |") {
+		t.Fatalf("available-combos.md still shows exhausted qwen3-8b as ready: %s", ac)
+	}
+	if !strings.Contains(ac, "| qwen3-8b | vllm | _n/a_ | _n/a_ | all ready combos exhausted on this device |") {
+		t.Fatalf("available-combos.md missing model-scope explored reason: %s", ac)
+	}
+
+	kb, err := ws.ReadFile("knowledge-base.md")
+	if err != nil {
+		t.Fatalf("ReadFile knowledge-base.md: %v", err)
+	}
+	if strings.Contains(kb, "| qwen3-8b | vllm, sglang |") {
+		t.Fatalf("knowledge-base.md still shows exhausted qwen3-8b in Frontier Coverage: %s", kb)
+	}
+	if !strings.Contains(kb, "| glm-4.1v | sglang | no | prefer for new coverage |") {
+		t.Fatalf("knowledge-base.md missing surviving frontier model: %s", kb)
 	}
 }
 

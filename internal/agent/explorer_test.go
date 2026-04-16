@@ -403,6 +403,13 @@ func TestExplorer_PDCAExtraPlansConsumeBudgetRounds(t *testing.T) {
 	if planIDs["pdca-budget-c3"] {
 		t.Fatalf("unexpected fourth plan persisted: %v", planIDs)
 	}
+	metrics := e.Status().LastPlanMetrics
+	if metrics == nil {
+		t.Fatal("LastPlanMetrics is nil")
+	}
+	if metrics.TotalTasks != 3 || metrics.Completed != 0 || metrics.Failed != 3 {
+		t.Fatalf("LastPlanMetrics = %+v, want total=3 completed=0 failed=3", metrics)
+	}
 }
 
 func TestExplorer_EmptyPlanDisablesOnceModeInDB(t *testing.T) {
@@ -771,6 +778,14 @@ func TestTaskBlockedByExecutableFacts(t *testing.T) {
 			engine:     "vllm",
 			skipCombos: []SkipCombo{{Model: "qwen3-8b", Engine: "vllm", Reason: "already explored in this round"}},
 			wantReason: "already explored in this round",
+			wantBlock:  true,
+		},
+		{
+			name:       "model scope skip wins",
+			model:      "qwen3-8b",
+			engine:     "sglang",
+			skipCombos: []SkipCombo{{Model: "qwen3-8b", Reason: "summary blocker: no viable engine remains"}},
+			wantReason: "summary blocker: no viable engine remains",
 			wantBlock:  true,
 		},
 	}
@@ -1192,6 +1207,7 @@ func TestExplorerAgentPlanner_AnalyzeRejectsInvalidValidatedConfidence(t *testin
 		"  performance:\n" +
 		"    throughput_tps: 120.0\n" +
 		"    latency_p50_ms: 35\n" +
+		"    latency_scenario: \"concurrency=1, input=128, max_tokens=256\"\n" +
 		"  confidence: validated\n" +
 		"  note: \"ok\"\n" +
 		"```\n\n" +
@@ -1262,6 +1278,16 @@ func TestExplorerAgentPlanner_AnalyzeRejectsInvalidValidatedConfidence(t *testin
 			wantFeedback:    "",
 		},
 		{
+			name: "validated_with_unanchored_latency_proxy",
+			summary: strings.ReplaceAll(validSummary,
+				"    latency_p50_ms: 35\n    latency_scenario: \"concurrency=1, input=128, max_tokens=256\"\n",
+				"    latency_p50_ms: 9999\n    latency_scenario: \"concurrency=1, input=999, max_tokens=999\"\n"),
+			addExperiment:   true,
+			experimentModel: "test-model",
+			wantErr:         false,
+			wantFeedback:    "latency is not grounded by a matching benchmark scenario",
+		},
+		{
 			name:            "validated_without_benchmark_evidence",
 			summary:         invalidSummary,
 			addExperiment:   false,
@@ -1299,7 +1325,9 @@ func TestExplorerAgentPlanner_AnalyzeRejectsInvalidValidatedConfidence(t *testin
 						InputTokens:   128,
 						MaxTokens:     256,
 						ThroughputTPS: 120.0,
+						TTFTP50Ms:     10,
 						TTFTP95Ms:     35,
+						TPOTP50Ms:     0.10,
 					}},
 				}); err != nil {
 					t.Fatalf("WriteExperimentResult: %v", err)
@@ -1361,6 +1389,134 @@ func TestExplorerAgentPlannerFilterTaskSpecs_RebalancesCoverage(t *testing.T) {
 	}
 	if filtered[1].Model != "qwen3-8b" {
 		t.Fatalf("second task model=%q, want qwen3-8b", filtered[1].Model)
+	}
+}
+
+func TestExplorerAgentPlannerFilterTaskSpecs_AvoidsDuplicateModelWhenAlternativesExist(t *testing.T) {
+	planner := &ExplorerAgentPlanner{maxTasks: 2}
+	input := PlanInput{
+		LocalModels: []LocalModel{
+			{Name: "qwen3-8b", Family: "qwen"},
+			{Name: "glm-4.1v", Family: "glm"},
+		},
+		ComboFacts: []ComboFact{
+			{Model: "qwen3-8b", Engine: "vllm", Status: "ready"},
+			{Model: "qwen3-8b", Engine: "sglang", Status: "ready"},
+			{Model: "glm-4.1v", Engine: "sglang", Status: "ready"},
+		},
+	}
+	tasks := []TaskSpec{
+		{Kind: "validate", Model: "qwen3-8b", Engine: "vllm"},
+		{Kind: "validate", Model: "qwen3-8b", Engine: "sglang"},
+		{Kind: "validate", Model: "glm-4.1v", Engine: "sglang"},
+	}
+
+	filtered := planner.filterTaskSpecs(input, tasks)
+	if len(filtered) != 2 {
+		t.Fatalf("filtered len=%d, want 2", len(filtered))
+	}
+	if filtered[0].Model == filtered[1].Model {
+		t.Fatalf("filtered tasks = %+v, want distinct models while alternatives exist", filtered)
+	}
+}
+
+func TestExplorerBuildPlanInput_DerivesModelScopeSkipFromExhaustedReadyCombos(t *testing.T) {
+	dir := t.TempDir()
+	db, err := state.Open(context.Background(), filepath.Join(dir, "explorer.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer db.Close()
+
+	e := NewExplorer(ExplorerConfig{
+		Schedule: DefaultScheduleConfig(),
+		Enabled:  true,
+	}, nil, nil, db, NewEventBus(),
+		WithGatherHardware(func(ctx context.Context) (HardwareInfo, error) {
+			return HardwareInfo{Profile: "test-hw", GPUArch: "test"}, nil
+		}),
+		WithGatherLocalModels(func(ctx context.Context) ([]LocalModel, error) {
+			return []LocalModel{
+				{Name: "qwen3-8b", Type: "llm"},
+				{Name: "glm-4.1v", Type: "llm"},
+			}, nil
+		}),
+		WithGatherLocalEngines(func(ctx context.Context) ([]LocalEngine, error) {
+			return []LocalEngine{
+				{Name: "vllm", Type: "vllm"},
+				{Name: "sglang", Type: "sglang"},
+			}, nil
+		}),
+		WithGatherComboFacts(func(ctx context.Context, hardware HardwareInfo, models []LocalModel, engines []LocalEngine) ([]ComboFact, error) {
+			return []ComboFact{
+				{Model: "qwen3-8b", Engine: "vllm", Status: "ready"},
+				{Model: "qwen3-8b", Engine: "sglang", Status: "ready"},
+				{Model: "glm-4.1v", Engine: "sglang", Status: "ready"},
+			}, nil
+		}),
+	)
+	for _, engine := range []string{"vllm", "sglang"} {
+		run := &state.ExplorationRun{
+			ID:         "run-" + engine,
+			Kind:       "validate",
+			HardwareID: "test-hw",
+			ModelID:    "qwen3-8b",
+			EngineID:   engine,
+			Status:     "failed",
+			Error:      "pre-flight deploy: wait for deployed endpoint qwen3-8b: timeout waiting for inference endpoint",
+		}
+		if err := db.InsertExplorationRun(context.Background(), run); err != nil {
+			t.Fatalf("InsertExplorationRun(%s): %v", engine, err)
+		}
+	}
+
+	input, err := e.buildPlanInput(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("buildPlanInput: %v", err)
+	}
+	found := false
+	for _, skip := range input.SkipCombos {
+		if skip.Model == "qwen3-8b" && skip.Engine == "" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("SkipCombos = %+v, want model-scope blocker entry", input.SkipCombos)
+	}
+}
+
+func TestBenchmarkEntriesFromMatrixJSON_PreservesLatencyP50(t *testing.T) {
+	matrixJSON := `{
+		"matrix_profiles": [{
+			"label": "plan",
+			"cells": [{
+				"concurrency": 1,
+				"input_tokens": 128,
+				"max_tokens": 256,
+				"result": {
+					"throughput_tps": 120.0,
+					"ttft_p50_ms": 10.0,
+					"ttft_p95_ms": 35.0,
+					"tpot_p50_ms": 0.10,
+					"tpot_p95_ms": 0.25
+				}
+			}]
+		}]
+	}`
+
+	entries := benchmarkEntriesFromMatrixJSON(matrixJSON)
+	if len(entries) != 1 {
+		t.Fatalf("entries len=%d, want 1", len(entries))
+	}
+	if entries[0].TTFTP50Ms != 10 {
+		t.Fatalf("TTFTP50Ms=%v, want 10", entries[0].TTFTP50Ms)
+	}
+	if entries[0].TPOTP50Ms != 0.10 {
+		t.Fatalf("TPOTP50Ms=%v, want 0.10", entries[0].TPOTP50Ms)
+	}
+	if entries[0].LatencyP50Ms <= 35 || entries[0].LatencyP50Ms >= 36 {
+		t.Fatalf("LatencyP50Ms=%v, want derived value near 35.6", entries[0].LatencyP50Ms)
 	}
 }
 
