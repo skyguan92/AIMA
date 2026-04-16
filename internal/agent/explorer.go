@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,6 +67,8 @@ type PlanMetrics struct {
 // is considered permanently broken and excluded from future plans.
 const maxExplorationFailures = 2
 const recentExplorationHistoryLimit = 30
+
+var errorExcerptRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*Error:\s*[^\n]+`)
 
 // Explorer orchestrates autonomous knowledge discovery on edge devices.
 type Explorer struct {
@@ -240,6 +243,19 @@ func (e *Explorer) persistConfigKey(ctx context.Context, key, value string) {
 	}
 	if err := e.db.SetConfig(ctx, "explorer."+key, value); err != nil {
 		slog.Warn("explorer: persist config failed", "key", key, "error", err)
+	}
+}
+
+func (e *Explorer) writeClosedPlanDocument(status string, metrics *PlanMetrics) {
+	if e.workspace == nil {
+		return
+	}
+	if err := e.workspace.Init(); err != nil {
+		slog.Warn("explorer: init workspace for closed plan failed", "error", err)
+		return
+	}
+	if err := e.workspace.WriteClosedPlanDocument(status, metrics); err != nil {
+		slog.Warn("explorer: write closed plan failed", "status", status, "error", err)
 	}
 }
 
@@ -670,7 +686,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		// N1: empty plan still counts as a budget round — prevents infinite
 		// LLM calls when all proposed tasks are deduped.
 		enabled := true
-		_, _ = e.claimPlanRound(ctx, mode, maxRounds)
+		roundsUsed, _ := e.claimPlanRound(ctx, mode, maxRounds)
 		e.mu.Lock()
 		if mode == "once" {
 			e.config.Enabled = false
@@ -683,7 +699,14 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		if mode == "once" {
 			slog.Info("explorer: once mode completed, auto-disabling")
 		}
-		e.setPhase("idle")
+		closedPhase := "idle"
+		if mode == "once" {
+			closedPhase = "once_complete"
+		} else if mode == "budget" && maxRounds > 0 && roundsUsed >= maxRounds {
+			closedPhase = "budget_exhausted"
+		}
+		e.writeClosedPlanDocument(closedPhase, nil)
+		e.setPhase(closedPhase)
 		return
 	}
 
@@ -699,6 +722,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	if !ok {
 		if mode == "budget" && maxRounds > 0 {
 			slog.Info("explorer: budget exhausted", "rounds_used", roundsUsed, "max_rounds", maxRounds)
+			e.writeClosedPlanDocument("budget_exhausted", e.lastPlanMetrics)
 		}
 		return
 	}
@@ -836,6 +860,7 @@ pdcaDone:
 		}
 		slog.Info("explorer: budget exhausted")
 	}
+	e.writeClosedPlanDocument(e.Status().Phase, metrics)
 }
 
 // handleAdvisory processes a central advisory event: parse advisory,
@@ -1999,21 +2024,62 @@ func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*Plan
 				Reason: reason,
 			})
 		}
-		for _, skip := range deriveModelScopeSkipCombos(input.ComboFacts, input.SkipCombos) {
-			input.SkipCombos = append(input.SkipCombos, skip)
-		}
-		sort.Slice(input.SkipCombos, func(i, j int) bool {
-			if input.SkipCombos[i].Model != input.SkipCombos[j].Model {
-				return strings.ToLower(input.SkipCombos[i].Model) < strings.ToLower(input.SkipCombos[j].Model)
-			}
-			if input.SkipCombos[i].Engine != input.SkipCombos[j].Engine {
-				return strings.ToLower(input.SkipCombos[i].Engine) < strings.ToLower(input.SkipCombos[j].Engine)
-			}
-			return input.SkipCombos[i].Reason < input.SkipCombos[j].Reason
-		})
 	}
+	historyForBlockers := input.History
+	if e.db != nil {
+		if runs, err := e.db.ListExplorationRuns(ctx, "", 200); err == nil {
+			historyForBlockers = make([]ExplorationRun, 0, len(runs))
+			for _, run := range runs {
+				if run == nil {
+					continue
+				}
+				historyForBlockers = append(historyForBlockers, *run)
+			}
+		}
+	}
+	var records []ExperimentRecord
+	if e.workspace != nil {
+		if loaded, err := e.workspace.LoadExperimentRecords(); err == nil {
+			records = loaded
+		}
+	}
+	input.SkipCombos = append(input.SkipCombos,
+		deriveFamilyArtifactSkipCombos(input.LocalModels, input.LocalEngines, input.ComboFacts, input.SkipCombos, records, historyForBlockers)...)
+	for _, skip := range deriveModelScopeSkipCombos(input.ComboFacts, input.SkipCombos) {
+		input.SkipCombos = append(input.SkipCombos, skip)
+	}
+	input.SkipCombos = dedupeSkipCombos(input.SkipCombos)
 
 	return input, nil
+}
+
+func dedupeSkipCombos(skipCombos []SkipCombo) []SkipCombo {
+	if len(skipCombos) <= 1 {
+		return skipCombos
+	}
+	deduped := make([]SkipCombo, 0, len(skipCombos))
+	seen := make(map[string]struct{}, len(skipCombos))
+	for _, skip := range skipCombos {
+		key := strings.ToLower(strings.TrimSpace(skip.Model)) + "|" + strings.ToLower(strings.TrimSpace(skip.Engine))
+		if key == "|" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, skip)
+	}
+	sort.Slice(deduped, func(i, j int) bool {
+		if deduped[i].Model != deduped[j].Model {
+			return strings.ToLower(deduped[i].Model) < strings.ToLower(deduped[j].Model)
+		}
+		if deduped[i].Engine != deduped[j].Engine {
+			return strings.ToLower(deduped[i].Engine) < strings.ToLower(deduped[j].Engine)
+		}
+		return deduped[i].Reason < deduped[j].Reason
+	})
+	return deduped
 }
 
 func deriveModelScopeSkipCombos(comboFacts []ComboFact, skipCombos []SkipCombo) []SkipCombo {
@@ -2089,6 +2155,271 @@ func deriveModelScopeSkipCombos(comboFacts []ComboFact, skipCombos []SkipCombo) 
 		return strings.ToLower(derived[i].Model) < strings.ToLower(derived[j].Model)
 	})
 	return derived
+}
+
+func deriveFamilyArtifactSkipCombos(localModels []LocalModel, localEngines []LocalEngine, comboFacts []ComboFact, skipCombos []SkipCombo, records []ExperimentRecord, runs []ExplorationRun) []SkipCombo {
+	if len(records) == 0 && len(runs) == 0 || len(comboFacts) == 0 {
+		return nil
+	}
+
+	type blockerGroup struct {
+		family     string
+		engine     string
+		artifact   string
+		summary    string
+		models     map[string]struct{}
+		modelCount int
+	}
+
+	familyByModel := make(map[string]string, len(localModels))
+	for _, model := range localModels {
+		name := strings.TrimSpace(model.Name)
+		if name == "" {
+			continue
+		}
+		family := strings.TrimSpace(model.Family)
+		if family == "" {
+			family = inferModelFamily(name)
+		}
+		familyByModel[strings.ToLower(name)] = family
+	}
+
+	engineArtifacts := make(map[string]string, len(localEngines)*2)
+	for _, engine := range localEngines {
+		artifact := strings.TrimSpace(engine.Artifact)
+		if artifact == "" {
+			continue
+		}
+		for _, alias := range []string{engine.Name, engine.Type} {
+			alias = strings.TrimSpace(alias)
+			if alias == "" {
+				continue
+			}
+			engineArtifacts[strings.ToLower(alias)] = artifact
+		}
+	}
+
+	comboArtifacts := make(map[string]string, len(comboFacts))
+	for _, fact := range comboFacts {
+		key := strings.ToLower(planTaskComboKey(fact.Model, fact.Engine))
+		if key == "" {
+			continue
+		}
+		artifact := strings.TrimSpace(fact.Artifact)
+		if artifact == "" {
+			artifact = engineArtifacts[strings.ToLower(strings.TrimSpace(fact.Engine))]
+		}
+		comboArtifacts[key] = artifact
+	}
+
+	exactSkips := make(map[string]struct{}, len(skipCombos))
+	modelSkips := make(map[string]struct{}, len(skipCombos))
+	for _, skip := range skipCombos {
+		model := strings.ToLower(strings.TrimSpace(skip.Model))
+		if model == "" {
+			continue
+		}
+		if strings.TrimSpace(skip.Engine) == "" {
+			modelSkips[model] = struct{}{}
+			continue
+		}
+		exactSkips[strings.ToLower(planTaskComboKey(skip.Model, skip.Engine))] = struct{}{}
+	}
+
+	groupBySignature := make(map[string]*blockerGroup)
+	groupByFrontier := make(map[string][]*blockerGroup)
+	addObservation := func(model, engine, artifact, signature, summary string) {
+		model = strings.TrimSpace(model)
+		engine = strings.TrimSpace(engine)
+		artifact = strings.TrimSpace(artifact)
+		if model == "" || engine == "" || artifact == "" || signature == "" {
+			return
+		}
+		family := strings.TrimSpace(familyByModel[strings.ToLower(model)])
+		if family == "" {
+			family = inferModelFamily(model)
+		}
+		if family == "" || family == "unknown" {
+			return
+		}
+		groupKey := strings.ToLower(family) + "|" + strings.ToLower(engine) + "|" + strings.ToLower(artifact) + "|" + signature
+		group := groupBySignature[groupKey]
+		if group == nil {
+			group = &blockerGroup{
+				family:   family,
+				engine:   engine,
+				artifact: artifact,
+				summary:  summary,
+				models:   make(map[string]struct{}),
+			}
+			groupBySignature[groupKey] = group
+			frontierKey := strings.ToLower(family) + "|" + strings.ToLower(engine) + "|" + strings.ToLower(artifact)
+			groupByFrontier[frontierKey] = append(groupByFrontier[frontierKey], group)
+		}
+		modelKey := strings.ToLower(model)
+		if _, exists := group.models[modelKey]; !exists {
+			group.models[modelKey] = struct{}{}
+			group.modelCount++
+		}
+	}
+	for _, rec := range records {
+		signature, summary := experimentFailureSignature(rec)
+		if signature == "" {
+			continue
+		}
+		model := strings.TrimSpace(rec.Task.Model)
+		engine := strings.TrimSpace(rec.Task.Engine)
+		comboKey := strings.ToLower(planTaskComboKey(model, engine))
+		artifact := strings.TrimSpace(comboArtifacts[comboKey])
+		if artifact == "" {
+			artifact = strings.TrimSpace(rec.Result.EngineImage)
+		}
+		if artifact == "" {
+			artifact = strings.TrimSpace(engineArtifacts[strings.ToLower(engine)])
+		}
+		addObservation(model, engine, artifact, signature, summary)
+	}
+	for _, run := range runs {
+		signature, summary := explorationRunFailureSignature(run)
+		if signature == "" {
+			continue
+		}
+		engine := strings.TrimSpace(run.EngineID)
+		model := strings.TrimSpace(run.ModelID)
+		artifact := strings.TrimSpace(engineArtifacts[strings.ToLower(engine)])
+		if artifact == "" {
+			continue
+		}
+		addObservation(model, engine, artifact, signature, summary)
+	}
+
+	var derived []SkipCombo
+	seenDerived := make(map[string]struct{})
+	for _, fact := range comboFacts {
+		if !strings.EqualFold(strings.TrimSpace(fact.Status), "ready") {
+			continue
+		}
+		model := strings.TrimSpace(fact.Model)
+		engine := strings.TrimSpace(fact.Engine)
+		if model == "" || engine == "" {
+			continue
+		}
+		modelKey := strings.ToLower(model)
+		if _, exists := modelSkips[modelKey]; exists {
+			continue
+		}
+		comboKey := strings.ToLower(planTaskComboKey(model, engine))
+		if _, exists := exactSkips[comboKey]; exists {
+			continue
+		}
+		family := strings.TrimSpace(familyByModel[modelKey])
+		if family == "" {
+			family = inferModelFamily(model)
+		}
+		if family == "" || family == "unknown" {
+			continue
+		}
+		artifact := strings.TrimSpace(fact.Artifact)
+		if artifact == "" {
+			artifact = strings.TrimSpace(comboArtifacts[comboKey])
+		}
+		if artifact == "" {
+			artifact = strings.TrimSpace(engineArtifacts[strings.ToLower(engine)])
+		}
+		if artifact == "" {
+			continue
+		}
+		frontierKey := strings.ToLower(family) + "|" + strings.ToLower(engine) + "|" + strings.ToLower(artifact)
+		groups := groupByFrontier[frontierKey]
+		var best *blockerGroup
+		for _, group := range groups {
+			if group == nil || group.modelCount < 2 {
+				continue
+			}
+			if best == nil || group.modelCount > best.modelCount {
+				best = group
+			}
+		}
+		if best == nil {
+			continue
+		}
+		if _, exists := seenDerived[comboKey]; exists {
+			continue
+		}
+		reason := fmt.Sprintf("repeated structural failure across %d %s-family models on %s: %s",
+			best.modelCount, best.family, best.artifact, best.summary)
+		derived = append(derived, SkipCombo{
+			Model:  model,
+			Engine: engine,
+			Reason: reason,
+		})
+		seenDerived[comboKey] = struct{}{}
+	}
+	return derived
+}
+
+func experimentFailureSignature(rec ExperimentRecord) (string, string) {
+	signal := experimentSignal(rec)
+	switch signal {
+	case "", "benchmark_ok", "completed", "unknown":
+		return "", ""
+	case "inference_no_output":
+		return signal, "benchmark matrix returned no successful output"
+	}
+	summary := extractFailureSummary(rec.Result.Error)
+	if summary == "" {
+		return "", ""
+	}
+	return signal + "|" + strings.ToLower(summary), summary
+}
+
+func explorationRunFailureSignature(run ExplorationRun) (string, string) {
+	status := strings.ToLower(strings.TrimSpace(run.Status))
+	if status != "failed" {
+		return "", ""
+	}
+	summary := extractFailureSummary(run.Error)
+	if summary == "" {
+		return "", ""
+	}
+	return "failed|" + strings.ToLower(summary), summary
+}
+
+func extractFailureSummary(errText string) string {
+	errText = strings.TrimSpace(errText)
+	if errText == "" {
+		return ""
+	}
+	matches := errorExcerptRe.FindAllString(errText, -1)
+	if len(matches) > 0 {
+		return compactFailureSummary(matches[len(matches)-1])
+	}
+	lines := strings.Split(errText, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := compactFailureSummary(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func compactFailureSummary(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	for _, marker := range []string{"ModuleNotFoundError:", "ValueError:", "RuntimeError:", "TypeError:", "AssertionError:"} {
+		if idx := strings.LastIndex(text, marker); idx >= 0 {
+			text = text[idx:]
+			break
+		}
+	}
+	if len(text) > 180 {
+		text = text[:177] + "..."
+	}
+	return text
 }
 
 func (e *Explorer) computePlanMetrics(plans []*ExplorerPlan, elapsed time.Duration, tokensUsed int) *PlanMetrics {

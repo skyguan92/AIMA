@@ -960,3 +960,33 @@ func TestEnsureWorkingDocuments(t *testing.T) {
 		t.Fatal("summary.md missing Evidence Ledger template")
 	}
 }
+
+func TestWriteClosedPlanDocument(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	err := ws.WriteClosedPlanDocument("budget_exhausted", &PlanMetrics{
+		TotalTasks: 4,
+		Completed:  1,
+		Failed:     3,
+	})
+	if err != nil {
+		t.Fatalf("WriteClosedPlanDocument: %v", err)
+	}
+
+	plan, err := ws.ReadFile("plan.md")
+	if err != nil {
+		t.Fatalf("ReadFile(plan.md): %v", err)
+	}
+	for _, want := range []string{
+		"No pending executable plan",
+		"Explorer state: `budget_exhausted`",
+		"Last run metrics: total=4 completed=1 failed=3 skipped=0",
+		"```yaml\n[]\n```",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("closed plan missing %q:\n%s", want, plan)
+		}
+	}
+}

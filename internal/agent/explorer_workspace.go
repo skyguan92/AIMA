@@ -56,6 +56,12 @@ func (w *ExplorerWorkspace) EnsureWorkingDocuments() error {
 	return nil
 }
 
+// WriteClosedPlanDocument resets plan.md when there is no pending Do phase.
+// plan.md is scratch space for the next executable plan, not a historical log.
+func (w *ExplorerWorkspace) WriteClosedPlanDocument(status string, metrics *PlanMetrics) error {
+	return w.WriteFile("plan.md", closedPlanTemplate(status, metrics))
+}
+
 func (w *ExplorerWorkspace) ensureFile(rel, content string) error {
 	p, err := w.safePath(rel)
 	if err != nil {
@@ -438,7 +444,7 @@ func (w *ExplorerWorkspace) generateIndex(input PlanInput, now string) string {
 	fmt.Fprintf(&sb, "| device-profile.md | AIMA | no | Hardware, local models, local engines, deployed state |\n")
 	fmt.Fprintf(&sb, "| knowledge-base.md | AIMA | no | History, advisories, catalog capability hints |\n")
 	fmt.Fprintf(&sb, "| experiment-facts.md | AIMA | no | Machine-generated digest of experiment outcomes and benchmark evidence |\n")
-	fmt.Fprintf(&sb, "| plan.md | Agent | yes | Current executable plan for the next Do phase |\n")
+	fmt.Fprintf(&sb, "| plan.md | Agent | yes | Scratch pad for the next executable Do phase; AIMA resets it when no Do phase is pending |\n")
 	fmt.Fprintf(&sb, "| summary.md | Agent | yes | Running memory of findings, bugs, doubts, and strategy |\n")
 	fmt.Fprintf(&sb, "| experiments/*.md | AIMA + Agent Notes | append notes only | Raw experiment outcomes |\n\n")
 
@@ -1063,8 +1069,9 @@ func writeComboTable(sb *strings.Builder, facts []ComboFact, mode string) {
 func defaultPlanTemplate() string {
 	return "# Exploration Plan\n\n" +
 		"## Objective\n\n" +
-		"Summarize the next most valuable fact-grounded experiments for this device.\n\n" +
+		"Draft only the next executable Do-phase tasks for this device.\n\n" +
 		"## Fact Snapshot\n\n" +
+		"- `plan.md` is scratch space for the next Do phase, not a history log.\n" +
 		"- Fill after reading index.md, available-combos.md, and knowledge-base.md frontier coverage.\n\n" +
 		"## Task Board\n\n" +
 		"- [ ] Read index.md\n" +
@@ -1073,6 +1080,37 @@ func defaultPlanTemplate() string {
 		"- [ ] Read summary.md blockers and evidence\n" +
 		"- [ ] Give at least one slot to a ready model not seen in recent history when such models exist\n" +
 		"- [ ] Write only executable tasks from Ready Combos not on Do Not Retry This Cycle\n\n" +
+		"## Tasks\n" +
+		"```yaml\n[]\n```\n"
+}
+
+func closedPlanTemplate(status string, metrics *PlanMetrics) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "idle"
+	}
+
+	var factLines []string
+	factLines = append(factLines,
+		fmt.Sprintf("- Explorer state: `%s`", status),
+		"- No executable Do phase is currently pending.",
+		"- `plan.md` is scratch space for the next Do phase; use `summary.md` and `experiments/*.md` for completed work.",
+	)
+	if metrics != nil {
+		factLines = append(factLines,
+			fmt.Sprintf("- Last run metrics: total=%d completed=%d failed=%d skipped=%d", metrics.TotalTasks, metrics.Completed, metrics.Failed, metrics.Skipped),
+		)
+	}
+
+	return "# Exploration Plan\n\n" +
+		"## Objective\n\n" +
+		"No pending executable plan. AIMA has closed the previous cycle.\n\n" +
+		"## Fact Snapshot\n\n" +
+		strings.Join(factLines, "\n") + "\n\n" +
+		"## Task Board\n\n" +
+		"- [x] No pending executable tasks\n" +
+		"- [x] See summary.md for conclusions\n" +
+		"- [x] See experiments/*.md for raw outcomes\n\n" +
 		"## Tasks\n" +
 		"```yaml\n[]\n```\n"
 }

@@ -1486,6 +1486,198 @@ func TestExplorerBuildPlanInput_DerivesModelScopeSkipFromExhaustedReadyCombos(t 
 	}
 }
 
+func TestExplorerBuildPlanInput_DerivesFamilyArtifactSkipFromRepeatedFailures(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(filepath.Join(dir, "workspace"))
+	if err := ws.Init(); err != nil {
+		t.Fatalf("workspace.Init: %v", err)
+	}
+
+	stableArtifact := "qujing/vllm-gemma4-gb10:0.19.0-torchmoe2"
+	failed := ExperimentResult{
+		Status: "failed",
+		Error:  "pre-flight deploy: wait for deployed endpoint glm: timeout waiting for inference endpoint glm (10m0s): ModuleNotFoundError: No module named 'compressed_tensors'",
+	}
+	for i, task := range []TaskSpec{
+		{Kind: "validate", Model: "GLM-4.6V-Flash-FP4", Engine: "vllm", Reason: "seed"},
+		{Kind: "validate", Model: "GLM-4.1V-9B-Thinking", Engine: "vllm", Reason: "seed"},
+	} {
+		if _, err := ws.WriteExperimentResult(i+1, task, failed); err != nil {
+			t.Fatalf("WriteExperimentResult(%d): %v", i+1, err)
+		}
+	}
+
+	e := NewExplorer(ExplorerConfig{Schedule: DefaultScheduleConfig()}, nil, nil, nil, NewEventBus(),
+		WithGatherHardware(func(ctx context.Context) (HardwareInfo, error) {
+			return HardwareInfo{Profile: "test-hw", GPUArch: "blackwell"}, nil
+		}),
+		WithGatherLocalModels(func(ctx context.Context) ([]LocalModel, error) {
+			return []LocalModel{
+				{Name: "GLM-4.6V-Flash-FP4", Type: "llm", Family: "glm"},
+				{Name: "GLM-4.1V-9B-Thinking", Type: "llm", Family: "glm"},
+				{Name: "GLM-4.1V-9B-Thinking-FP4", Type: "llm", Family: "glm"},
+				{Name: "GLM-4.7-Flash-NVFP4", Type: "llm", Family: "glm"},
+				{Name: "Qwen2.5-Coder-3B-Instruct", Type: "llm", Family: "qwen"},
+			}, nil
+		}),
+		WithGatherLocalEngines(func(ctx context.Context) ([]LocalEngine, error) {
+			return []LocalEngine{
+				{Name: "vllm", Type: "vllm", Artifact: stableArtifact},
+			}, nil
+		}),
+		WithGatherComboFacts(func(ctx context.Context, hardware HardwareInfo, models []LocalModel, engines []LocalEngine) ([]ComboFact, error) {
+			return []ComboFact{
+				{Model: "GLM-4.6V-Flash-FP4", Engine: "vllm", Artifact: stableArtifact, Status: "blocked", Reason: "historical structural failure"},
+				{Model: "GLM-4.1V-9B-Thinking", Engine: "vllm", Artifact: stableArtifact, Status: "blocked", Reason: "historical structural failure"},
+				{Model: "GLM-4.1V-9B-Thinking-FP4", Engine: "vllm", Artifact: stableArtifact, Status: "ready"},
+				{Model: "GLM-4.7-Flash-NVFP4", Engine: "vllm", Artifact: stableArtifact, Status: "ready"},
+				{Model: "Qwen2.5-Coder-3B-Instruct", Engine: "vllm", Artifact: stableArtifact, Status: "ready"},
+			}, nil
+		}),
+	)
+	e.workspace = ws
+
+	input, err := e.buildPlanInput(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("buildPlanInput: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, skip := range input.SkipCombos {
+		got[skip.Model+"|"+skip.Engine] = skip.Reason
+	}
+	for _, combo := range []string{
+		"GLM-4.1V-9B-Thinking-FP4|vllm",
+		"GLM-4.7-Flash-NVFP4|vllm",
+	} {
+		reason := got[combo]
+		if !strings.Contains(reason, "repeated structural failure") || !strings.Contains(reason, "compressed_tensors") {
+			t.Fatalf("%s reason = %q, want repeated family blocker mentioning compressed_tensors", combo, reason)
+		}
+	}
+	if reason := got["Qwen2.5-Coder-3B-Instruct|vllm"]; reason != "" {
+		t.Fatalf("qwen combo unexpectedly skipped: %q", reason)
+	}
+}
+
+func TestExplorerBuildPlanInput_DerivesFamilyArtifactSkipFromHistoricalRuns(t *testing.T) {
+	dir := t.TempDir()
+	db, err := state.Open(context.Background(), filepath.Join(dir, "explorer.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	runs := []*state.ExplorationRun{
+		{
+			ID:          "run-glm-a",
+			Kind:        "validate",
+			Status:      "failed",
+			HardwareID:  "test-hw",
+			ModelID:     "GLM-4.6V-Flash-FP4",
+			EngineID:    "vllm",
+			Error:       "pre-flight deploy: wait for deployed endpoint glm: timeout waiting for inference endpoint glm (10m0s): ModuleNotFoundError: No module named 'compressed_tensors'",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			StartedAt:   now,
+			CompletedAt: now,
+		},
+		{
+			ID:          "run-glm-b",
+			Kind:        "validate",
+			Status:      "failed",
+			HardwareID:  "test-hw",
+			ModelID:     "GLM-4.1V-9B-Thinking",
+			EngineID:    "vllm",
+			Error:       "pre-flight deploy: wait for deployed endpoint glm: timeout waiting for inference endpoint glm (10m0s): ModuleNotFoundError: No module named 'compressed_tensors'",
+			CreatedAt:   now.Add(time.Second),
+			UpdatedAt:   now.Add(time.Second),
+			StartedAt:   now.Add(time.Second),
+			CompletedAt: now.Add(time.Second),
+		},
+	}
+	for i, run := range runs {
+		if err := db.InsertExplorationRun(context.Background(), run); err != nil {
+			t.Fatalf("InsertExplorationRun(%d): %v", i, err)
+		}
+	}
+
+	e := NewExplorer(ExplorerConfig{Schedule: DefaultScheduleConfig()}, nil, nil, db, NewEventBus(),
+		WithGatherHardware(func(ctx context.Context) (HardwareInfo, error) {
+			return HardwareInfo{Profile: "test-hw", GPUArch: "blackwell"}, nil
+		}),
+		WithGatherLocalModels(func(ctx context.Context) ([]LocalModel, error) {
+			return []LocalModel{
+				{Name: "GLM-4.6V-Flash-FP4", Type: "llm", Family: "glm"},
+				{Name: "GLM-4.1V-9B-Thinking", Type: "llm", Family: "glm"},
+				{Name: "GLM-4.5-Air-nvfp4", Type: "llm", Family: "glm"},
+				{Name: "Qwen2.5-Coder-3B-Instruct", Type: "llm", Family: "qwen"},
+			}, nil
+		}),
+		WithGatherLocalEngines(func(ctx context.Context) ([]LocalEngine, error) {
+			return []LocalEngine{
+				{Name: "vllm", Type: "vllm", Artifact: "qujing/vllm-gemma4-gb10:0.19.0-torchmoe2"},
+			}, nil
+		}),
+		WithGatherComboFacts(func(ctx context.Context, hardware HardwareInfo, models []LocalModel, engines []LocalEngine) ([]ComboFact, error) {
+			return []ComboFact{
+				{Model: "GLM-4.6V-Flash-FP4", Engine: "vllm", Artifact: "qujing/vllm-gemma4-gb10:0.19.0-torchmoe2", Status: "blocked", Reason: "historical structural failure"},
+				{Model: "GLM-4.1V-9B-Thinking", Engine: "vllm", Artifact: "qujing/vllm-gemma4-gb10:0.19.0-torchmoe2", Status: "blocked", Reason: "historical structural failure"},
+				{Model: "GLM-4.5-Air-nvfp4", Engine: "vllm", Artifact: "qujing/vllm-gemma4-gb10:0.19.0-torchmoe2", Status: "ready"},
+				{Model: "Qwen2.5-Coder-3B-Instruct", Engine: "vllm", Artifact: "qujing/vllm-gemma4-gb10:0.19.0-torchmoe2", Status: "ready"},
+			}, nil
+		}),
+	)
+
+	input, err := e.buildPlanInput(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("buildPlanInput: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, skip := range input.SkipCombos {
+		got[skip.Model+"|"+skip.Engine] = skip.Reason
+	}
+	if reason := got["GLM-4.5-Air-nvfp4|vllm"]; !strings.Contains(reason, "compressed_tensors") {
+		t.Fatalf("historical family blocker not derived for GLM-4.5-Air-nvfp4|vllm: %q", reason)
+	}
+	if reason := got["Qwen2.5-Coder-3B-Instruct|vllm"]; reason != "" {
+		t.Fatalf("qwen combo unexpectedly skipped from historical glm blocker: %q", reason)
+	}
+}
+
+func TestExplorer_HandleEventClosesPlanDocumentAfterRun(t *testing.T) {
+	dir := t.TempDir()
+	agent := NewAgent(&mockLLM{}, &mockTools{})
+	agent.mode = toolModeContextOnly
+	e := NewExplorer(ExplorerConfig{
+		Schedule:  DefaultScheduleConfig(),
+		Enabled:   true,
+		Mode:      "budget",
+		MaxRounds: 1,
+	}, agent, nil, nil, NewEventBus())
+	e.planner = &countingPlanner{executed: new(int)}
+	e.workspace = NewExplorerWorkspace(filepath.Join(dir, "workspace"))
+
+	e.handleEvent(context.Background(), ExplorerEvent{Type: EventScheduledGapScan})
+
+	plan, err := e.workspace.ReadFile("plan.md")
+	if err != nil {
+		t.Fatalf("ReadFile(plan.md): %v", err)
+	}
+	for _, want := range []string{
+		"No pending executable plan",
+		"Explorer state: `budget_exhausted`",
+		"No pending executable tasks",
+		"```yaml\n[]\n```",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("closed plan missing %q:\n%s", want, plan)
+		}
+	}
+}
+
 func TestBenchmarkEntriesFromMatrixJSON_PreservesLatencyP50(t *testing.T) {
 	matrixJSON := `{
 		"matrix_profiles": [{
