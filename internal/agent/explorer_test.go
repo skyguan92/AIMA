@@ -1291,6 +1291,53 @@ func TestExplorerParseExplorationResult_ParsesTuningSummary(t *testing.T) {
 	}
 }
 
+// TestExplorerParseExplorationResult_PreservesPartialMatrix is the core
+// regression test for the tune-timeout narrative fix: when a tune is cut
+// short at the 30m cap after some cells have already landed in DB,
+// summarizeTuningSession writes partial matrix counts into SummaryJSON
+// (total_cells > success_cells). parseExplorationResult must surface that
+// truthfully so executeTask's timeout branch preserves it instead of
+// reporting cells=0/0.
+func TestExplorerParseExplorationResult_PreservesPartialMatrix(t *testing.T) {
+	explorer := &Explorer{}
+	status := &ExplorationStatus{
+		Run: &state.ExplorationRun{
+			SummaryJSON: `{
+				"benchmark_id":"bench-partial",
+				"config_id":"cfg-partial",
+				"deploy_config":{"gpu_memory_utilization":0.8},
+				"result":{"throughput_tps":22.5},
+				"matrix_profiles":[
+					{"label":"gmu=0.7","cells":[{"concurrency":1,"input_tokens":128,"max_tokens":256,"benchmark_id":"bench-0","config_id":"cfg-0","result":{"throughput_tps":20.1}}]},
+					{"label":"gmu=0.8","cells":[{"concurrency":1,"input_tokens":128,"max_tokens":256,"benchmark_id":"bench-1","config_id":"cfg-1","result":{"throughput_tps":22.5}}]}
+				],
+				"total_cells":5,
+				"success_cells":2
+			}`,
+		},
+	}
+
+	result := explorer.parseExplorationResult(status)
+	if result.MatrixCells != 5 {
+		t.Fatalf("MatrixCells = %d, want 5 (planned cells)", result.MatrixCells)
+	}
+	if result.SuccessCells != 2 {
+		t.Fatalf("SuccessCells = %d, want 2 (landed cells before timeout)", result.SuccessCells)
+	}
+	if result.BenchmarkID != "bench-partial" {
+		t.Fatalf("BenchmarkID = %q, want bench-partial", result.BenchmarkID)
+	}
+	if !strings.Contains(result.MatrixJSON, "gmu=0.7") || !strings.Contains(result.MatrixJSON, "gmu=0.8") {
+		t.Fatalf("MatrixJSON dropped partial cells: %s", result.MatrixJSON)
+	}
+	// Success is set by the caller based on framework status, not by this
+	// parser — but initializing to true here is what lets the timeout
+	// branch in executeTask keep Cancelled=true while retaining cells.
+	if !result.Success {
+		t.Fatalf("Success initial value = false, want true (executeTask flips it on cancelled)")
+	}
+}
+
 func TestExplorerAgentPlanner_AnalyzeRejectsInvalidValidatedConfidence(t *testing.T) {
 	validSummary := "# Exploration Summary\n\n" +
 		"## Key Findings\n\n" +

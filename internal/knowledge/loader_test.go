@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -674,6 +675,68 @@ partition:
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected 1 warning for bad.yaml, got %d", len(warnings))
+	}
+}
+
+// TestLoadCatalogLenient_OverlayWithoutProfileIsQuiet confirms that overlay
+// engine assets referencing a profile (e.g. `_profile: vllm`) without the
+// accompanying engines/profiles/*.yaml do NOT emit a spurious "unknown
+// profile" warning during the overlay load. The profile is expected to
+// resolve against the factory catalog during MergeCatalog.
+func TestLoadCatalogLenient_OverlayWithoutProfileIsQuiet(t *testing.T) {
+	overlayFS := fstest.MapFS{
+		"engines/vllm-nightly-blackwell.yaml": &fstest.MapFile{Data: []byte(`kind: engine_asset
+_profile: vllm
+metadata:
+  name: vllm-nightly-blackwell
+  type: vllm-nightly
+  version: nightly
+hardware:
+  gpu_arch: Blackwell
+  vram_min_mib: 4096
+image:
+  name: vllm/vllm-openai
+  tag: qwen3_5-cu130
+`)},
+	}
+	_, warnings := LoadCatalogLenient(overlayFS)
+	for _, w := range warnings {
+		if strings.Contains(w, "unknown profile") {
+			t.Fatalf("overlay load should swallow 'unknown profile' warnings, got: %q", w)
+		}
+	}
+}
+
+// TestMergeCatalogWithDigests_SurfacesPostMergeProfileGap confirms that when
+// an engine asset's profile reference cannot be resolved even after merge
+// (neither overlay nor base defines it), MergeCatalogWithDigests surfaces the
+// warning — previously MergeCatalog silently dropped post-merge finalize
+// warnings with `_ = finalizeEngineAssets(base)`.
+func TestMergeCatalogWithDigests_SurfacesPostMergeProfileGap(t *testing.T) {
+	base := &Catalog{
+		EngineProfiles: make(map[string]*EngineProfile),
+	}
+	overlayFS := fstest.MapFS{
+		"engines/ghost-engine.yaml": &fstest.MapFile{Data: []byte(`kind: engine_asset
+_profile: totally-missing-profile
+metadata:
+  name: ghost-engine
+  type: ghost
+hardware:
+  gpu_arch: Test
+`)},
+	}
+	overlay, _ := LoadCatalogLenient(overlayFS)
+	_, warnings := MergeCatalogWithDigests(base, overlay, nil, overlayFS)
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "unknown profile") && strings.Contains(w, "totally-missing-profile") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected post-merge warning about unknown profile, got warnings=%v", warnings)
 	}
 }
 

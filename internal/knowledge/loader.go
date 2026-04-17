@@ -1224,8 +1224,20 @@ func LoadCatalogLenient(fsys fs.FS) (*Catalog, []string) {
 		}
 	}
 
-	// Phase 3: Merge profiles + expand URL templates
-	warnings = append(warnings, finalizeEngineAssets(cat)...)
+	// Phase 3: Merge profiles + expand URL templates.
+	// Overlay assets that reference a profile frequently only define the asset
+	// file itself (e.g. a single vllm-nightly-blackwell.yaml without the
+	// accompanying engines/profiles/vllm.yaml). The overlay is always merged
+	// into the factory catalog after this; MergeCatalog re-finalizes with the
+	// full profile set. Swallow "unknown profile" warnings here so that typical
+	// overlays don't log spurious messages; genuinely missing profiles are
+	// re-surfaced by MergeCatalog after the merge.
+	for _, w := range finalizeEngineAssets(cat) {
+		if strings.Contains(w, "unknown profile") {
+			continue
+		}
+		warnings = append(warnings, w)
+	}
 
 	return cat, warnings
 }
@@ -1284,6 +1296,14 @@ func extractName(data []byte) string {
 // metadata.name replace the base asset; new names are appended.
 // Returns the mutated base catalog.
 func MergeCatalog(base, overlay *Catalog) *Catalog {
+	base, _ = mergeCatalogReturningWarnings(base, overlay)
+	return base
+}
+
+// mergeCatalogReturningWarnings is MergeCatalog's implementation; it surfaces
+// any post-merge finalize warnings (e.g. engine assets whose profile reference
+// still can't be resolved even after overlay + factory profiles merged).
+func mergeCatalogReturningWarnings(base, overlay *Catalog) (*Catalog, []string) {
 	base.HardwareProfiles = mergeSlice(base.HardwareProfiles, overlay.HardwareProfiles, func(v HardwareProfile) string { return v.Metadata.Name })
 	base.RawEngineAssets = mergeSlice(rawEngineAssets(base), rawEngineAssets(overlay), func(v EngineAsset) string { return v.Metadata.Name })
 	base.ModelAssets = mergeSlice(base.ModelAssets, overlay.ModelAssets, func(v ModelAsset) string { return v.Metadata.Name })
@@ -1291,8 +1311,7 @@ func MergeCatalog(base, overlay *Catalog) *Catalog {
 	base.StackComponents = mergeSlice(base.StackComponents, overlay.StackComponents, func(v StackComponent) string { return v.Metadata.Name })
 	base.DeploymentScenarios = mergeSlice(base.DeploymentScenarios, overlay.DeploymentScenarios, func(v DeploymentScenario) string { return v.Metadata.Name })
 	base.EngineProfiles = mergeEngineProfiles(base.EngineProfiles, overlay.EngineProfiles)
-	_ = finalizeEngineAssets(base)
-	return base
+	return base, finalizeEngineAssets(base)
 }
 
 func rawEngineAssets(cat *Catalog) []EngineAsset {
@@ -1327,11 +1346,14 @@ func MergeCatalogWithDigests(base, overlay *Catalog, factoryDigests map[string]s
 	// Collect overlay asset names (before merge) to check staleness
 	overlayNames := CollectNames(overlay)
 
-	// Merge
-	base = MergeCatalog(base, overlay)
+	// Merge (and capture post-merge finalize warnings — e.g. profile references
+	// that survive merge still point at a missing engine_profile).
+	var warnings []string
+	var finalizeWarnings []string
+	base, finalizeWarnings = mergeCatalogReturningWarnings(base, overlay)
+	warnings = append(warnings, finalizeWarnings...)
 
 	// Check staleness for each overlay asset that shadows a factory asset
-	var warnings []string
 	for name := range overlayNames {
 		factoryD, inFactory := factoryDigests[name]
 		if !inFactory {
