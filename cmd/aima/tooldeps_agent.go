@@ -111,7 +111,12 @@ func buildAgentDeps(ac *appContext, deps *mcp.ToolDeps,
 		if config.MaxConfigs == 0 {
 			config.MaxConfigs = 20
 		}
-		session, err := tuner.Start(ctx, config)
+		// Detach from the MCP request context so the tune goroutine survives
+		// after the HTTP response is written. Without this, net/http cancels
+		// the request context as soon as TuningStart returns, propagating
+		// through Tuner.run and failing progress=0/N before any config runs.
+		// Stop() remains the way to cancel a running session.
+		session, err := tuner.Start(context.WithoutCancel(ctx), config)
 		if err != nil {
 			return nil, err
 		}
