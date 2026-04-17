@@ -457,13 +457,16 @@ func (w *ExplorerWorkspace) generateIndex(input PlanInput, now string) string {
 	fmt.Fprintf(&sb, "- Keep the required headings in `plan.md` and `summary.md` so later phases can continue from them.\n\n")
 
 	fmt.Fprintf(&sb, "## Current Fact Snapshot\n\n")
-	fmt.Fprintf(&sb, "| Metric | Value |\n|--------|-------|\n")
-	fmt.Fprintf(&sb, "| Hardware Profile | %s |\n", input.Hardware.Profile)
-	fmt.Fprintf(&sb, "| Local Models | %d |\n", len(input.LocalModels))
-	fmt.Fprintf(&sb, "| Local Engines | %d |\n", len(input.LocalEngines))
-	fmt.Fprintf(&sb, "| Ready Combos | %d |\n", readyCombos)
-	fmt.Fprintf(&sb, "| Blocked Combos | %d |\n", blockedCombos)
-	fmt.Fprintf(&sb, "| Already Explored Combos | %d |\n\n", exploredCombos)
+	fmt.Fprintf(&sb, "_All counts below are for this exact phase; the authoritative rows are in `available-combos.md`. "+
+		"If you see a different Ready/Blocked count anywhere (logs, prior plan.md, explorer.status JSON), this snapshot wins._\n\n")
+	fmt.Fprintf(&sb, "| Metric | Value | Meaning |\n|--------|-------|---------|\n")
+	fmt.Fprintf(&sb, "| Hardware Profile | %s | current device |\n", input.Hardware.Profile)
+	fmt.Fprintf(&sb, "| Local Models | %d | models present on disk |\n", len(input.LocalModels))
+	fmt.Fprintf(&sb, "| Local Engines | %d | engines installed locally |\n", len(input.LocalEngines))
+	fmt.Fprintf(&sb, "| Ready Combos | %d | model×engine pairs eligible for new tasks |\n", readyCombos)
+	fmt.Fprintf(&sb, "| Blocked Combos | %d | pairs known to fail (format/type/VRAM/prior error) |\n", blockedCombos)
+	fmt.Fprintf(&sb, "| Already Explored Combos | %d | pairs with successful or failed history |\n", exploredCombos)
+	fmt.Fprintf(&sb, "| Pending Work Items | %d | durable obligations on ready combos |\n\n", len(input.PendingWork))
 
 	fmt.Fprintf(&sb, "## Required Working Doc Structure\n\n")
 	fmt.Fprintf(&sb, "`plan.md` should keep these sections:\n")
@@ -545,8 +548,11 @@ func (w *ExplorerWorkspace) generateDeviceProfile(input PlanInput, now string) s
 	}
 	fmt.Fprintf(&sb, "\n")
 
-	// Active deployments
-	fmt.Fprintf(&sb, "## Active Deployments\n\n")
+	// Active deployments — live snapshot captured at the start of this phase.
+	fmt.Fprintf(&sb, "## Active Deployments (Live Snapshot)\n\n")
+	fmt.Fprintf(&sb, "_This table is a live `deploy list` snapshot taken just before the current phase. "+
+		"If a deploy appears here while this cycle's experiments were running, its GPU/VRAM/port resources "+
+		"were still held during those experiments — consider handoff effects when diagnosing failures._\n\n")
 	if len(input.ActiveDeploys) == 0 {
 		fmt.Fprintf(&sb, "_None_\n")
 	} else {
@@ -653,6 +659,7 @@ func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string)
 
 func (w *ExplorerWorkspace) generateResolvedAvailableCombos(input PlanInput, now string) string {
 	skipSet, modelSkipSet := splitSkipCombos(input.SkipCombos)
+	pendingReasons := pendingWorkSummaryByCombo(input.PendingWork)
 
 	var ready, explored, blocked []ComboFact
 	for _, fact := range input.ComboFacts {
@@ -668,6 +675,9 @@ func (w *ExplorerWorkspace) generateResolvedAvailableCombos(input PlanInput, now
 			continue
 		}
 		if fact.Status == "ready" {
+			if reason := strings.TrimSpace(pendingReasons[key]); reason != "" {
+				fact.Reason = reason
+			}
 			ready = append(ready, fact)
 			continue
 		}
@@ -741,6 +751,19 @@ func (w *ExplorerWorkspace) generateKnowledgeBase(input PlanInput, now string) s
 			}
 			fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n",
 				row.Model, strings.Join(row.Engines, ", "), recent, guidance)
+		}
+		fmt.Fprintf(&sb, "\n")
+	}
+
+	fmt.Fprintf(&sb, "## Pending Work\n\n")
+	if len(input.PendingWork) == 0 {
+		fmt.Fprintf(&sb, "_No pending work_\n\n")
+	} else {
+		fmt.Fprintf(&sb, "| Model | Engine | Work Kind | Reason | Suggested Action |\n")
+		fmt.Fprintf(&sb, "|-------|--------|-----------|--------|------------------|\n")
+		for _, work := range input.PendingWork {
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s |\n",
+				work.Model, work.Engine, work.Kind, work.Reason, pendingWorkActionSummary(work))
 		}
 		fmt.Fprintf(&sb, "\n")
 	}
@@ -934,6 +957,52 @@ type coverageRow struct {
 	Recent  bool
 }
 
+func pendingWorkSummaryByCombo(pending []PendingWork) map[string]string {
+	if len(pending) == 0 {
+		return nil
+	}
+	parts := make(map[string][]string)
+	for _, work := range pending {
+		key := work.Model + "|" + work.Engine
+		label := strings.TrimSpace(work.Kind)
+		if key == "|" || label == "" {
+			continue
+		}
+		if !containsString(parts[key], label) {
+			parts[key] = append(parts[key], label)
+		}
+	}
+	summary := make(map[string]string, len(parts))
+	for key, kinds := range parts {
+		summary[key] = "pending: " + strings.Join(kinds, ", ")
+	}
+	return summary
+}
+
+func pendingWorkActionSummary(work PendingWork) string {
+	switch work.Kind {
+	case "tune":
+		if len(work.SearchSpace) == 0 {
+			return "run tune with default parameter search"
+		}
+		keys := make([]string, 0, len(work.SearchSpace))
+		for key := range work.SearchSpace {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			parts = append(parts, fmt.Sprintf("%s=%v", key, work.SearchSpace[key]))
+		}
+		return strings.Join(parts, "; ")
+	default:
+		if len(work.Benchmark.InputTokens) == 0 {
+			return "run validate with default benchmark profile"
+		}
+		return fmt.Sprintf("benchmark c=%v input=%v max=%v", work.Benchmark.Concurrency, work.Benchmark.InputTokens, work.Benchmark.MaxTokens)
+	}
+}
+
 func splitSkipCombos(skipCombos []SkipCombo) (map[string]string, map[string]string) {
 	exact := make(map[string]string, len(skipCombos))
 	models := make(map[string]string)
@@ -1011,6 +1080,15 @@ func readyCoverageRows(input PlanInput) []coverageRow {
 	return rows
 }
 
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func comboFactCounts(input PlanInput) (ready, blocked, explored int) {
 	skipSet, modelSkipSet := splitSkipCombos(input.SkipCombos)
 	if len(input.ComboFacts) == 0 {
@@ -1072,11 +1150,12 @@ func defaultPlanTemplate() string {
 		"Draft only the next executable Do-phase tasks for this device.\n\n" +
 		"## Fact Snapshot\n\n" +
 		"- `plan.md` is scratch space for the next Do phase, not a history log.\n" +
-		"- Fill after reading index.md, available-combos.md, and knowledge-base.md frontier coverage.\n\n" +
+		"- Fill after reading index.md, available-combos.md, and knowledge-base.md frontier coverage + Pending Work.\n\n" +
 		"## Task Board\n\n" +
 		"- [ ] Read index.md\n" +
 		"- [ ] Read available-combos.md\n" +
 		"- [ ] Read knowledge-base.md frontier coverage\n" +
+		"- [ ] Read knowledge-base.md Pending Work\n" +
 		"- [ ] Read summary.md blockers and evidence\n" +
 		"- [ ] Give at least one slot to a ready model not seen in recent history when such models exist\n" +
 		"- [ ] Write only executable tasks from Ready Combos not on Do Not Retry This Cycle\n\n" +

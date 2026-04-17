@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 	reflect "reflect"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,7 +100,7 @@ func TestExplorer_UpdateConfig(t *testing.T) {
 
 func TestExplorer_BudgetModeLimitsRounds(t *testing.T) {
 	bus := NewEventBus()
-	plansExecuted := 0
+	var plansExecuted atomic.Int32
 	// Create a minimal agent so detectTier() returns 1 (context_only)
 	agent := NewAgent(&mockLLM{}, &mockTools{})
 	agent.mode = toolModeContextOnly
@@ -129,20 +131,20 @@ func TestExplorer_BudgetModeLimitsRounds(t *testing.T) {
 	cancel()
 	time.Sleep(20 * time.Millisecond)
 
-	if plansExecuted != 2 {
-		t.Errorf("plansExecuted = %d, want 2 (maxRounds)", plansExecuted)
+	if got := plansExecuted.Load(); got != 2 {
+		t.Errorf("plansExecuted = %d, want 2 (maxRounds)", got)
 	}
 }
 
 // countingPlanner is a test planner that generates 1-task plans and counts invocations.
 type countingPlanner struct {
-	executed *int
+	executed *atomic.Int32
 }
 
 func (p *countingPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, int, error) {
-	*p.executed++
+	n := p.executed.Add(1)
 	return &ExplorerPlan{
-		ID:    fmt.Sprintf("test-%d", *p.executed),
+		ID:    fmt.Sprintf("test-%d", n),
 		Tier:  1,
 		Tasks: []PlanTask{{Kind: "validate", Model: "m", Engine: "e", Priority: 0}},
 	}, 0, nil
@@ -150,12 +152,12 @@ func (p *countingPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerP
 
 // emptyPlanner always returns 0-task plans (simulates all tasks deduped post-hoc).
 type emptyPlanner struct {
-	calls *int
+	calls *atomic.Int32
 }
 
 func (p *emptyPlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan, int, error) {
-	*p.calls++
-	return &ExplorerPlan{ID: fmt.Sprintf("empty-%d", *p.calls), Tier: 2, Tasks: nil}, 100, nil
+	n := p.calls.Add(1)
+	return &ExplorerPlan{ID: fmt.Sprintf("empty-%d", n), Tier: 2, Tasks: nil}, 100, nil
 }
 
 type refreshTrackingPlanner struct {
@@ -221,7 +223,7 @@ func (p *pdcaBudgetPlanner) Analyze(ctx context.Context) (string, []TaskSpec, in
 
 func TestExplorer_EmptyPlanCountsAsBudgetRound(t *testing.T) {
 	bus := NewEventBus()
-	calls := 0
+	var calls atomic.Int32
 	agent := NewAgent(&mockLLM{}, &mockTools{})
 	agent.mode = toolModeContextOnly
 	e := NewExplorer(ExplorerConfig{
@@ -251,8 +253,8 @@ func TestExplorer_EmptyPlanCountsAsBudgetRound(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// Only 2 plans should be generated (maxRounds=2), even though they're empty
-	if calls != 2 {
-		t.Errorf("planner calls = %d, want 2 (empty plans should count toward budget)", calls)
+	if got := calls.Load(); got != 2 {
+		t.Errorf("planner calls = %d, want 2 (empty plans should count toward budget)", got)
 	}
 }
 
@@ -265,7 +267,7 @@ func TestExplorer_EmptyPlanPersistsBudgetRound(t *testing.T) {
 	defer db.Close()
 
 	bus := NewEventBus()
-	calls := 0
+	var calls atomic.Int32
 	agent := NewAgent(&mockLLM{}, &mockTools{})
 	agent.mode = toolModeContextOnly
 	e := NewExplorer(ExplorerConfig{
@@ -421,7 +423,7 @@ func TestExplorer_EmptyPlanDisablesOnceModeInDB(t *testing.T) {
 	defer db.Close()
 
 	bus := NewEventBus()
-	calls := 0
+	var calls atomic.Int32
 	agent := NewAgent(&mockLLM{}, &mockTools{})
 	agent.mode = toolModeContextOnly
 	e := NewExplorer(ExplorerConfig{
@@ -444,7 +446,7 @@ func TestExplorer_EmptyPlanDisablesOnceModeInDB(t *testing.T) {
 
 func TestExplorer_OnceModeDisablesAfterRound(t *testing.T) {
 	bus := NewEventBus()
-	plansExecuted := 0
+	var plansExecuted atomic.Int32
 	agent := NewAgent(&mockLLM{}, &mockTools{})
 	agent.mode = toolModeContextOnly
 	e := NewExplorer(ExplorerConfig{
@@ -466,8 +468,8 @@ func TestExplorer_OnceModeDisablesAfterRound(t *testing.T) {
 	bus.Publish(ExplorerEvent{Type: EventScheduledGapScan})
 	time.Sleep(50 * time.Millisecond)
 
-	if plansExecuted != 1 {
-		t.Fatalf("plansExecuted = %d, want 1", plansExecuted)
+	if got := plansExecuted.Load(); got != 1 {
+		t.Fatalf("plansExecuted = %d, want 1", got)
 	}
 	if e.Status().Enabled {
 		t.Fatal("expected once mode to disable immediately after the round finishes")
@@ -1036,6 +1038,19 @@ func TestExtractMaxModelLen(t *testing.T) {
 	}
 }
 
+func TestEffectiveTaskMaxModelLen(t *testing.T) {
+	model := &LocalModel{Name: "qwen3-8b", MaxContextLen: 32768}
+	if got := effectiveTaskMaxModelLen(PlanTask{Params: map[string]any{"max_model_len": float64(8192)}}, model); got != 8192 {
+		t.Fatalf("effectiveTaskMaxModelLen override = %d, want 8192", got)
+	}
+	if got := effectiveTaskMaxModelLen(PlanTask{}, model); got != 32768 {
+		t.Fatalf("effectiveTaskMaxModelLen fallback = %d, want 32768", got)
+	}
+	if got := effectiveTaskMaxModelLen(PlanTask{}, nil); got != 0 {
+		t.Fatalf("effectiveTaskMaxModelLen nil model = %d, want 0", got)
+	}
+}
+
 func TestAdaptBenchmarkProfiles(t *testing.T) {
 	base := []ExplorationBenchmarkProfile{
 		{
@@ -1064,7 +1079,7 @@ func TestAdaptBenchmarkProfiles(t *testing.T) {
 		}}
 		result := adaptBenchmarkProfiles(sparse, 32768)
 		got := result[0].InputTokenLevels
-		want := []int{128, 512, 2048}
+		want := []int{128, 512, 16384}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("InputTokenLevels = %v, want %v", got, want)
 		}
@@ -1072,8 +1087,9 @@ func TestAdaptBenchmarkProfiles(t *testing.T) {
 
 	t.Run("does not explode to full ladder for large context models", func(t *testing.T) {
 		result := adaptBenchmarkProfiles(base, 32768)
-		if !reflect.DeepEqual(result[0].InputTokenLevels, base[0].InputTokenLevels) {
-			t.Fatalf("InputTokenLevels = %v, want original planner/profile levels %v", result[0].InputTokenLevels, base[0].InputTokenLevels)
+		want := []int{128, 512, 1024, 2048, 4096, 8192, 16384}
+		if !reflect.DeepEqual(result[0].InputTokenLevels, want) {
+			t.Fatalf("InputTokenLevels = %v, want bounded ladder with one high anchor %v", result[0].InputTokenLevels, want)
 		}
 	})
 
@@ -1132,6 +1148,24 @@ func TestTaskSpecFromPlanTaskPreservesBenchmark(t *testing.T) {
 	}
 }
 
+func TestTaskSpecFromPlanTaskPreservesSearchSpace(t *testing.T) {
+	task := PlanTask{
+		Kind:   "tune",
+		Model:  "Qwen2.5-Coder-3B-Instruct",
+		Engine: "sglang",
+		SearchSpace: map[string][]any{
+			"mem_fraction_static": []any{0.75, 0.85, 0.9},
+			"max_model_len":       []any{8192, 16384},
+		},
+		Reason: "preserve tune search space",
+	}
+
+	got := taskSpecFromPlanTask(task)
+	if !reflect.DeepEqual(got.SearchSpace, task.SearchSpace) {
+		t.Fatalf("SearchSpace = %#v, want %#v", got.SearchSpace, task.SearchSpace)
+	}
+}
+
 func TestExplorerParseExplorationResult_PreservesArtifactsAndMatrix(t *testing.T) {
 	explorer := &Explorer{}
 	status := &ExplorationStatus{
@@ -1169,6 +1203,51 @@ func TestExplorerParseExplorationResult_PreservesArtifactsAndMatrix(t *testing.T
 	}
 	if got := result.DeployConfig["tensor_parallel_size"]; got != float64(2) {
 		t.Fatalf("deploy config = %#v, want 2", got)
+	}
+}
+
+func TestExplorerParseExplorationResult_ParsesTuningSummary(t *testing.T) {
+	explorer := &Explorer{}
+	status := &ExplorationStatus{
+		Run: &state.ExplorationRun{
+			SummaryJSON: `{
+				"benchmark_id":"bench-123",
+				"config_id":"cfg-123",
+				"engine_version":"1.0.0",
+				"engine_image":"example/sglang:1.0.0",
+				"deploy_config":{"mem_fraction_static":0.8},
+				"resource_usage":{"vram_usage_mib":2048},
+				"result":{
+					"throughput_tps":88.8,
+					"ttft_p50_ms":100.1,
+					"ttft_p95_ms":120.2,
+					"tpot_p50_ms":10.3,
+					"tpot_p95_ms":12.4,
+					"config":{"concurrency":1,"input_tokens":512,"max_tokens":128}
+				},
+				"matrix_profiles":[
+					{"label":"mem_fraction_static=0.8","cells":[
+						{"concurrency":1,"input_tokens":512,"max_tokens":128,"benchmark_id":"bench-123","config_id":"cfg-123","engine_version":"1.0.0","engine_image":"example/sglang:1.0.0","resource_usage":{"vram_usage_mib":2048},"result":{"throughput_tps":88.8,"ttft_p95_ms":120.2,"tpot_p95_ms":12.4}}
+					]}
+				],
+				"total_cells":1,
+				"success_cells":1
+			}`,
+		},
+	}
+
+	result := explorer.parseExplorationResult(status)
+	if result.BenchmarkID != "bench-123" || result.ConfigID != "cfg-123" {
+		t.Fatalf("artifacts not preserved: %+v", result)
+	}
+	if result.Throughput != 88.8 || result.TTFTP50 != 100.1 || result.TPOTP95 != 12.4 {
+		t.Fatalf("metrics not preserved: %+v", result)
+	}
+	if result.Concurrency != 1 || result.InputTokens != 512 || result.MaxTokens != 128 {
+		t.Fatalf("config not preserved: %+v", result)
+	}
+	if result.MatrixCells != 1 || result.SuccessCells != 1 || !strings.Contains(result.MatrixJSON, "mem_fraction_static=0.8") {
+		t.Fatalf("matrix not preserved: %+v", result)
 	}
 }
 
@@ -1420,6 +1499,38 @@ func TestExplorerAgentPlannerFilterTaskSpecs_AvoidsDuplicateModelWhenAlternative
 	}
 }
 
+func TestExplorerAgentPlannerFilterTaskSpecs_PrioritizesPendingWork(t *testing.T) {
+	planner := &ExplorerAgentPlanner{maxTasks: 2}
+	input := PlanInput{
+		LocalModels: []LocalModel{
+			{Name: "qwen3-8b", Family: "qwen"},
+			{Name: "glm-4.1v", Family: "glm"},
+		},
+		History: []ExplorationRun{
+			{ModelID: "qwen3-8b", EngineID: "vllm", Status: "completed"},
+		},
+		ComboFacts: []ComboFact{
+			{Model: "qwen3-8b", Engine: "vllm", Status: "ready"},
+			{Model: "glm-4.1v", Engine: "sglang", Status: "ready"},
+		},
+		PendingWork: []PendingWork{
+			{Model: "qwen3-8b", Engine: "vllm", Kind: "validate_long_context"},
+		},
+	}
+	tasks := []TaskSpec{
+		{Kind: "validate", Model: "glm-4.1v", Engine: "sglang"},
+		{Kind: "validate", Model: "qwen3-8b", Engine: "vllm"},
+	}
+
+	filtered := planner.filterTaskSpecs(input, tasks)
+	if len(filtered) != 2 {
+		t.Fatalf("filtered len=%d, want 2", len(filtered))
+	}
+	if filtered[0].Model != "qwen3-8b" || filtered[0].Engine != "vllm" {
+		t.Fatalf("first task=%+v, want pending-work combo first", filtered[0])
+	}
+}
+
 func TestExplorerBuildPlanInput_DerivesModelScopeSkipFromExhaustedReadyCombos(t *testing.T) {
 	dir := t.TempDir()
 	db, err := state.Open(context.Background(), filepath.Join(dir, "explorer.db"))
@@ -1483,6 +1594,109 @@ func TestExplorerBuildPlanInput_DerivesModelScopeSkipFromExhaustedReadyCombos(t 
 	}
 	if !found {
 		t.Fatalf("SkipCombos = %+v, want model-scope blocker entry", input.SkipCombos)
+	}
+}
+
+func TestExplorerBuildPlanInput_KeepsCompletedComboWithPendingCoverageAndTune(t *testing.T) {
+	dir := t.TempDir()
+	db, err := state.Open(context.Background(), filepath.Join(dir, "explorer.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	run := &state.ExplorationRun{
+		ID:          "run-completed",
+		Kind:        "validate",
+		HardwareID:  "test-hw",
+		ModelID:     "qwen3-8b",
+		EngineID:    "vllm-nightly",
+		Status:      "completed",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		StartedAt:   time.Now(),
+		CompletedAt: time.Now(),
+	}
+	if err := db.InsertExplorationRun(ctx, run); err != nil {
+		t.Fatalf("InsertExplorationRun: %v", err)
+	}
+	cfg := &state.Configuration{
+		ID:         "cfg-qwen3-8b-nightly",
+		HardwareID: "test-hw",
+		EngineID:   "vllm-nightly",
+		ModelID:    "qwen3-8b",
+		Config:     `{"gpu_memory_utilization":0.85,"max_model_len":8192}`,
+		ConfigHash: "cfg-qwen3-8b-nightly",
+		Status:     "experiment",
+		Source:     "test",
+	}
+	if err := db.InsertConfiguration(ctx, cfg); err != nil {
+		t.Fatalf("InsertConfiguration: %v", err)
+	}
+	bench := &state.BenchmarkResult{
+		ID:             "bench-qwen3-8b-nightly",
+		ConfigID:       cfg.ID,
+		Concurrency:    1,
+		InputLenBucket: "8192-16383",
+		Modality:       "text",
+		ThroughputTPS:  42.0,
+		TTFTP50ms:      25,
+		TPOTP50ms:      0.2,
+	}
+	if err := db.InsertBenchmarkResult(ctx, bench); err != nil {
+		t.Fatalf("InsertBenchmarkResult: %v", err)
+	}
+
+	e := NewExplorer(ExplorerConfig{Schedule: DefaultScheduleConfig()}, nil, nil, db, NewEventBus(),
+		WithGatherHardware(func(ctx context.Context) (HardwareInfo, error) {
+			return HardwareInfo{Profile: "test-hw", GPUArch: "blackwell", GPUCount: 1, VRAMMiB: 120000}, nil
+		}),
+		WithGatherLocalModels(func(ctx context.Context) ([]LocalModel, error) {
+			return []LocalModel{
+				{Name: "qwen3-8b", Type: "llm", MaxContextLen: 32768},
+			}, nil
+		}),
+		WithGatherLocalEngines(func(ctx context.Context) ([]LocalEngine, error) {
+			return []LocalEngine{
+				{
+					Name: "vllm-nightly",
+					Type: "vllm-nightly",
+					TunableParams: map[string]any{
+						"gpu_memory_utilization": 0.85,
+						"max_model_len":          8192,
+					},
+				},
+			}, nil
+		}),
+		WithGatherComboFacts(func(ctx context.Context, hardware HardwareInfo, models []LocalModel, engines []LocalEngine) ([]ComboFact, error) {
+			return []ComboFact{
+				{Model: "qwen3-8b", Engine: "vllm-nightly", Status: "ready"},
+			}, nil
+		}),
+	)
+
+	input, err := e.buildPlanInput(ctx, nil)
+	if err != nil {
+		t.Fatalf("buildPlanInput: %v", err)
+	}
+	if hasPendingWorkFor(input.PendingWork, "qwen3-8b", "vllm-nightly") != true {
+		t.Fatalf("PendingWork = %+v, want qwen3-8b/vllm-nightly obligations", input.PendingWork)
+	}
+	var kinds []string
+	for _, work := range input.PendingWork {
+		if work.Model == "qwen3-8b" && work.Engine == "vllm-nightly" {
+			kinds = append(kinds, work.Kind)
+		}
+	}
+	sort.Strings(kinds)
+	if !reflect.DeepEqual(kinds, []string{"tune", "validate_long_context"}) {
+		t.Fatalf("pending work kinds = %v, want [tune validate_long_context]", kinds)
+	}
+	for _, skip := range input.SkipCombos {
+		if skip.Model == "qwen3-8b" && skip.Engine == "vllm-nightly" {
+			t.Fatalf("completed combo with pending work should stay executable, skip=%+v", skip)
+		}
 	}
 }
 
@@ -1657,7 +1871,7 @@ func TestExplorer_HandleEventClosesPlanDocumentAfterRun(t *testing.T) {
 		Mode:      "budget",
 		MaxRounds: 1,
 	}, agent, nil, nil, NewEventBus())
-	e.planner = &countingPlanner{executed: new(int)}
+	e.planner = &countingPlanner{executed: new(atomic.Int32)}
 	e.workspace = NewExplorerWorkspace(filepath.Join(dir, "workspace"))
 
 	e.handleEvent(context.Background(), ExplorerEvent{Type: EventScheduledGapScan})

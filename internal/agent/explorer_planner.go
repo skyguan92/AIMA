@@ -40,6 +40,7 @@ type PlanInput struct {
 	LocalModels   []LocalModel  // models physically present on this device
 	LocalEngines  []LocalEngine // engines installed on this device
 	ComboFacts    []ComboFact   // authoritative model×engine execution facts for this run
+	PendingWork   []PendingWork // derived durable obligations for ready combos
 	Event         *ExplorerEvent
 	SkipCombos    []SkipCombo // model+engine pairs already explored (prefill dedup for LLM)
 }
@@ -110,6 +111,18 @@ type GapEntry struct {
 	BenchmarkCount int
 }
 
+// PendingWork is a durable, executable obligation still open for a ready combo.
+// It is derived from local configurations, benchmark_results, and exploration_runs.
+type PendingWork struct {
+	Model       string           `json:"model"`
+	Engine      string           `json:"engine"`
+	Kind        string           `json:"kind"` // "validate_baseline" | "validate_long_context" | "tune"
+	Reason      string           `json:"reason"`
+	Benchmark   BenchmarkSpec    `json:"benchmark,omitempty"`
+	SearchSpace map[string][]any `json:"search_space,omitempty"`
+	Priority    int              `json:"priority"`
+}
+
 type Advisory struct {
 	ID             string
 	Type           string
@@ -141,28 +154,30 @@ type ExplorerPlan struct {
 
 // PlanTask is a single exploration unit.
 type PlanTask struct {
-	Kind      string         `json:"kind"` // "validate", "tune", "open_question"
-	Hardware  string         `json:"hardware,omitempty"`
-	Model     string         `json:"model"`
-	Engine    string         `json:"engine"`
-	SourceRef string         `json:"source_ref,omitempty"`
-	Params    map[string]any `json:"params,omitempty"`
-	Benchmark BenchmarkSpec  `json:"benchmark,omitempty"`
-	Reason    string         `json:"reason"`
-	Priority  int            `json:"priority"`
-	DependsOn string         `json:"depends_on,omitempty"`
-	Status    string         `json:"status,omitempty"` // "", "completed", "failed", "skipped", "skipped_tier_degraded"
+	Kind        string           `json:"kind"` // "validate", "tune", "open_question"
+	Hardware    string           `json:"hardware,omitempty"`
+	Model       string           `json:"model"`
+	Engine      string           `json:"engine"`
+	SourceRef   string           `json:"source_ref,omitempty"`
+	Params      map[string]any   `json:"params,omitempty"`
+	SearchSpace map[string][]any `json:"search_space,omitempty"`
+	Benchmark   BenchmarkSpec    `json:"benchmark,omitempty"`
+	Reason      string           `json:"reason"`
+	Priority    int              `json:"priority"`
+	DependsOn   string           `json:"depends_on,omitempty"`
+	Status      string           `json:"status,omitempty"` // "", "completed", "failed", "skipped", "skipped_tier_degraded"
 }
 
 // TaskSpec is an LLM-authored exploration task parsed from plan.md YAML.
 // The LLM fills in all structured fields; Go transparently executes.
 type TaskSpec struct {
-	Kind         string         `yaml:"kind" json:"kind"` // "validate" | "tune"
-	Model        string         `yaml:"model" json:"model"`
-	Engine       string         `yaml:"engine" json:"engine"`
-	EngineParams map[string]any `yaml:"engine_params" json:"engine_params,omitempty"`
-	Benchmark    BenchmarkSpec  `yaml:"benchmark" json:"benchmark"`
-	Reason       string         `yaml:"reason" json:"reason"`
+	Kind         string           `yaml:"kind" json:"kind"` // "validate" | "tune"
+	Model        string           `yaml:"model" json:"model"`
+	Engine       string           `yaml:"engine" json:"engine"`
+	EngineParams map[string]any   `yaml:"engine_params" json:"engine_params,omitempty"`
+	SearchSpace  map[string][]any `yaml:"search_space" json:"search_space,omitempty"`
+	Benchmark    BenchmarkSpec    `yaml:"benchmark" json:"benchmark"`
+	Reason       string           `yaml:"reason" json:"reason"`
 }
 
 // BenchmarkSpec defines the benchmark matrix for one task.
@@ -250,7 +265,46 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 		})
 	}
 
-	// Rule 3: knowledge gaps -- max 3 per cycle, filtered to local hardware,
+	// Rule 3: pending work on already-ready combos. This keeps a combo on the
+	// frontier until its durable obligations are actually closed, instead of
+	// treating the first completed run as globally "done".
+	pendingWork := append([]PendingWork(nil), input.PendingWork...)
+	rand.Shuffle(len(pendingWork), func(i, j int) {
+		pendingWork[i], pendingWork[j] = pendingWork[j], pendingWork[i]
+	})
+	sort.SliceStable(pendingWork, func(i, j int) bool {
+		if pendingWork[i].Priority != pendingWork[j].Priority {
+			return pendingWork[i].Priority < pendingWork[j].Priority
+		}
+		if pendingWork[i].Kind != pendingWork[j].Kind {
+			return pendingWork[i].Kind < pendingWork[j].Kind
+		}
+		if pendingWork[i].Model != pendingWork[j].Model {
+			return pendingWork[i].Model < pendingWork[j].Model
+		}
+		return pendingWork[i].Engine < pendingWork[j].Engine
+	})
+	for i, work := range pendingWork {
+		if i >= 3 {
+			break
+		}
+		taskKind := "validate"
+		if work.Kind == "tune" {
+			taskKind = "tune"
+		}
+		appendTask(PlanTask{
+			Kind:        taskKind,
+			Hardware:    defaultHardware,
+			Model:       work.Model,
+			Engine:      work.Engine,
+			SearchSpace: cloneSearchSpace(work.SearchSpace),
+			Benchmark:   work.Benchmark,
+			Priority:    2 + i,
+			Reason:      work.Reason,
+		})
+	}
+
+	// Rule 4: knowledge gaps -- max 3 per cycle, filtered to local hardware,
 	// filtered to locally available model+engine combos + format/type/VRAM compatibility
 	var localGaps []GapEntry
 	for _, g := range input.Gaps {
@@ -289,11 +343,12 @@ func (p *RulePlanner) Plan(ctx context.Context, input PlanInput) (*ExplorerPlan,
 			Model:    gap.Model,
 			Engine:   gap.Engine,
 			Priority: 2 + i,
-			Reason:   "knowledge gap (locally available)",
+			// Pending work gets first claim on the round; gaps come after it.
+			Reason: "knowledge gap (locally available)",
 		})
 	}
 
-	// Rule 4: untested open questions (only if model+engine available locally)
+	// Rule 5: untested open questions (only if model+engine available locally)
 	for _, q := range input.OpenQuestions {
 		if q.Status != "untested" {
 			continue
@@ -340,6 +395,25 @@ func firstTaskHardware(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func cloneSearchSpace(space map[string][]any) map[string][]any {
+	if len(space) == 0 {
+		return nil
+	}
+	cloned := make(map[string][]any, len(space))
+	for key, values := range space {
+		if len(values) == 0 {
+			continue
+		}
+		cp := make([]any, len(values))
+		copy(cp, values)
+		cloned[key] = cp
+	}
+	if len(cloned) == 0 {
+		return nil
+	}
+	return cloned
 }
 
 func toSet(items []LocalModel) map[string]bool {

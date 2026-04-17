@@ -129,10 +129,17 @@ func (h *Harvester) Harvest(ctx context.Context, input HarvestInput) []HarvestAc
 		})
 	}
 
-	// Sync push if available
+	// Sync push if available. Bug-10: record the failure as an action too so
+	// the caller (explorer PDCA log, harvest audit) sees that push failed —
+	// a silent warn in serve.log is easy to miss when central is down.
 	if h.syncPush != nil {
 		if err := h.syncPush(ctx); err != nil {
-			slog.Warn("harvester sync push failed", "error", err)
+			slog.Warn("harvester sync push failed", "error", err,
+				"model", input.Task.Model, "engine", input.Task.Engine)
+			actions = append(actions, HarvestAction{
+				Type:   "sync_push",
+				Detail: fmt.Sprintf("FAILED: %s", err.Error()),
+			})
 		} else {
 			actions = append(actions, HarvestAction{Type: "sync_push", Detail: "incremental push"})
 		}

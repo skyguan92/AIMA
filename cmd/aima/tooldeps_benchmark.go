@@ -395,9 +395,20 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 
 		var cells []matrixCell
 		refreshVectors := false
+		totalCells := len(p.ConcurrencyLevels) * len(p.InputTokenLevels) * len(p.MaxTokenLevels)
+		cellIdx := 0
 		for _, conc := range p.ConcurrencyLevels {
 			for _, inTok := range p.InputTokenLevels {
 				for _, maxTok := range p.MaxTokenLevels {
+					cellIdx++
+					// Bug-3: log cell start so operators tailing serve.log see
+					// progress during long matrices (previously the matrix ran
+					// silently for minutes).
+					cellStart := time.Now()
+					slog.Info("benchmark matrix: cell start",
+						"model", p.Model, "engine", p.Engine,
+						"progress", fmt.Sprintf("%d/%d", cellIdx, totalCells),
+						"concurrency", conc, "input_tokens", inTok, "max_tokens", maxTok)
 					cfg := benchpkg.RunConfig{
 						Endpoint:       endpoint,
 						Model:          p.Model,
@@ -450,6 +461,23 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 								cell.ConfigID = configID
 							}
 						}
+					}
+					// Bug-3: log cell end with duration + headline metric so the
+					// matrix execution shows up meaningfully in serve.log.
+					dur := time.Since(cellStart).Round(time.Millisecond)
+					if cell.Error != "" {
+						slog.Info("benchmark matrix: cell end",
+							"model", p.Model,
+							"progress", fmt.Sprintf("%d/%d", cellIdx, totalCells),
+							"duration", dur.String(), "status", "error",
+							"error", cell.Error)
+					} else if cell.Result != nil {
+						slog.Info("benchmark matrix: cell end",
+							"model", p.Model,
+							"progress", fmt.Sprintf("%d/%d", cellIdx, totalCells),
+							"duration", dur.String(), "status", "ok",
+							"throughput_tps", cell.Result.ThroughputTPS,
+							"ttft_p95_ms", cell.Result.TTFTP95ms)
 					}
 					cells = append(cells, cell)
 				}

@@ -359,8 +359,18 @@ func saveBenchmarkResult(ctx context.Context, db *state.DB, hardware, engineID, 
 	if result == nil {
 		return "", "", nil, fmt.Errorf("benchmark result is nil")
 	}
-	if result.SuccessfulReqs <= 0 && result.ThroughputTPS <= 0 && result.QPS <= 0 {
-		return "", "", nil, fmt.Errorf("no successful benchmark requests — benchmark not saved")
+	// Bug-7: reject phantom rows that have no runtime evidence at all — this
+	// happens when tune's best-config redeploy path copies throughput/TTFT from
+	// the best scoring cell into a new row but never ran any request against it.
+	// A genuine benchmark always has TotalRequests > 0 OR SuccessfulReqs > 0
+	// (e.g., reranker zero-output evidence sets SuccessfulReqs but TotalRequests=0
+	// is impossible in practice); be permissive about which counter is set, but
+	// require at least one.
+	if result.TotalRequests <= 0 && result.SuccessfulReqs <= 0 {
+		return "", "", nil, fmt.Errorf("benchmark has no request counters — not saved")
+	}
+	if result.ThroughputTPS <= 0 && result.QPS <= 0 && result.ReranksPerSec <= 0 {
+		return "", "", nil, fmt.Errorf("benchmark has no throughput/QPS signal — not saved")
 	}
 	config := deployConfig
 	if len(config) == 0 {

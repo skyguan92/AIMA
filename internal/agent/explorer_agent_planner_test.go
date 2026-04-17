@@ -157,13 +157,13 @@ Read facts and plan one task.
 }
 
 func TestPhasePromptsReferenceStructuredMemory(t *testing.T) {
-	if !containsAll(planPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "Ready Combos") {
+	if !containsAll(planPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "Ready Combos", "Pending Work", "search_space") {
 		t.Fatalf("plan prompt missing structured-memory guidance: %q", planPhaseSystemPrompt)
 	}
-	if !containsAll(checkPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "validated|tuned|provisional") {
+	if !containsAll(checkPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "validated|tuned|provisional", "Pending Work") {
 		t.Fatalf("check prompt missing structured-memory guidance: %q", checkPhaseSystemPrompt)
 	}
-	if !containsAll(actPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "Ready Combos") {
+	if !containsAll(actPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "Ready Combos", "Pending Work", "search_space") {
 		t.Fatalf("act prompt missing structured-memory guidance: %q", actPhaseSystemPrompt)
 	}
 }
@@ -499,6 +499,60 @@ func TestFilterTaskSpecs_SanitizesEngineParamsToTunableSet(t *testing.T) {
 	}
 	if _, exists := filtered[0].EngineParams["port"]; exists {
 		t.Fatalf("unexpected port param survived sanitization: %#v", filtered[0].EngineParams)
+	}
+}
+
+func TestFilterTaskSpecs_TuneRequiresRealSearchSpace(t *testing.T) {
+	planner := &ExplorerAgentPlanner{}
+	input := PlanInput{
+		LocalEngines: []LocalEngine{
+			{
+				Name: "vllm",
+				Type: "vllm",
+				TunableParams: map[string]any{
+					"gpu_memory_utilization": 0.9,
+					"max_model_len":          8192,
+				},
+			},
+		},
+		ComboFacts: []ComboFact{
+			{Model: "test-model", Engine: "vllm", Status: "ready"},
+			{Model: "other-model", Engine: "vllm", Status: "ready"},
+		},
+	}
+	tasks := []TaskSpec{
+		{
+			Kind:   "tune",
+			Model:  "test-model",
+			Engine: "vllm",
+			EngineParams: map[string]any{
+				"gpu_memory_utilization": 0.85,
+			},
+			Reason: "pseudo tune",
+		},
+		{
+			Kind:   "tune",
+			Model:  "other-model",
+			Engine: "vllm",
+			EngineParams: map[string]any{
+				"max_model_len": 8192,
+			},
+			SearchSpace: map[string][]any{
+				"gpu_memory_utilization": []any{0.75, 0.85, 0.9},
+			},
+			Reason: "real tune",
+		},
+	}
+
+	filtered := planner.filterTaskSpecs(input, tasks)
+	if len(filtered) != 1 {
+		t.Fatalf("filtered len=%d, want 1", len(filtered))
+	}
+	if filtered[0].Model != "other-model" {
+		t.Fatalf("filtered task=%+v, want other-model", filtered[0])
+	}
+	if got := filtered[0].SearchSpace["max_model_len"]; len(got) != 1 || got[0] != 8192 {
+		t.Fatalf("fixed tune params should be merged into search_space, got %#v", filtered[0].SearchSpace)
 	}
 }
 

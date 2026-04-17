@@ -90,6 +90,18 @@ type AuditEntry struct {
 }
 
 // Configuration represents a tested Hardware×Engine×Model×Config combination.
+//
+// Source field vocabulary (DC-6 documentation):
+//   - "local":     explicitly-saved deploy-time configuration; Config is the engine
+//                  argv / engine_params actually applied to the container.
+//   - "benchmark": anchor row auto-created per benchmark cell; Config holds the
+//                  cell parameters {concurrency, input_tokens, max_tokens}, NOT
+//                  engine args. These rows exist so benchmark_results.config_id
+//                  has a row to reference.
+//   - "central":   configuration pulled from the Central Knowledge Server.
+//
+// When querying for real deploy configurations, filter on source IN ('local','central').
+// When reconstructing a benchmark cell's parameters, filter on source='benchmark'.
 type Configuration struct {
 	ID          string    `json:"id"`
 	HardwareID  string    `json:"hardware_id"`
@@ -101,7 +113,7 @@ type Configuration struct {
 	DerivedFrom string    `json:"derived_from"`
 	Status      string    `json:"status"`
 	Tags        []string  `json:"tags"`
-	Source      string    `json:"source"`
+	Source      string    `json:"source"` // see struct doc above
 	DeviceID    string    `json:"device_id"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -1359,6 +1371,29 @@ func (d *DB) ListValidations(ctx context.Context, hardware, engine, model string
 		})
 	}
 	return results, rows.Err()
+}
+
+// UpsertTuningSession persists a tuning session row. Called on session start
+// (status=running) and at each progress tick / completion. best_config and
+// results are stored as JSON text. completed_at is set when completedAt != nil.
+func (d *DB) UpsertTuningSession(ctx context.Context, id, model, engine, status string, progress, total int, bestConfigJSON, resultsJSON string, bestScore float64, completedAt *time.Time) error {
+	var completed sql.NullString
+	if completedAt != nil {
+		completed = sql.NullString{String: completedAt.UTC().Format(time.RFC3339), Valid: true}
+	}
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO tuning_sessions (id, model, engine, status, progress, total, best_config, best_score, results, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+            status=excluded.status,
+            progress=excluded.progress,
+            total=excluded.total,
+            best_config=excluded.best_config,
+            best_score=excluded.best_score,
+            results=excluded.results,
+            completed_at=excluded.completed_at`,
+		id, model, engine, status, progress, total, bestConfigJSON, bestScore, resultsJSON, completed)
+	return err
 }
 
 // RollbackSnapshot stores pre-deletion state for agent safety recovery.

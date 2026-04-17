@@ -39,6 +39,44 @@ func main() {
 	}
 }
 
+func warmupInferenceReady(ctx context.Context, address, model string, cfg knowledge.WarmupConfig) bool {
+	if !cfg.Enabled {
+		return true
+	}
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return false
+	}
+	if !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") {
+		address = "http://" + address
+	}
+	url := strings.TrimRight(address, "/") + "/v1/chat/completions"
+	prompt := strings.TrimSpace(cfg.Prompt)
+	if prompt == "" {
+		prompt = "Hello"
+	}
+	maxTokens := cfg.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 1
+	}
+	timeout := time.Duration(cfg.TimeoutS) * time.Second
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}],"max_tokens":%d}`, model, prompt, maxTokens)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 func run() error {
 	ctx := context.Background()
 
@@ -446,7 +484,31 @@ func run() error {
 
 	// 9g. Patrol, tuner, healer (A2, A3, A4)
 	healer := agent.NewHealer(automationTools)
-	tuner := agent.NewTuner(automationTools)
+	tuner := agent.NewTuner(automationTools, agent.WithTuningSink(func(ctx context.Context, session *agent.TuningSession) {
+		if session == nil {
+			return
+		}
+		bestConfigJSON := ""
+		if len(session.BestConfig) > 0 {
+			if b, err := json.Marshal(session.BestConfig); err == nil {
+				bestConfigJSON = string(b)
+			}
+		}
+		resultsJSON := ""
+		if len(session.Results) > 0 {
+			if b, err := json.Marshal(session.Results); err == nil {
+				resultsJSON = string(b)
+			}
+		}
+		var completedAt *time.Time
+		if !session.CompletedAt.IsZero() {
+			t := session.CompletedAt
+			completedAt = &t
+		}
+		if err := db.UpsertTuningSession(ctx, session.ID, session.Config.Model, session.Config.Engine, session.Status, session.Progress, session.Total, bestConfigJSON, resultsJSON, session.BestScore, completedAt); err != nil {
+			slog.Warn("tuning: persist session failed", "id", session.ID, "error", err)
+		}
+	}))
 	explorationMgr = agent.NewExplorationManager(db, tuner, automationTools)
 	eventBus := agent.NewEventBus()
 	ac.eventBus = eventBus
@@ -553,6 +615,12 @@ func run() error {
 				cleaned++
 			}
 			return cleaned, nil
+		}),
+		agent.WithCleanupModelDeploy(func(ctx context.Context, name string) error {
+			if deps.DeployDelete == nil || name == "" {
+				return nil
+			}
+			return deps.DeployDelete(ctx, name)
 		}),
 		agent.WithGatherOpenQuestions(func(ctx context.Context) ([]agent.OpenQuestion, error) {
 			rows, err := db.ListOpenQuestions(ctx, "untested")
@@ -812,6 +880,11 @@ func loadExplorerConfig(ctx context.Context, db *state.DB) agent.ExplorerConfig 
 	config := agent.ExplorerConfig{
 		Schedule: agent.DefaultScheduleConfig(),
 		Enabled:  true,
+		// DC-5: a single plan cycle on a hot workspace can burn 300K+ tokens at
+		// reasoning-model prices. Default to 2M/day — about 5 cycles — so an
+		// unattended multi-cycle scheduler doesn't blow through quota. Users
+		// can raise this explicitly via `automation.patrol config set`.
+		MaxTokensPerDay: 2_000_000,
 	}
 	if db == nil {
 		return config
@@ -1194,7 +1267,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 			}
 		}
 
-		waitForDeployment := func(deployName, runtimeName, resolvedEngine string, resolvedConfig map[string]any) (json.RawMessage, error) {
+		waitForDeployment := func(deployName, runtimeName, resolvedEngine string, resolvedConfig map[string]any, warmup knowledge.WarmupConfig) (json.RawMessage, error) {
 			notify("waiting", deployName)
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()
@@ -1230,6 +1303,10 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 						continue
 					}
 					if status.Ready {
+						if warmup.Enabled && !warmupInferenceReady(ctx, status.Address, resolvedServedModelName(model, resolvedConfig), warmup) {
+							notify("startup", "warmup")
+							continue
+						}
 						notify("ready", status.Address)
 						if status.Runtime != "" {
 							runtimeName = status.Runtime
@@ -1314,7 +1391,12 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 					if status.Runtime != "" {
 						runtimeName = status.Runtime
 					}
-					return waitForDeployment(deployName, runtimeName, plan.Engine, plan.Config)
+					hwInfo := buildHardwareInfo(ctx, cat, rt.Name())
+					warmup := knowledge.WarmupConfig{}
+					if asset := cat.FindEngineByName(plan.Engine, hwInfo); asset != nil {
+						warmup = asset.Startup.Warmup
+					}
+					return waitForDeployment(deployName, runtimeName, plan.Engine, plan.Config, warmup)
 				}
 			}
 		}
@@ -1355,7 +1437,12 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 		if err := json.Unmarshal(deployData, &deployResult); err != nil || deployResult.Name == "" {
 			return deployData, nil
 		}
-		return waitForDeployment(deployResult.Name, deployResult.Runtime, plan.Engine, plan.Config)
+		hwInfo := buildHardwareInfo(ctx, cat, rt.Name())
+		warmup := knowledge.WarmupConfig{}
+		if asset := cat.FindEngineByName(plan.Engine, hwInfo); asset != nil {
+			warmup = asset.Startup.Warmup
+		}
+		return waitForDeployment(deployResult.Name, deployResult.Runtime, plan.Engine, plan.Config, warmup)
 	}
 
 	deps = &mcp.ToolDeps{}

@@ -10,6 +10,7 @@ import (
 	goruntime "runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/jguan/aima/internal/engine"
 	"github.com/jguan/aima/internal/hal"
@@ -18,6 +19,12 @@ import (
 
 	state "github.com/jguan/aima/internal"
 )
+
+// autoDetectWarned remembers which model names have already emitted the
+// "falling back to auto-detected config" warning, so we don't spam repeated
+// warns on hot paths (e.g. explorer planning resolves the same model many
+// times per cycle). The debug line still fires every time.
+var autoDetectWarned sync.Map
 
 // resolvedDeployment holds the shared result of resolve + CheckFit,
 // used by both DeployApply and DeployDryRun.
@@ -226,8 +233,18 @@ func resolveWithFallback(ctx context.Context, cat *knowledge.Catalog, db *state.
 		return nil, "", fmt.Errorf("model %q found on disk but has no format info; cannot auto-detect engine", dbModel.Name)
 	}
 
-	slog.Info("model not in catalog, using auto-detected config",
+	// Bug-2: per-resolve call goes to Debug to avoid spam — this path runs
+	// many times per explorer cycle for the same model.
+	slog.Debug("model not in catalog, using auto-detected config",
 		"model", dbModel.Name, "format", dbModel.Format, "path", dbModel.Path)
+	// DC-4: first time we auto-detect a given model, surface a Warn so
+	// operators notice the silent fallback. Missing catalog entries hide
+	// real tuning opportunities (YAML-driven engine hints, validated
+	// configs), so we want this visible once per process per model.
+	if _, seen := autoDetectWarned.LoadOrStore(dbModel.Name, true); !seen {
+		slog.Warn("model not in catalog — auto-detect fallback in use; consider adding a model YAML",
+			"model", dbModel.Name, "format", dbModel.Format)
+	}
 
 	synth := cat.BuildSyntheticModelAsset(knowledge.ScanMetadata{
 		Name:         dbModel.Name,
@@ -289,7 +306,9 @@ func resolveCatalogWithLocalEngineOverlay(ctx context.Context, cat *knowledge.Ca
 	}
 
 	merged := knowledge.MergeCatalog(base, overlay)
-	slog.Info("resolve: merged local engine overlay", "overlay_assets", len(overlay.EngineAssets))
+	// Bug-2: demoted to Debug — this fires on every resolve() call and
+	// during explorer planning can emit 50+ identical lines in < 2 s.
+	slog.Debug("resolve: merged local engine overlay", "overlay_assets", len(overlay.EngineAssets))
 	return merged
 }
 

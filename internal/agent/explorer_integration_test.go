@@ -181,8 +181,8 @@ func TestExplorer_BuildPlanInputSkipsRecentFailedCombos(t *testing.T) {
 	if got["qwen3-8b|vllm"] != "recently failed" {
 		t.Fatalf("qwen3-8b|vllm reason = %q, want recently failed", got["qwen3-8b|vllm"])
 	}
-	if got["glm-4.1v|sglang"] != "recently completed" {
-		t.Fatalf("glm-4.1v|sglang reason = %q, want recently completed", got["glm-4.1v|sglang"])
+	if got["glm-4.1v|sglang"] != "completed" {
+		t.Fatalf("glm-4.1v|sglang reason = %q, want completed", got["glm-4.1v|sglang"])
 	}
 }
 

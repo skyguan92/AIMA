@@ -32,8 +32,10 @@ Test vllm on this device for the first time.
   model: qwen3.5-27b
   engine: sglang-kt
   engine_params:
-    gpu_memory_utilization: 0.70
     cpu_offload_gb: 20
+  search_space:
+    gpu_memory_utilization: [0.70, 0.80, 0.90]
+    cpu_offload_gb: [20]
   benchmark:
     concurrency: [1]
     input_tokens: [128]
@@ -60,6 +62,9 @@ Test vllm on this device for the first time.
 	}
 	if tasks[1].Kind != "tune" || tasks[1].Engine != "sglang-kt" {
 		t.Errorf("task 1: kind=%s engine=%s", tasks[1].Kind, tasks[1].Engine)
+	}
+	if got := tasks[1].SearchSpace["gpu_memory_utilization"]; len(got) != 3 {
+		t.Errorf("task 1 search_space=%v, want 3 gmu values", tasks[1].SearchSpace)
 	}
 }
 
@@ -863,6 +868,82 @@ func TestRefreshFactDocuments(t *testing.T) {
 	ef, _ := ws.ReadFile("experiment-facts.md")
 	if !strings.Contains(ef, "No experiments yet") {
 		t.Error("experiment-facts missing empty-state summary")
+	}
+}
+
+func TestRefreshFactDocuments_PendingWorkSurfacedInDocs(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	input := PlanInput{
+		Hardware: HardwareInfo{Profile: "nvidia-gb10-arm64", GPUArch: "blackwell", GPUCount: 1, VRAMMiB: 120000},
+		LocalModels: []LocalModel{
+			{Name: "qwen3-8b", Format: "safetensors", Type: "llm", MaxContextLen: 32768},
+		},
+		LocalEngines: []LocalEngine{
+			{Name: "vllm-nightly", Type: "vllm-nightly", Runtime: "container", TunableParams: map[string]any{
+				"gpu_memory_utilization": 0.85,
+				"max_model_len":          8192,
+			}},
+		},
+		ComboFacts: []ComboFact{
+			{Model: "qwen3-8b", Engine: "vllm-nightly", Runtime: "docker", Artifact: "vllm-nightly:latest", Status: "ready"},
+		},
+		PendingWork: []PendingWork{
+			{
+				Model:     "qwen3-8b",
+				Engine:    "vllm-nightly",
+				Kind:      "validate_long_context",
+				Reason:    "long-context coverage missing",
+				Benchmark: BenchmarkSpec{Concurrency: []int{1}, InputTokens: []int{32768}, MaxTokens: []int{256}, RequestsPerCombo: 3},
+			},
+			{
+				Model:  "qwen3-8b",
+				Engine: "vllm-nightly",
+				Kind:   "tune",
+				Reason: "baseline exists and tunable search space remains unexplored",
+				SearchSpace: map[string][]any{
+					"gpu_memory_utilization": []any{0.75, 0.85, 0.9},
+					"max_model_len":          []any{8192, 16384, 32768},
+				},
+				Benchmark: BenchmarkSpec{Concurrency: []int{1}, InputTokens: []int{128}, MaxTokens: []int{256}, RequestsPerCombo: 3},
+			},
+		},
+	}
+
+	if err := ws.RefreshFactDocuments(input); err != nil {
+		t.Fatalf("RefreshFactDocuments: %v", err)
+	}
+
+	ac, err := ws.ReadFile("available-combos.md")
+	if err != nil {
+		t.Fatalf("ReadFile available-combos.md: %v", err)
+	}
+	if !strings.Contains(ac, "pending: validate_long_context, tune") {
+		t.Fatalf("available-combos.md missing pending-work summary: %s", ac)
+	}
+
+	kb, err := ws.ReadFile("knowledge-base.md")
+	if err != nil {
+		t.Fatalf("ReadFile knowledge-base.md: %v", err)
+	}
+	if !strings.Contains(kb, "## Pending Work") {
+		t.Fatalf("knowledge-base.md missing Pending Work section: %s", kb)
+	}
+	if !strings.Contains(kb, "| qwen3-8b | vllm-nightly | validate_long_context | long-context coverage missing | benchmark c=[1] input=[32768] max=[256] |") {
+		t.Fatalf("knowledge-base.md missing validate_long_context row: %s", kb)
+	}
+	if !strings.Contains(kb, "gpu_memory_utilization=[0.75 0.85 0.9]; max_model_len=[8192 16384 32768]") {
+		t.Fatalf("knowledge-base.md missing tune action summary: %s", kb)
+	}
+
+	index, err := ws.ReadFile("index.md")
+	if err != nil {
+		t.Fatalf("ReadFile index.md: %v", err)
+	}
+	if !strings.Contains(index, "| Pending Work Items | 2 |") {
+		t.Fatalf("index.md missing pending-work count: %s", index)
 	}
 }
 

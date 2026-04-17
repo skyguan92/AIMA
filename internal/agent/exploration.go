@@ -46,6 +46,8 @@ type ExplorationConstraints struct {
 type ExplorationBenchmarkProfile struct {
 	Endpoint          string `json:"endpoint,omitempty"`
 	Concurrency       int    `json:"concurrency,omitempty"` // legacy single-point (for tune tasks)
+	InputTokens       int    `json:"input_tokens,omitempty"`
+	MaxTokens         int    `json:"max_tokens,omitempty"`
 	Rounds            int    `json:"rounds,omitempty"`
 	RequestsPerCombo  int    `json:"requests_per_combo,omitempty"`
 	ConcurrencyLevels []int  `json:"concurrency_levels,omitempty"`
@@ -455,6 +457,7 @@ func (m *ExplorationManager) executeTune(ctx context.Context, run *state.Explora
 	_ = m.db.UpdateExplorationRun(context.Background(), run)
 
 	bp := firstProfile(plan.BenchmarkProfiles)
+	bp = tuneBenchmarkProfile(bp)
 	tuningConfig := TuningConfig{
 		Model:       plan.Target.Model,
 		Hardware:    plan.Target.Hardware,
@@ -462,20 +465,31 @@ func (m *ExplorationManager) executeTune(ctx context.Context, run *state.Explora
 		Endpoint:    bp.Endpoint,
 		Parameters:  buildTuningParams(plan.SearchSpace),
 		Concurrency: bp.Concurrency,
+		NumRequests: bp.RequestsPerCombo,
+		InputTokens: bp.InputTokens,
+		MaxTokens:   bp.MaxTokens,
 		Rounds:      bp.Rounds,
+		Modality:    benchmarkModality(plan.Target.ModelType),
 		MaxConfigs:  plan.Constraints.MaxCandidates,
+		// Bug-8: explorer runs task-boundary teardown, so skip the tuner's
+		// final best-config redeploy to keep the GPU cold between tasks.
+		CleanupAfter: true,
 	}
 
 	requestJSON, _ := json.Marshal(map[string]any{
-		"action":      "start",
-		"model":       tuningConfig.Model,
-		"hardware":    tuningConfig.Hardware,
-		"engine":      tuningConfig.Engine,
-		"endpoint":    tuningConfig.Endpoint,
-		"parameters":  tuningConfig.Parameters,
-		"concurrency": tuningConfig.Concurrency,
-		"rounds":      tuningConfig.Rounds,
-		"max_configs": tuningConfig.MaxConfigs,
+		"action":       "start",
+		"model":        tuningConfig.Model,
+		"hardware":     tuningConfig.Hardware,
+		"engine":       tuningConfig.Engine,
+		"endpoint":     tuningConfig.Endpoint,
+		"parameters":   tuningConfig.Parameters,
+		"concurrency":  tuningConfig.Concurrency,
+		"num_requests": tuningConfig.NumRequests,
+		"input_tokens": tuningConfig.InputTokens,
+		"max_tokens":   tuningConfig.MaxTokens,
+		"rounds":       tuningConfig.Rounds,
+		"modality":     tuningConfig.Modality,
+		"max_configs":  tuningConfig.MaxConfigs,
 	})
 	_ = m.db.InsertExplorationEvent(context.Background(), &state.ExplorationEvent{
 		RunID:       run.ID,
@@ -517,7 +531,7 @@ func (m *ExplorationManager) executeTune(ctx context.Context, run *state.Explora
 			return
 		}
 
-		summaryJSON, _ := json.Marshal(current)
+		summaryJSON, _ := json.Marshal(summarizeTuningSession(current))
 		run.SummaryJSON = string(summaryJSON)
 
 		switch current.Status {
@@ -577,6 +591,151 @@ func (m *ExplorationManager) executeTune(ctx context.Context, run *state.Explora
 		case <-ticker.C:
 		}
 	}
+}
+
+func tuneBenchmarkProfile(profile ExplorationBenchmarkProfile) ExplorationBenchmarkProfile {
+	tuned := profile
+	tuned.Concurrency = firstPositiveInt(profile.Concurrency, firstPositiveTokenLevel(profile.ConcurrencyLevels))
+	tuned.InputTokens = firstPositiveInt(profile.InputTokens, firstPositiveTokenLevel(profile.InputTokenLevels))
+	tuned.MaxTokens = firstPositiveInt(profile.MaxTokens, firstPositiveTokenLevel(profile.MaxTokenLevels))
+	if tuned.Rounds <= 0 {
+		tuned.Rounds = 1
+	}
+	if tuned.RequestsPerCombo <= 0 {
+		tuned.RequestsPerCombo = 10
+	}
+	return tuned
+}
+
+func firstPositiveTokenLevel(values []int) int {
+	for _, value := range normalizeTokenLevels(values) {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func summarizeTuningSession(session *TuningSession) map[string]any {
+	payload := map[string]any{
+		"tuning_session": session,
+	}
+	if session == nil || len(session.Results) == 0 {
+		return payload
+	}
+
+	best := tuningBestResult(session)
+	payload["benchmark_id"] = best.BenchmarkID
+	payload["config_id"] = best.ConfigID
+	payload["engine_version"] = best.EngineVersion
+	payload["engine_image"] = best.EngineImage
+	if cfg := cloneAnyMap(session.BestConfig); len(cfg) > 0 {
+		payload["deploy_config"] = cfg
+	}
+	if usage := cloneAnyMap(best.ResourceUsage); len(usage) > 0 {
+		payload["resource_usage"] = usage
+	}
+	payload["result"] = map[string]any{
+		"throughput_tps": best.ThroughputTPS,
+		"latency_p50_ms": best.LatencyP50Ms,
+		"ttft_p50_ms":    best.TTFTP50Ms,
+		"ttft_p95_ms":    best.TTFTP95Ms,
+		"tpot_p50_ms":    best.TPOTP50Ms,
+		"tpot_p95_ms":    best.TPOTP95Ms,
+		"qps":            best.QPS,
+		"config": map[string]any{
+			"concurrency":  best.Concurrency,
+			"num_requests": best.NumRequests,
+			"warmup_count": best.WarmupCount,
+			"rounds":       best.Rounds,
+			"input_tokens": best.InputTokens,
+			"max_tokens":   best.MaxTokens,
+		},
+	}
+	payload["benchmark_profile"] = map[string]any{
+		"concurrency":       best.Concurrency,
+		"num_requests":      best.NumRequests,
+		"warmup_count":      best.WarmupCount,
+		"rounds":            best.Rounds,
+		"input_tokens":      best.InputTokens,
+		"max_tokens":        best.MaxTokens,
+		"avg_input_tokens":  best.AvgInputTokens,
+		"avg_output_tokens": best.AvgOutputTokens,
+	}
+	payload["matrix_profiles"] = tuningMatrixProfiles(session.Results)
+	payload["total_cells"] = len(session.Results)
+	payload["success_cells"] = len(session.Results)
+	return payload
+}
+
+func tuningBestResult(session *TuningSession) TuningResult {
+	best := session.Results[0]
+	for _, result := range session.Results[1:] {
+		if result.Score > best.Score {
+			best = result
+			continue
+		}
+		if sameConfigMap(session.BestConfig, result.ConfigOverrides) {
+			best = result
+		}
+	}
+	return best
+}
+
+func tuningMatrixProfiles(results []TuningResult) []map[string]any {
+	profiles := make([]map[string]any, 0, len(results))
+	for _, result := range results {
+		cell := map[string]any{
+			"concurrency":  result.Concurrency,
+			"input_tokens": result.InputTokens,
+			"max_tokens":   result.MaxTokens,
+			"result": map[string]any{
+				"throughput_tps": result.ThroughputTPS,
+				"latency_p50_ms": result.LatencyP50Ms,
+				"ttft_p50_ms":    result.TTFTP50Ms,
+				"ttft_p95_ms":    result.TTFTP95Ms,
+				"tpot_p50_ms":    result.TPOTP50Ms,
+				"tpot_p95_ms":    result.TPOTP95Ms,
+				"qps":            result.QPS,
+			},
+		}
+		if result.BenchmarkID != "" {
+			cell["benchmark_id"] = result.BenchmarkID
+		}
+		if result.ConfigID != "" {
+			cell["config_id"] = result.ConfigID
+		}
+		if result.EngineVersion != "" {
+			cell["engine_version"] = result.EngineVersion
+		}
+		if result.EngineImage != "" {
+			cell["engine_image"] = result.EngineImage
+		}
+		if usage := cloneAnyMap(result.ResourceUsage); len(usage) > 0 {
+			cell["resource_usage"] = usage
+		}
+		profiles = append(profiles, map[string]any{
+			"label": tuningResultLabel(result.ConfigOverrides),
+			"cells": []map[string]any{cell},
+		})
+	}
+	return profiles
+}
+
+func tuningResultLabel(config map[string]any) string {
+	if len(config) == 0 {
+		return "candidate"
+	}
+	keys := make([]string, 0, len(config))
+	for key := range config {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", key, config[key]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.ExplorationRun) {
