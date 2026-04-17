@@ -938,15 +938,14 @@ func (c *Catalog) resolveCatalogModelName(modelName string) string {
 	if normalized == "" {
 		return trimmed
 	}
-	switch normalized {
-	case "qwen3-embedding-0-6b":
-		return "qwen3-emb-0.6b"
-	case "qwen3-8b-junhowie":
-		return "qwen3-8b"
-	}
 	for _, ma := range c.ModelAssets {
 		if normalizeModelLookupKey(ma.Metadata.Name) == normalized {
 			return ma.Metadata.Name
+		}
+		for _, alias := range ma.Metadata.Aliases {
+			if normalizeModelLookupKey(alias) == normalized {
+				return ma.Metadata.Name
+			}
 		}
 	}
 	return trimmed
@@ -1121,22 +1120,13 @@ func (c *Catalog) BuildSyntheticModelAsset(meta ScanMetadata, hw HardwareInfo, r
 	if meta.Type == "" {
 		meta.Type = "llm"
 	}
-	inferredEngineType := c.FormatToEngine(meta.Format)
-	if syntheticDisallowMooer(meta) && strings.EqualFold(inferredEngineType, "mooer") {
-		inferredEngineType = "vllm"
-	}
+	inferredEngineType := substituteDisallowedMooer(meta, c.FormatToEngine(meta.Format))
 	if inferredEngineType == "" {
-		inferredEngineType = c.DefaultEngine()
-	}
-	if syntheticDisallowMooer(meta) && strings.EqualFold(inferredEngineType, "mooer") {
-		inferredEngineType = "vllm"
+		inferredEngineType = substituteDisallowedMooer(meta, c.DefaultEngine())
 	}
 
 	estimatedVRAM := estimateVRAMMiB(meta)
-	defaultEngine := c.DefaultEngine()
-	if syntheticDisallowMooer(meta) && strings.EqualFold(defaultEngine, "mooer") {
-		defaultEngine = "vllm"
-	}
+	defaultEngine := substituteDisallowedMooer(meta, c.DefaultEngine())
 
 	var variants []ModelVariant
 	var targetedHW *ModelVariantHardware
@@ -1208,10 +1198,8 @@ func (c *Catalog) BuildSyntheticModelAsset(meta ScanMetadata, hw HardwareInfo, r
 	}
 
 	for _, re := range requestedEngines {
+		re = substituteDisallowedMooer(meta, re)
 		if re == "" || re == inferredEngineType || re == defaultEngine {
-			continue
-		}
-		if syntheticDisallowMooer(meta) && strings.EqualFold(re, "mooer") {
 			continue
 		}
 		if targetedHW != nil {
@@ -1271,6 +1259,17 @@ func syntheticDisallowMooer(meta ScanMetadata) bool {
 	default:
 		return false
 	}
+}
+
+// substituteDisallowedMooer returns "vllm" when the proposed engine is mooer
+// (ASR-only) but the scan metadata describes a non-ASR safetensors model.
+// Otherwise returns the proposal unchanged. This collapses the previously
+// duplicated "guard against mooer" inline checks in BuildSyntheticModelAsset.
+func substituteDisallowedMooer(meta ScanMetadata, proposed string) string {
+	if syntheticDisallowMooer(meta) && strings.EqualFold(proposed, "mooer") {
+		return "vllm"
+	}
+	return proposed
 }
 
 // buildSyntheticConfig generates engine-appropriate config for a synthetic

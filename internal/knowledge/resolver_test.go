@@ -401,23 +401,38 @@ func TestBuildSyntheticModelAsset(t *testing.T) {
 func TestResolveCatalogModelName(t *testing.T) {
 	cat := &Catalog{
 		ModelAssets: []ModelAsset{
-			{Metadata: ModelMetadata{Name: "qwen3-emb-0.6b"}},
-			{Metadata: ModelMetadata{Name: "qwen3-8b"}},
+			{Metadata: ModelMetadata{
+				Name:    "qwen3-emb-0.6b",
+				Aliases: []string{"Qwen3-Embedding-0.6B", "qwen3-embedding-0.6b"},
+			}},
+			{Metadata: ModelMetadata{
+				Name:    "qwen3-8b",
+				Aliases: []string{"Qwen3-8B-junhowie", "gptq-Qwen3-8B-junhowie"},
+			}},
+			{Metadata: ModelMetadata{Name: "llama-3.1-8b"}},
 		},
 	}
 
 	tests := []struct {
+		name string
 		in   string
 		want string
 	}{
-		{"Qwen3-Embedding-0.6B", "qwen3-emb-0.6b"},
-		{"gptq-Qwen3-8B-junhowie", "qwen3-8b"},
+		{"alias exact case", "Qwen3-Embedding-0.6B", "qwen3-emb-0.6b"},
+		{"alias lowercase", "qwen3-embedding-0.6b", "qwen3-emb-0.6b"},
+		{"alias with gptq strip", "gptq-Qwen3-8B-junhowie", "qwen3-8b"},
+		{"canonical name passthrough", "qwen3-8b", "qwen3-8b"},
+		{"canonical name different case", "LLaMA-3.1-8B", "llama-3.1-8b"},
+		{"no match returns input", "some-unknown-model", "some-unknown-model"},
+		{"empty returns empty", "", ""},
 	}
 
 	for _, tt := range tests {
-		if got := cat.resolveCatalogModelName(tt.in); got != tt.want {
-			t.Fatalf("resolveCatalogModelName(%q) = %q, want %q", tt.in, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cat.resolveCatalogModelName(tt.in); got != tt.want {
+				t.Fatalf("resolveCatalogModelName(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

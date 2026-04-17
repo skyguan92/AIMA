@@ -5,6 +5,9 @@ metadata:
   family: qwen
   parameter_count: "0.6B"
   released_at: "2025-06"
+  aliases:
+    - Qwen3-Embedding-0.6B
+    - qwen3-embedding-0.6b
 storage:
   formats: [safetensors]
   default_path_pattern: "{{.DataDir}}/models/{{.Name}}"

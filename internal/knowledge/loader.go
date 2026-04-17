@@ -333,6 +333,12 @@ type ModelMetadata struct {
 	// form. Optional; when populated it feeds the onboarding recommend recency
 	// bonus so newer models float to the top of the wizard's first-run list.
 	ReleasedAt string `yaml:"released_at,omitempty"`
+	// Aliases lists alternative names (e.g. huggingface repo names, common
+	// user-typed variants) that should resolve to this model. Each alias is
+	// normalized via the same key as Name so scan results like
+	// "Qwen3-Embedding-0.6B" can hit the canonical "qwen3-emb-0.6b" without
+	// hardcoded mappings in Go.
+	Aliases []string `yaml:"aliases,omitempty"`
 }
 
 type OpenClawHints struct {

@@ -5,6 +5,9 @@ metadata:
   family: qwen
   parameter_count: "8B"
   released_at: "2025-04"
+  aliases:
+    - Qwen3-8B-junhowie
+    - gptq-Qwen3-8B-junhowie
 storage:
   formats: [safetensors, gguf]
   default_path_pattern: "{{.DataDir}}/models/{{.Name}}"
