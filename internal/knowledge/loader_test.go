@@ -471,7 +471,7 @@ func TestMergeCatalogOverride(t *testing.T) {
 		}},
 	}
 
-	merged := MergeCatalog(base, overlay)
+	merged, _ := MergeCatalog(base, overlay)
 	if len(merged.HardwareProfiles) != 1 {
 		t.Fatalf("expected 1 hardware profile, got %d", len(merged.HardwareProfiles))
 	}
@@ -490,7 +490,7 @@ func TestMergeCatalogAppend(t *testing.T) {
 		}},
 	}
 
-	merged := MergeCatalog(base, overlay)
+	merged, _ := MergeCatalog(base, overlay)
 	if len(merged.EngineAssets) != baseEngineCount+1 {
 		t.Fatalf("expected %d engine assets, got %d", baseEngineCount+1, len(merged.EngineAssets))
 	}
@@ -506,7 +506,7 @@ func TestMergeCatalogEmpty(t *testing.T) {
 	origEA := len(base.EngineAssets)
 	origMA := len(base.ModelAssets)
 
-	merged := MergeCatalog(base, &Catalog{})
+	merged, _ := MergeCatalog(base, &Catalog{})
 	if len(merged.HardwareProfiles) != origHP {
 		t.Errorf("HardwareProfiles changed: %d → %d", origHP, len(merged.HardwareProfiles))
 	}
@@ -626,7 +626,7 @@ startup:
 		t.Fatalf("LoadCatalog(overlay): %v", err)
 	}
 
-	merged := MergeCatalog(base, overlay)
+	merged, _ := MergeCatalog(base, overlay)
 	engine := merged.FindEngineByName("vllm-ada", HardwareInfo{})
 	if engine == nil {
 		t.Fatal("vllm-ada not found after merge")

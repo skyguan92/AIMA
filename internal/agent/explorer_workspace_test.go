@@ -291,11 +291,12 @@ func TestParseSummaryMachineReadableSections(t *testing.T) {
 
 func TestConfirmedBlockerMatches(t *testing.T) {
 	tests := []struct {
-		name    string
-		blocker ConfirmedBlocker
-		model   string
-		engine  string
-		want    bool
+		name     string
+		blocker  ConfirmedBlocker
+		model    string
+		engine   string
+		hardware string
+		want     bool
 	}{
 		{
 			name:    "scope=combo matches only exact pair",
@@ -313,24 +314,40 @@ func TestConfirmedBlockerMatches(t *testing.T) {
 			model:   "anything", engine: "sglang", want: true,
 		},
 		{
-			name:    "free-form scope mentioning engine only propagates engine-wide",
-			blocker: ConfirmedBlocker{Scope: "sglang on GB10", Model: "GLM-4.6V-Flash-FP4", Engine: "sglang"},
-			model:   "GLM-4.7-Flash-NVFP4", engine: "sglang", want: true,
+			name:    "scope=model matches all engines with that model",
+			blocker: ConfirmedBlocker{Scope: "model", Model: "GLM-4.5"},
+			model:   "GLM-4.5", engine: "anything", want: true,
 		},
 		{
-			name:    "free-form scope mentioning model stays combo-only",
-			blocker: ConfirmedBlocker{Scope: "qwen2.5-0.5b + llamacpp", Model: "qwen2.5-0.5b", Engine: "llamacpp"},
-			model:   "other-model", engine: "llamacpp", want: false,
+			name:     "hardware filter limits engine-wide blocker to matching profile",
+			blocker:  ConfirmedBlocker{Scope: "engine", Engine: "sglang", Hardware: "nvidia-gb10-arm64"},
+			model:    "anything", engine: "sglang", hardware: "nvidia-gb10-arm64", want: true,
 		},
 		{
-			name:    "free-form engine-wide does not leak to a different engine",
+			name:     "hardware filter excludes non-matching profile",
+			blocker:  ConfirmedBlocker{Scope: "engine", Engine: "sglang", Hardware: "nvidia-gb10-arm64"},
+			model:    "anything", engine: "sglang", hardware: "amd-w7900d-x86", want: false,
+		},
+		{
+			name:     "empty hardware on blocker applies everywhere",
+			blocker:  ConfirmedBlocker{Scope: "engine", Engine: "sglang"},
+			model:    "anything", engine: "sglang", hardware: "any-profile", want: true,
+		},
+		{
+			name:    "free-form scope prose is treated literally, fall through to field match",
 			blocker: ConfirmedBlocker{Scope: "sglang on GB10", Model: "GLM-4.6V-Flash-FP4", Engine: "sglang"},
-			model:   "anything", engine: "vllm", want: false,
+			// Fall-through matches on Model+Engine exact pair, not the scope prose.
+			model: "GLM-4.7-Flash-NVFP4", engine: "sglang", want: false,
+		},
+		{
+			name:    "engine-only blocker with empty scope matches any model",
+			blocker: ConfirmedBlocker{Engine: "sglang"},
+			model:   "anything", engine: "sglang", want: true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := confirmedBlockerMatches(tc.blocker, tc.model, tc.engine); got != tc.want {
+			if got := confirmedBlockerMatches(tc.blocker, tc.model, tc.engine, tc.hardware); got != tc.want {
 				t.Fatalf("confirmedBlockerMatches = %v, want %v", got, tc.want)
 			}
 		})

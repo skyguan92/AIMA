@@ -314,7 +314,10 @@ func resolveCatalogWithLocalEngineOverlay(ctx context.Context, cat *knowledge.Ca
 		return base
 	}
 
-	merged := knowledge.MergeCatalog(base, overlay)
+	merged, warnings := knowledge.MergeCatalog(base, overlay)
+	for _, w := range warnings {
+		slog.Warn("resolve: local engine overlay merge warning", "warning", w)
+	}
 	// Bug-2: demoted to Debug — this fires on every resolve() call and
 	// during explorer planning can emit 50+ identical lines in < 2 s.
 	slog.Debug("resolve: merged local engine overlay", "overlay_assets", len(overlay.EngineAssets))

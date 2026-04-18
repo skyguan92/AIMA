@@ -941,9 +941,10 @@ Recommended Configurations 的 YAML 格式：
 
 Confirmed Blockers 的 YAML 格式：
 - family: <reason family>
-  scope: <combo or broader scope>
-  model: <model name>
-  engine: <engine>
+  scope: combo|model|engine           # 必须是这三个关键字之一。"combo"=只影响这对 model+engine；"model"=这个 model 在任何 engine 上都坏；"engine"=这个 engine 在任何 model 上都坏。其他文字（如"sglang on GB10"）不会被识别为更宽作用域，会回退到 model+engine 精确匹配。
+  model: <model name>                 # 命中/示例模型
+  engine: <engine>                    # 命中/示例引擎
+  hardware: <hardware profile name>   # 可选；只作用于该硬件（如 "nvidia-gb10-arm64"）。空=作用于所有硬件。表达"X 在 GB10 上整个 engine 挂了"用 scope: engine + hardware: nvidia-gb10-arm64。
   reason: <string>
   retry_when: <string>
   confidence: confirmed

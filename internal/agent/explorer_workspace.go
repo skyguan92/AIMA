@@ -313,6 +313,7 @@ type ConfirmedBlocker struct {
 	Scope      string `yaml:"scope" json:"scope,omitempty"`
 	Model      string `yaml:"model" json:"model,omitempty"`
 	Engine     string `yaml:"engine" json:"engine,omitempty"`
+	Hardware   string `yaml:"hardware" json:"hardware,omitempty"`
 	Reason     string `yaml:"reason" json:"reason"`
 	RetryWhen  string `yaml:"retry_when" json:"retry_when,omitempty"`
 	Confidence string `yaml:"confidence" json:"confidence,omitempty"`
@@ -436,14 +437,17 @@ func (w *ExplorerWorkspace) loadSummaryConstraints() ([]ConfirmedBlocker, []Retr
 	return blockers, denies
 }
 
-// combo matches a (model, engine) pair against a confirmed-blocker entry.
-// Scope "combo" matches the exact pair. Scope "model" / "engine" / "" match
-// family-wide: a model-scoped blocker removes every combo with that model,
-// and engine-scoped blocker removes every combo with that engine. This
-// mirrors the 2026-04-16 spec §2 "structural failure" escalation rule.
-func comboBlockedBySummary(model, engine string, blockers []ConfirmedBlocker, denies []RetryDenyEntry) (bool, string) {
+// comboBlockedBySummary matches a (model, engine) pair against summary-authored
+// blockers and retry-denies, scoped to the current hardware. Agent MUST use one
+// of the reserved scope keywords: "combo" (model+engine exact), "model"
+// (any engine on that model), or "engine" (any model on that engine). A
+// non-empty `hardware` field on a blocker further constrains the match to that
+// hardware profile — a blocker for `engine: sglang, hardware: nvidia-gb10-arm64`
+// never demotes combos on other profiles. Free-form `scope` text is treated as
+// prose and does NOT match.
+func comboBlockedBySummary(model, engine, hardware string, blockers []ConfirmedBlocker, denies []RetryDenyEntry) (bool, string) {
 	for _, b := range blockers {
-		if confirmedBlockerMatches(b, model, engine) {
+		if confirmedBlockerMatches(b, model, engine, hardware) {
 			reason := strings.TrimSpace(b.Reason)
 			if reason == "" {
 				reason = "confirmed blocker (from summary.md)"
@@ -463,7 +467,14 @@ func comboBlockedBySummary(model, engine string, blockers []ConfirmedBlocker, de
 	return false, ""
 }
 
-func confirmedBlockerMatches(b ConfirmedBlocker, model, engine string) bool {
+func confirmedBlockerMatches(b ConfirmedBlocker, model, engine, hardware string) bool {
+	// Hardware filter: if the blocker declares a hardware, the current combo's
+	// profile must match. Empty hardware means "applies to all hardware".
+	if hw := strings.TrimSpace(b.Hardware); hw != "" {
+		if !strings.EqualFold(hw, strings.TrimSpace(hardware)) {
+			return false
+		}
+	}
 	bModel := strings.TrimSpace(b.Model)
 	bEngine := strings.TrimSpace(b.Engine)
 	modelEq := strings.EqualFold(bModel, strings.TrimSpace(model))
@@ -476,17 +487,9 @@ func confirmedBlockerMatches(b ConfirmedBlocker, model, engine string) bool {
 	case "engine":
 		return engineEq
 	}
-	// Free-form scope text: the agent often writes phrases like "sglang on GB10"
-	// or "vllm (standard) on GB10 for Qwen models" to express engine-wide intent
-	// while still naming a single triggering model. Honor that intent: if the
-	// scope text references the engine but NOT the model, treat as engine-wide.
-	if scopeText := strings.ToLower(strings.TrimSpace(b.Scope)); scopeText != "" && bEngine != "" {
-		mentionsEngine := strings.Contains(scopeText, strings.ToLower(bEngine))
-		mentionsModel := bModel != "" && strings.Contains(scopeText, strings.ToLower(bModel))
-		if mentionsEngine && !mentionsModel {
-			return engineEq
-		}
-	}
+	// Unrecognized / empty scope: fall back to exact field match. Prose in
+	// scope (e.g. "sglang on GB10") is ignored — agent must use a reserved
+	// keyword + hardware field to express engine-wide intent.
 	if bModel != "" && bEngine != "" {
 		return modelEq && engineEq
 	}
@@ -715,7 +718,7 @@ func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string,
 				continue
 			}
 
-			if blocked, reason := comboBlockedBySummary(m.Name, e.Type, blockers, denies); blocked {
+			if blocked, reason := comboBlockedBySummary(m.Name, e.Type, input.Hardware.Profile, blockers, denies); blocked {
 				incompatible = append(incompatible, comboRow{m.Name, e.Type, reason})
 				continue
 			}
@@ -782,7 +785,7 @@ func (w *ExplorerWorkspace) generateResolvedAvailableCombos(input PlanInput, now
 			continue
 		}
 		if fact.Status == "ready" {
-			if blockedBySummary, reason := comboBlockedBySummary(fact.Model, fact.Engine, blockers, denies); blockedBySummary {
+			if blockedBySummary, reason := comboBlockedBySummary(fact.Model, fact.Engine, input.Hardware.Profile, blockers, denies); blockedBySummary {
 				fact.Status = "blocked"
 				fact.Reason = reason
 				blocked = append(blocked, fact)

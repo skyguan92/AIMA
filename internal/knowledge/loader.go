@@ -1293,17 +1293,10 @@ func extractName(data []byte) string {
 }
 
 // MergeCatalog merges overlay into base. Overlay assets with the same
-// metadata.name replace the base asset; new names are appended.
-// Returns the mutated base catalog.
-func MergeCatalog(base, overlay *Catalog) *Catalog {
-	base, _ = mergeCatalogReturningWarnings(base, overlay)
-	return base
-}
-
-// mergeCatalogReturningWarnings is MergeCatalog's implementation; it surfaces
-// any post-merge finalize warnings (e.g. engine assets whose profile reference
-// still can't be resolved even after overlay + factory profiles merged).
-func mergeCatalogReturningWarnings(base, overlay *Catalog) (*Catalog, []string) {
+// metadata.name replace the base asset; new names are appended. Returns the
+// mutated base catalog plus any post-merge finalize warnings (e.g. engine
+// assets whose profile reference can't be resolved even after merging).
+func MergeCatalog(base, overlay *Catalog) (*Catalog, []string) {
 	base.HardwareProfiles = mergeSlice(base.HardwareProfiles, overlay.HardwareProfiles, func(v HardwareProfile) string { return v.Metadata.Name })
 	base.RawEngineAssets = mergeSlice(rawEngineAssets(base), rawEngineAssets(overlay), func(v EngineAsset) string { return v.Metadata.Name })
 	base.ModelAssets = mergeSlice(base.ModelAssets, overlay.ModelAssets, func(v ModelAsset) string { return v.Metadata.Name })
@@ -1348,10 +1341,8 @@ func MergeCatalogWithDigests(base, overlay *Catalog, factoryDigests map[string]s
 
 	// Merge (and capture post-merge finalize warnings — e.g. profile references
 	// that survive merge still point at a missing engine_profile).
-	var warnings []string
-	var finalizeWarnings []string
-	base, finalizeWarnings = mergeCatalogReturningWarnings(base, overlay)
-	warnings = append(warnings, finalizeWarnings...)
+	base, finalizeWarnings := MergeCatalog(base, overlay)
+	warnings := append([]string(nil), finalizeWarnings...)
 
 	// Check staleness for each overlay asset that shadows a factory asset
 	for name := range overlayNames {

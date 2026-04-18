@@ -131,12 +131,12 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 		}
 		resp, err := syncHTTPClient.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("push to central: %w", err)
+			return nil, fmt.Errorf("push to central %s: %w", endpoint, err)
 		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("central returned %d: %s", resp.StatusCode, string(body))
+			return nil, fmt.Errorf("central %s returned %d: %s", endpoint, resp.StatusCode, string(body))
 		}
 		_ = db.SetSyncTimestamp(ctx, "push")
 		return json.Marshal(map[string]any{
