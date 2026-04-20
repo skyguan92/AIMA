@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":19,"result":{"content":[{"type":"text","text":"config llm.endpoint set to http://127.0.0.1:1/v1"}]}}

@@ -1,0 +1,6 @@
+2026/04/20 18:02:02 INFO runtime selected runtime=native docker_available=false k3s_available=false
+2026/04/20 18:02:02 INFO explorer started tier=1
+2026/04/20 18:02:06 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=Qwen3-0.6B-Q8_0 format=gguf
+2026/04/20 18:02:14 INFO native deploy name=Qwen3-0.6B-Q8_0 command="C:\\Users\\jguan\\aima-uat\\u10\\data\\dist\\windows-amd64\\llama-server.exe --model C:\\Users\\jguan\\aima-uat\\u10\\data\\models\\qwen3-0.6b\\Qwen3-0.6B-Q8_0.gguf --host 0.0.0.0 --port 8080 --ctx-size 4096 --gpu-memory-utilization 0.5 --max-model-len 2048 --n-gpu-layers 999" work_dir=""
+2026/04/20 18:03:05 WARN onboarding deploy failed model=Qwen3-0.6B-Q8_0 error="deploy: deploy: start Qwen3-0.6B-Q8_0 via schtasks: discover PID after schtasks launch: binary=llama-server.exe port=8080"
+aima: deploy: deploy: start Qwen3-0.6B-Q8_0 via schtasks: discover PID after schtasks launch: binary=llama-server.exe port=8080

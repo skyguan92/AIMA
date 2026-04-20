@@ -1,0 +1,136 @@
+{
+  "events": [
+    {
+      "data": {
+        "phase": "central_sync"
+      },
+      "timestamp": "2026-04-20T17:54:50.7109267+08:00",
+      "type": "scan_start"
+    },
+    {
+      "data": {
+        "phase": "engines"
+      },
+      "timestamp": "2026-04-20T17:54:50.7109267+08:00",
+      "type": "scan_start"
+    },
+    {
+      "data": {
+        "phase": "models"
+      },
+      "timestamp": "2026-04-20T17:54:50.7109267+08:00",
+      "type": "scan_start"
+    },
+    {
+      "data": {
+        "connected": false,
+        "error": "device not registered with aima-service"
+      },
+      "timestamp": "2026-04-20T17:54:50.7114858+08:00",
+      "type": "central_synced"
+    },
+    {
+      "data": {
+        "format": "gguf",
+        "name": "Qwen3-0.6B-Q8_0",
+        "size_bytes": 639446688
+      },
+      "timestamp": "2026-04-20T17:54:52.1918481+08:00",
+      "type": "model_found"
+    },
+    {
+      "data": {
+        "format": "safetensors",
+        "name": "qwen3-0.6b-safetensor-test",
+        "size_bytes": 11534336
+      },
+      "timestamp": "2026-04-20T17:54:52.1918481+08:00",
+      "type": "model_found"
+    },
+    {
+      "data": {
+        "format": "gguf",
+        "name": "Qwen3-30B-A3B-Q4_K_M",
+        "size_bytes": 18556685824
+      },
+      "timestamp": "2026-04-20T17:54:52.1918481+08:00",
+      "type": "model_found"
+    },
+    {
+      "data": {
+        "format": "safetensors",
+        "name": "qwen3-8b",
+        "size_bytes": 16381516776
+      },
+      "timestamp": "2026-04-20T17:54:52.1918481+08:00",
+      "type": "model_found"
+    },
+    {
+      "data": {
+        "format": "gguf",
+        "name": "Qwen3-0.6B-Q8_0",
+        "size_bytes": 639446688
+      },
+      "timestamp": "2026-04-20T17:54:52.1918481+08:00",
+      "type": "model_found"
+    },
+    {
+      "data": {
+        "count": 5,
+        "phase": "models",
+        "status": "complete"
+      },
+      "timestamp": "2026-04-20T17:54:52.1918481+08:00",
+      "type": "scan_progress"
+    },
+    {
+      "data": {
+        "count": 0,
+        "phase": "engines",
+        "status": "complete"
+      },
+      "timestamp": "2026-04-20T17:54:54.6935241+08:00",
+      "type": "scan_progress"
+    },
+    {
+      "data": {
+        "central_connected": false,
+        "engines": 0,
+        "models": 5
+      },
+      "timestamp": "2026-04-20T17:54:54.6949031+08:00",
+      "type": "scan_complete"
+    }
+  ],
+  "result": {
+    "central_connected": false,
+    "engines": [],
+    "models": [
+      {
+        "format": "gguf",
+        "name": "Qwen3-0.6B-Q8_0",
+        "size_bytes": 639446688
+      },
+      {
+        "format": "safetensors",
+        "name": "qwen3-0.6b-safetensor-test",
+        "size_bytes": 11534336
+      },
+      {
+        "format": "gguf",
+        "name": "Qwen3-30B-A3B-Q4_K_M",
+        "size_bytes": 18556685824
+      },
+      {
+        "format": "safetensors",
+        "name": "qwen3-8b",
+        "size_bytes": 16381516776
+      },
+      {
+        "format": "gguf",
+        "name": "Qwen3-0.6B-Q8_0",
+        "size_bytes": 639446688
+      }
+    ]
+  }
+}

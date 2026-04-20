@@ -1,0 +1,5 @@
+device_id_mirrored=true
+token_mirrored=true
+recovery_code_mirrored=true
+registration_state=registered
+note=Derived from a post-registration sqlite query on the isolated AIMA data dir before cleanup. Raw token/recovery_code values were intentionally not preserved in local artifacts.

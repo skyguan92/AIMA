@@ -1,0 +1,23 @@
+{
+  "active_params": 507904000,
+  "detected_arch": "qwen",
+  "detected_params": "\u003c1B",
+  "engine_hint": "llamacpp",
+  "format": "gguf",
+  "id": "3bfeaa9b7a5987135ce6b888d26086a1b1923cc05f0305783fc67565df295a55",
+  "model_class": "dense",
+  "name": "Qwen3-0.6B-Q8_0",
+  "path": "C:\\Users\\jguan\\aima-uat\\u10\\data\\models\\qwen3-0.6b\\Qwen3-0.6B-Q8_0.gguf",
+  "quant_src": "filename",
+  "quantization": "int8",
+  "size_bytes": 639446688,
+  "total_params": 507904000,
+  "type": "llm"
+}
+
+Model imported: Qwen3-0.6B-Q8_0 (<1B, gguf, qwen, int8)
+
+Next steps:
+  Deploy:  aima deploy Qwen3-0.6B-Q8_0 --engine llamacpp
+  Preview: aima deploy Qwen3-0.6B-Q8_0 --dry-run
+  Info:    aima model info Qwen3-0.6B-Q8_0

@@ -1,0 +1,100 @@
+(EngineCore_DP0 pid=191) INFO 04-20 09:42:44 [core.py:98] Initializing a V1 LLM engine (v0.16.0rc2.dev376+gf4af642a6) with config: model='/models', speculative_config=None, tokenizer='/models', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=65536, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_fallback=False, disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False), seed=0, served_model_name=qwen3.5-9b, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'level': None, 'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'splitting_ops': [], 'compile_mm_encoder': False, 'compile_sizes': [], 'compile_ranges_split_points': [2048], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': True, 'static_all_moe_layers': []}
+(EngineCore_DP0 pid=191) /usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:435: UserWarning: 
+(EngineCore_DP0 pid=191)     Found GPU0 NVIDIA GB10 which is of cuda capability 12.1.
+(EngineCore_DP0 pid=191)     Minimum and Maximum cuda capability supported by this version of PyTorch is
+(EngineCore_DP0 pid=191)     (8.0) - (12.0)
+(EngineCore_DP0 pid=191)     
+(EngineCore_DP0 pid=191)   queued_call()
+(EngineCore_DP0 pid=191) `Qwen2VLImageProcessorFast` is deprecated. The `Fast` suffix for image processors has been removed; use `Qwen2VLImageProcessor` instead.
+(EngineCore_DP0 pid=191) INFO 04-20 09:42:46 [parallel_state.py:1307] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://172.17.0.2:59113 backend=nccl
+(EngineCore_DP0 pid=191) INFO 04-20 09:42:46 [parallel_state.py:1535] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+(EngineCore_DP0 pid=191) The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+(EngineCore_DP0 pid=191) INFO 04-20 09:42:50 [gpu_model_runner.py:4128] Starting to load model /models...
+(EngineCore_DP0 pid=191) INFO 04-20 09:42:51 [cuda.py:449] Using backend AttentionBackendEnum.FLASH_ATTN for vit attention
+(EngineCore_DP0 pid=191) INFO 04-20 09:42:51 [mm_encoder_attention.py:78] Using AttentionBackendEnum.FLASH_ATTN for MMEncoderAttention.
+(EngineCore_DP0 pid=191) INFO 04-20 09:42:51 [cuda.py:402] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+(EngineCore_DP0 pid=191) Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+(EngineCore_DP0 pid=191) Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:11<00:33, 11.07s/it]
+(EngineCore_DP0 pid=191) Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:12<00:11,  5.61s/it]
+(EngineCore_DP0 pid=191) Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:14<00:03,  3.69s/it]
+(EngineCore_DP0 pid=191) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:28<00:00,  8.00s/it]
+(EngineCore_DP0 pid=191) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:28<00:00,  7.22s/it]
+(EngineCore_DP0 pid=191) 
+(EngineCore_DP0 pid=191) INFO 04-20 09:43:20 [default_loader.py:293] Loading weights took 28.97 seconds
+(EngineCore_DP0 pid=191) INFO 04-20 09:43:21 [gpu_model_runner.py:4225] Model loading took 17.66 GiB memory and 29.932532 seconds
+(EngineCore_DP0 pid=191) INFO 04-20 09:43:21 [gpu_model_runner.py:5150] Encoder cache will be initialized with a budget of 16384 tokens, and profiled with 1 image items of the maximum feature size.
+(EngineCore_DP0 pid=191) INFO 04-20 09:43:45 [gpu_worker.py:405] Available KV cache memory: 8.27 GiB
+(EngineCore_DP0 pid=191) INFO 04-20 09:43:45 [kv_cache_utils.py:1314] GPU KV cache size: 67,584 tokens
+(EngineCore_DP0 pid=191) INFO 04-20 09:43:45 [kv_cache_utils.py:1319] Maximum concurrency for 65,536 tokens per request: 4.01x
+(EngineCore_DP0 pid=191) 2026-04-20 09:43:45,338 - INFO - autotuner.py:256 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(EngineCore_DP0 pid=191) 2026-04-20 09:43:45,389 - INFO - autotuner.py:262 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(EngineCore_DP0 pid=191) INFO 04-20 09:43:46 [core.py:278] init engine (profile, create kv cache, warmup model) took 24.94 seconds
+(EngineCore_DP0 pid=191) INFO 04-20 09:43:46 [vllm.py:697] Asynchronous scheduling is enabled.
+(EngineCore_DP0 pid=191) WARNING 04-20 09:43:46 [vllm.py:731] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(EngineCore_DP0 pid=191) WARNING 04-20 09:43:46 [vllm.py:742] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(EngineCore_DP0 pid=191) INFO 04-20 09:43:46 [vllm.py:853] Cudagraph is disabled under eager mode
+(APIServer pid=1) INFO 04-20 09:43:46 [api_server.py:495] Supported tasks: ['generate']
+(APIServer pid=1) INFO 04-20 09:43:46 [parser_manager.py:202] "auto" tool choice has been enabled.
+(APIServer pid=1) The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+(APIServer pid=1) The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) INFO 04-20 09:43:46 [parser_manager.py:202] "auto" tool choice has been enabled.
+(APIServer pid=1) The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+(APIServer pid=1) The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) INFO 04-20 09:43:46 [serving.py:189] Warming up chat template processing...
+(APIServer pid=1) INFO 04-20 09:43:47 [hf.py:318] Detected the chat template content format to be 'string'. You can set `--chat-template-content-format` to override this.
+(APIServer pid=1) INFO 04-20 09:43:47 [serving.py:214] Chat template warmup completed in 1087.2ms
+(APIServer pid=1) The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+(APIServer pid=1) The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) INFO 04-20 09:43:47 [parser_manager.py:202] "auto" tool choice has been enabled.
+(APIServer pid=1) The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+(APIServer pid=1) The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) `layer_type_validation` is deprecated and will be removed in v5.20. Use `PreTrainedConfig.validate_layer_type` instead
+(APIServer pid=1) INFO 04-20 09:43:47 [api_server.py:500] Starting vLLM API server 0 on http://0.0.0.0:18082
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:38] Available routes are:
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /openapi.json, Methods: HEAD, GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /docs, Methods: HEAD, GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /docs/oauth2-redirect, Methods: HEAD, GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /redoc, Methods: HEAD, GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /tokenize, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /detokenize, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /load, Methods: GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /version, Methods: GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /health, Methods: GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /metrics, Methods: GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /v1/models, Methods: GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /ping, Methods: GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /ping, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /invocations, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /v1/chat/completions, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /v1/chat/completions/render, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /v1/responses, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /v1/responses/{response_id}, Methods: GET
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /v1/responses/{response_id}/cancel, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /v1/completions, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /v1/completions/render, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /v1/messages, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /inference/v1/generate, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /scale_elastic_ep, Methods: POST
+(APIServer pid=1) INFO 04-20 09:43:47 [launcher.py:47] Route: /is_scaling_elastic_ep, Methods: POST
+(APIServer pid=1) INFO:     Started server process [1]
+(APIServer pid=1) INFO:     Waiting for application startup.
+(APIServer pid=1) INFO:     Application startup complete.
+(APIServer pid=1) INFO:     127.0.0.1:51014 - "GET /definitely-not-here HTTP/1.1" 404 Not Found
+(APIServer pid=1) INFO:     172.17.0.1:59444 - "GET /definitely-not-here HTTP/1.1" 404 Not Found
+(APIServer pid=1) INFO:     172.17.0.1:44890 - "GET /definitely-not-here HTTP/1.1" 404 Not Found
+(APIServer pid=1) INFO:     127.0.0.1:54972 - "GET /definitely-not-here HTTP/1.1" 404 Not Found
+(APIServer pid=1) INFO:     172.17.0.1:44906 - "GET /definitely-not-here HTTP/1.1" 404 Not Found
+(APIServer pid=1) INFO:     172.17.0.1:45236 - "GET /health HTTP/1.1" 200 OK
+(APIServer pid=1) INFO:     172.17.0.1:45238 - "GET /definitely-not-here HTTP/1.1" 404 Not Found
+(APIServer pid=1) INFO:     172.17.0.1:45264 - "GET /definitely-not-here HTTP/1.1" 404 Not Found

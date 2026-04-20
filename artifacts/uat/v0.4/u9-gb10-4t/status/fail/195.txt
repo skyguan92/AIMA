@@ -1,0 +1,4 @@
+2026-04-20T09:58:58Z
+2026/04/20 09:58:59 INFO runtime selected runtime=docker docker_available=true k3s_available=false
+2026/04/20 09:58:59 INFO explorer started tier=1
+aima: deploy status qwen3-5-9b-vllm-nightly-blackwell-u9-fail: deployment "qwen3-5-9b-vllm-nightly-blackwell-u9-fail" not found

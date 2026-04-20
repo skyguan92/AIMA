@@ -1,0 +1,1 @@
+Seeded canonical config key device.id=dev-u14-sqlite directly into /tmp/aima-uat-u14/sqlite-edge/aima.db via sqlite3 because CLI config whitelist does not expose device.* keys.

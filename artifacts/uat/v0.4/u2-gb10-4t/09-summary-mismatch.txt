@@ -1,0 +1,12 @@
+run_id=ca3b9f262f1d3583
+run_status=running
+run_updated_at=2026-04-20T11:51:23Z
+summary_total_cells=1
+summary_success_cells=1
+tuning_status=running
+tuning_progress=1
+tuning_total=2
+tuning_results_len=1
+best_score=18.3714409353017
+benchmark_id=d984dc10a425a85f
+config_id=d067bf14f2abc765

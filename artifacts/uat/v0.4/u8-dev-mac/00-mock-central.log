@@ -1,0 +1,17 @@
+[2026-04-20T09:06:05.077692+00:00] listening on http://127.0.0.1:18081 delay=130s
+[2026-04-20T09:06:19.474640+00:00] POST /api/v1/advise query=device_id=uat-u8-dev-mac body={"action":"recommend","device_id":"uat-u8-dev-mac","engine":"vllm","goal":"low-latency","hardware":"","hardware_info":{"cpu_arch":"arm64","cpu_cores":10,"gpu_arch":"","gpu_count":0,"gpu_model":"","gpu_vram_mib":0,"ram_total_mib":16384},"hardware_profile":"","intent":"low-latency","model":"qwen3-8b"}
+[2026-04-20T09:06:19.474695+00:00] sleeping 130s before advise response
+[2026-04-20T09:08:29.480401+00:00] "POST /api/v1/advise?device_id=uat-u8-dev-mac HTTP/1.1" 200 -
+[2026-04-20T09:08:29.480955+00:00] responded 200 for /api/v1/advise
+Traceback (most recent call last):
+  File "/Users/jguan/projects/AIMA/artifacts/uat/v0.4/u8-dev-mac/mock_central.py", line 84, in <module>
+    main()
+    ~~~~^^
+  File "/Users/jguan/projects/AIMA/artifacts/uat/v0.4/u8-dev-mac/mock_central.py", line 80, in main
+    httpd.serve_forever()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/socketserver.py", line 235, in serve_forever
+    ready = selector.select(poll_interval)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/selectors.py", line 398, in select
+    fd_event_list = self._selector.poll(timeout)
+KeyboardInterrupt

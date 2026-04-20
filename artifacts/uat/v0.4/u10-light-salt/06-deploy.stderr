@@ -1,0 +1,10 @@
+2026/04/20 17:56:14 INFO runtime selected runtime=native docker_available=false k3s_available=false
+2026/04/20 17:56:14 INFO explorer started tier=1
+2026/04/20 17:56:22 INFO downloading engine binary url=https://ghfast.top/https://github.com/ggml-org/llama.cpp/releases/download/b8157/llama-b8157-bin-win-cuda-12.4-x64.zip dest=C:\Users\jguan\aima-uat\u10\data\dist\windows-amd64
+2026/04/20 17:58:11 INFO download complete bytes=220272882 sha256=fbc4645288bce7a2
+2026/04/20 17:58:23 INFO engine binary ready dir=C:\Users\jguan\aima-uat\u10\data\dist\windows-amd64 binary=llama-server
+2026/04/20 17:58:28 INFO model pull: inferred format engine=llamacpp format=gguf variant=qwen3-30b-a3b-universal-llamacpp-q4
+2026/04/20 17:58:28 INFO model already available locally model=qwen3-30b-a3b path=C:\Users\jguan\aima-uat\u10\data\models\qwen3-30b-a3b\Qwen3-30B-A3B-Q4_K_M.gguf format=gguf
+2026/04/20 17:58:33 INFO native deploy name=qwen3-30b-a3b command="C:\\Users\\jguan\\aima-uat\\u10\\data\\dist\\windows-amd64\\llama-server.exe --model C:\\Users\\jguan\\aima-uat\\u10\\data\\models\\qwen3-30b-a3b\\Qwen3-30B-A3B-Q4_K_M.gguf --host 0.0.0.0 --port 8080 --ctx-size 4096 --n-gpu-layers 999" work_dir=""
+2026/04/20 17:59:34 WARN health check timeout name=qwen3-30b-a3b url=http://127.0.0.1:8080/health
+aima: deployment started but not ready within 1m0s

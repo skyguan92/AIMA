@@ -1,0 +1,4 @@
+{"ts": "2026-04-20T12:00:39Z", "kind": "server_start", "port": 18086}
+{"ts": "2026-04-20T12:01:06Z", "kind": "sync_pull", "query": {"device_id": ["dev-u5-gb10"], "since": ["2026-04-20 11:59:02"]}}
+{"ts": "2026-04-20T12:01:06Z", "kind": "list_advisories", "query": {"device_id": ["dev-u5-gb10"], "hardware": ["nvidia-gb10-arm64"], "status": ["pending"]}, "returned": 1, "advisory_status": "delivered"}
+{"ts": "2026-04-20T12:01:06Z", "kind": "list_scenarios", "query": {"device_id": ["dev-u5-gb10"], "hardware": ["nvidia-gb10-arm64"]}}

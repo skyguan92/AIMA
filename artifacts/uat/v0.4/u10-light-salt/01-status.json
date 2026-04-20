@@ -1,0 +1,32 @@
+{
+  "hardware": {
+    "arch": "amd64",
+    "cpu": {
+      "cores": 24,
+      "model": "13th Gen Intel(R) Core(TM) i9-13980HX"
+    },
+    "gpu": [
+      {
+        "arch": "Ada",
+        "count": 1,
+        "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vram_mib": 8188
+      }
+    ],
+    "os": "windows",
+    "profile_match": "nvidia-rtx4060-x86",
+    "ram_mib": 32388
+  },
+  "onboarding_completed": false,
+  "stack_status": {
+    "can_auto_init": false,
+    "docker": "skipped",
+    "init_tier_recommendation": "k3s",
+    "k3s": "skipped",
+    "needs_init": true
+  },
+  "version": {
+    "current": "v0.4-dev",
+    "upgrade_available": false
+  }
+}

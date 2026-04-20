@@ -1,0 +1,91 @@
+2026/04/20 10:55:19 INFO runtime selected runtime=docker docker_available=true k3s_available=false
+2026/04/20 10:55:19 INFO explorer started tier=1
+2026/04/20 10:55:22 [INFO] mdns: Closing client {true true 0x5d015c7d4000 0x5d015c7d4008 0x5d015c7d4010 0x5d015c7d4018 1 0x5d015c3500e0 0x5d015c40e3f0}
+2026/04/20 10:55:22 [INFO] mdns: Closing client {true true 0x5d015c8b4018 0x5d015c8b4020 0x5d015c8b4028 0x5d015c8b4030 1 0x5d015c4520e0 0x5d015c40e3f0}
+2026/04/20 10:55:22 [INFO] mdns: Closing client {true true 0x5d015c81a310 0x5d015c81a318 0x5d015c81a320 0x5d015c81a328 1 0x5d015c604000 0x5d015c40e3f0}
+{
+  "deployments": [],
+  "hardware": {
+    "cpu": {
+      "arch": "amd64",
+      "cores": 48,
+      "freq_ghz": 2.4,
+      "model": "Intel(R) Xeon(R) Platinum 8488C",
+      "threads": 96
+    },
+    "gpu": {
+      "arch": "Ada",
+      "compute_id": "8.9",
+      "count": 2,
+      "driver_version": "580.95.05",
+      "name": "NVIDIA GeForce RTX 4090",
+      "power_draw_watts": 14.66,
+      "power_limit_watts": 450,
+      "sdk_version": "CUDA 13.0",
+      "temperature_celsius": 34,
+      "unified_memory": false,
+      "vendor": "nvidia",
+      "vram_mib": 49140
+    },
+    "os": {
+      "arch": "amd64",
+      "container_runtime": "docker",
+      "os": "linux",
+      "version": "22.04"
+    },
+    "ram": {
+      "available_mib": 266126,
+      "swap_total_mib": 8191,
+      "total_mib": 515434
+    },
+    "storage": {
+      "data_dir_path": "/root/.aima",
+      "free_mib": 79500,
+      "total_mib": 446502,
+      "volumes": [
+        {
+          "device": "/dev/mapper/ubuntu--vg-ubuntu--lv",
+          "free_mib": 79500,
+          "mount_point": "/",
+          "total_mib": 446502
+        },
+        {
+          "device": "/dev/nvme0n1",
+          "free_mib": 1577403,
+          "mount_point": "/mnt/data",
+          "total_mib": 3604224
+        },
+        {
+          "device": "/dev/sda2",
+          "free_mib": 1535,
+          "mount_point": "/boot",
+          "total_mib": 1945
+        },
+        {
+          "device": "/dev/sda1",
+          "free_mib": 1066,
+          "mount_point": "/boot/efi",
+          "total_mib": 1072
+        }
+      ]
+    }
+  },
+  "hostname": "qujing24",
+  "metrics": {
+    "cpu": {
+      "usage_percent": 4.9
+    },
+    "gpu": {
+      "memory_total_mib": 49140,
+      "memory_used_mib": 42385,
+      "power_draw_watts": 14.37,
+      "temperature_celsius": 34,
+      "utilization_percent": 0
+    },
+    "ram": {
+      "available_mib": 266125,
+      "total_mib": 515434,
+      "used_mib": 249309
+    }
+  }
+}

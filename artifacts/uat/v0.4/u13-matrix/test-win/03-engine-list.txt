@@ -1,0 +1,14 @@
+[
+  {
+    "available": true,
+    "binary_path": "C:\\Users\\jguan\\.aima\\dist\\windows-amd64\\llama-server.exe",
+    "created_at": "2026-02-27T08:49:31Z",
+    "id": "8c45fc675033ce9e",
+    "image": "",
+    "platform": "windows-amd64",
+    "runtime_type": "native",
+    "size_bytes": 10480640,
+    "tag": "",
+    "type": "llamacpp"
+  }
+]

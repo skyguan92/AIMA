@@ -1,0 +1,69 @@
+{
+  "gpu": {
+    "vendor": "amd",
+    "name": "Navi 31 [Radeon Pro W7900D]",
+    "arch": "RDNA3",
+    "vram_mib": 49136,
+    "compute_id": "gfx1100",
+    "driver_version": "6.14.14",
+    "sdk_version": "ROCm 7.0.2",
+    "power_draw_watts": 8,
+    "temperature_celsius": 26,
+    "unified_memory": false,
+    "count": 8
+  },
+  "cpu": {
+    "arch": "amd64",
+    "model": "AMD EPYC 9334 32-Core Processor",
+    "cores": 64,
+    "threads": 128,
+    "freq_ghz": 2.699935
+  },
+  "ram": {
+    "total_mib": 1031744,
+    "available_mib": 928048
+  },
+  "storage": {
+    "data_dir_path": "/root/.aima",
+    "free_mib": 367206,
+    "total_mib": 3661041,
+    "volumes": [
+      {
+        "mount_point": "/",
+        "device": "/dev/mapper/ubuntu--vg-ubuntu--lv",
+        "total_mib": 446502,
+        "free_mib": 218502
+      },
+      {
+        "mount_point": "/disk/ssd1",
+        "device": "/dev/nvme0n1",
+        "total_mib": 3661041,
+        "free_mib": 367206
+      },
+      {
+        "mount_point": "/boot",
+        "device": "/dev/sda2",
+        "total_mib": 1945,
+        "free_mib": 1521
+      },
+      {
+        "mount_point": "/boot/efi",
+        "device": "/dev/sda1",
+        "total_mib": 1072,
+        "free_mib": 1066
+      },
+      {
+        "mount_point": "/disk/ssd2",
+        "device": "/dev/nvme1n1",
+        "total_mib": 3604224,
+        "free_mib": 3141067
+      }
+    ]
+  },
+  "os": {
+    "os": "linux",
+    "arch": "amd64",
+    "version": "24.04",
+    "container_runtime": "docker"
+  }
+}

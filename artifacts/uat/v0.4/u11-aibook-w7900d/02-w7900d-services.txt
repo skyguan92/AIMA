@@ -1,0 +1,9 @@
+===== ports
+LISTEN 0      128          0.0.0.0:8188       0.0.0.0:*    users:(("python",pid=935929,fd=29))                        
+LISTEN 3      5            0.0.0.0:8006       0.0.0.0:*    users:(("python3",pid=4112764,fd=24))                      
+===== ps
+root      902765  902757  0 12:55 ?        00:00:00 grep -E (ComfyUI|t2v-server|aima|ollama)
+root      935926       1  0 Apr01 ?        00:00:00 bash -c kill 922002 && sleep 3 && cd /disk/ssd2/ComfyUI && HSA_OVERRIDE_GFX_VERSION=11.0.0 HSA_ENABLE_SDMA=0 nohup /disk/ssd2/comfyui-venv/bin/python main.py --listen 0.0.0.0 --port 8188 > /tmp/comfyui.log 2>&1 & echo "ComfyUI restarted: $\!"
+ollama   4085316       1  0 Apr13 ?        00:48:10 /usr/local/bin/ollama serve
+root     4112763       1  0 Apr13 ?        00:00:00 bash -c cd /disk/ssd1 && source ltx23-env/bin/activate && HIP_VISIBLE_DEVICES=1 HSA_OVERRIDE_GFX_VERSION=11.0.0 PYTORCH_HIP_ALLOC_CONF=max_split_size_mb:128 TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 nohup python3 t2v-server.py --model-dir /disk/ssd1/models --port 8006 > /disk/ssd1/t2v-server.log 2>&1 & echo "T2V server started, PID: $!"
+root     4112764 4112763  1 Apr13 ?        01:48:19 python3 t2v-server.py --model-dir /disk/ssd1/models --port 8006

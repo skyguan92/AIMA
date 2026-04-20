@@ -1,0 +1,94 @@
+2026/04/20 11:22:49 INFO catalog overlay merged dir=/home/qujing/aima-uat/u4/data/catalog overlay_assets=6 new_assets=6
+2026/04/20 11:22:49 INFO runtime selected runtime=docker docker_available=true k3s_available=false
+2026/04/20 11:22:49 INFO explorer started tier=1
+2026/04/20 11:22:49 INFO starting MCP server (HTTP) addr=127.0.0.1:9184
+2026/04/20 11:22:49 INFO starting proxy server addr=127.0.0.1:6284
+2026/04/20 11:22:49 INFO proxy server starting addr=127.0.0.1:6284
+2026/04/20 11:22:49 WARN device registration blocked on user input — run `aima device register` after providing the credential kind=recovery_code detail="valid recovery_code required to refresh existing device credentials"
+2026/04/20 11:22:50 INFO startup engine scan completed
+2026/04/20 11:23:04 [INFO] mdns: Closing client {true true 0x2fd6891d2070 0x2fd6891d2078 0x2fd6891d2080 0x2fd6891d2088 1 0x2fd689488700 0x2fd688d563f0}
+2026/04/20 11:23:04 [INFO] mdns: Closing client {true true 0x2fd688f60038 0x2fd688f60040 0x2fd688f60048 0x2fd688f60050 1 0x2fd6891041c0 0x2fd688d563f0}
+2026/04/20 11:23:04 [INFO] mdns: Closing client {true true 0x2fd6894ac0b8 0x2fd6894ac0c0 0x2fd6894ac0c8 0x2fd6894ac0d0 1 0x2fd688d4a850 0x2fd688d563f0}
+2026/04/20 11:23:08 INFO tool mode probed result=enabled
+2026/04/20 11:23:26 INFO explorer event received type=scheduled.gap_scan
+2026/04/20 11:23:26 INFO explorer: building plan input
+2026/04/20 11:23:27 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=FLUX.2-dev format=safetensors
+2026/04/20 11:23:27 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=Qwen2.5-Omni-7B format=safetensors
+2026/04/20 11:23:27 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=MiniMax-M2.5 format=safetensors
+2026/04/20 11:23:27 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:27 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:27 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:27 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:27 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:27 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:27 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:27 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=GLM-4.5-Air-FP8 format=safetensors
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=GLM-4.7-Flash-NVFP4 format=safetensors
+2026/04/20 11:23:28 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=Qwen3.6-35B-A3B format=safetensors
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=GLM-5-NVFP4 format=safetensors
+2026/04/20 11:23:28 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=MiniCPM-o-4_5 format=safetensors
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:28 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=Step-3.5-Flash-FP8 format=safetensors
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN model not in catalog — auto-detect fallback in use; consider adding a model YAML model=Qwen3.5-122B-A10B-FP8 format=safetensors
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-ada image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 WARN engine marked blocked but image cached locally — using it anyway engine=vllm-nightly-blackwell image=vllm/vllm-openai:qwen3_5-cu130 status_reason="image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry"
+2026/04/20 11:23:29 INFO explorer: plan input ready knowledge_gaps=46 ready_combos=20 blocked_combos=166 deploys=0 models=31 engines=6 history=0 hw=nvidia-gb10-arm64
+2026/04/20 11:23:29 INFO explorer: generating plan tier=2
+2026/04/20 11:23:29 INFO explorer agent: phase request phase=plan turn=0
+2026/04/20 11:23:32 INFO explorer agent: phase request phase=plan turn=1
+2026/04/20 11:24:02 INFO explorer agent: phase request phase=plan turn=2
+2026/04/20 11:24:15 INFO LLM settings hot-reloaded via system.config trigger=llm.endpoint endpoint=http://127.0.0.1:1/v1 model=kimi-for-coding has_api_key=true has_extra_params=false

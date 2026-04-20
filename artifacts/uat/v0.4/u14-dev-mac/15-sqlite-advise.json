@@ -1,0 +1,55 @@
+{
+  "advisory": {
+    "confidence": "high",
+    "content": {
+      "alternatives": [
+        {
+          "engine": "llamacpp",
+          "reason": "Lower memory footprint."
+        }
+      ],
+      "confidence": "high",
+      "config": {
+        "gpu_memory_utilization": 0.7,
+        "max_model_len": 8192
+      },
+      "engine": "vllm",
+      "quantization": "bf16",
+      "reasoning": "Mock advisor response for contract verification."
+    },
+    "created_at": "2026-04-20T10:50:19Z",
+    "id": "adv_eb2b085ffd26383a",
+    "reasoning": "Mock advisor response for contract verification.",
+    "status": "pending",
+    "summary": "Mock advisor response for contract verification.",
+    "target_engine": "vllm",
+    "target_hardware": "",
+    "target_model": "qwen3-8b",
+    "title": "Recommendation: qwen3-8b on ",
+    "type": "config_recommend"
+  },
+  "protocol_version": "v2-edge",
+  "recommendation": {
+    "alternatives": [
+      {
+        "engine": "llamacpp",
+        "reason": "Lower memory footprint."
+      }
+    ],
+    "confidence": "high",
+    "config": {
+      "gpu_memory_utilization": 0.7,
+      "max_model_len": 8192
+    },
+    "engine": "vllm",
+    "quantization": "bf16",
+    "reasoning": "Mock advisor response for contract verification."
+  },
+  "request": {
+    "engine": "vllm",
+    "hardware": "",
+    "hardware_profile": "",
+    "intent": "low-latency",
+    "model": "qwen3-8b"
+  }
+}

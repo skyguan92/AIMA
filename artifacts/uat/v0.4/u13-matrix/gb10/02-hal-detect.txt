@@ -1,0 +1,52 @@
+{
+  "gpu": {
+    "vendor": "nvidia",
+    "name": "NVIDIA GB10",
+    "arch": "Blackwell",
+    "vram_mib": 122504,
+    "compute_id": "12.1",
+    "driver_version": "580.126.09",
+    "sdk_version": "CUDA 13.0",
+    "power_draw_watts": 12.96,
+    "temperature_celsius": 55,
+    "unified_memory": true,
+    "count": 1
+  },
+  "cpu": {
+    "arch": "arm64",
+    "model": "Cortex-X925",
+    "cores": 20,
+    "threads": 20,
+    "freq_ghz": 4.004
+  },
+  "ram": {
+    "total_mib": 122504,
+    "available_mib": 11809,
+    "swap_total_mib": 16383
+  },
+  "storage": {
+    "data_dir_path": "/home/qujing/.aima",
+    "free_mib": 112631,
+    "total_mib": 937290,
+    "volumes": [
+      {
+        "mount_point": "/",
+        "device": "/dev/nvme0n1p2",
+        "total_mib": 937290,
+        "free_mib": 112631
+      },
+      {
+        "mount_point": "/boot/efi",
+        "device": "/dev/nvme0n1p1",
+        "total_mib": 510,
+        "free_mib": 504
+      }
+    ]
+  },
+  "os": {
+    "os": "linux",
+    "arch": "arm64",
+    "version": "24.04",
+    "container_runtime": "docker"
+  }
+}

@@ -1,0 +1,26 @@
+=== RUN   TestSQLiteCentralStore
+=== RUN   TestSQLiteCentralStore/Migrate
+=== RUN   TestSQLiteCentralStore/DeviceRoundTrip
+=== RUN   TestSQLiteCentralStore/ConfigurationRoundTrip
+=== RUN   TestSQLiteCentralStore/BenchmarkRoundTrip
+=== RUN   TestSQLiteCentralStore/KnowledgeNoteRoundTrip
+=== RUN   TestSQLiteCentralStore/AdvisoryRoundTrip
+=== RUN   TestSQLiteCentralStore/AnalysisRunRoundTrip
+=== RUN   TestSQLiteCentralStore/ScenarioRoundTrip
+=== RUN   TestSQLiteCentralStore/Stats
+=== RUN   TestSQLiteCentralStore/CoverageMatrix
+=== RUN   TestSQLiteCentralStore/SyncFilter
+--- PASS: TestSQLiteCentralStore (0.02s)
+    --- PASS: TestSQLiteCentralStore/Migrate (0.00s)
+    --- PASS: TestSQLiteCentralStore/DeviceRoundTrip (0.00s)
+    --- PASS: TestSQLiteCentralStore/ConfigurationRoundTrip (0.00s)
+    --- PASS: TestSQLiteCentralStore/BenchmarkRoundTrip (0.00s)
+    --- PASS: TestSQLiteCentralStore/KnowledgeNoteRoundTrip (0.00s)
+    --- PASS: TestSQLiteCentralStore/AdvisoryRoundTrip (0.00s)
+    --- PASS: TestSQLiteCentralStore/AnalysisRunRoundTrip (0.00s)
+    --- PASS: TestSQLiteCentralStore/ScenarioRoundTrip (0.00s)
+    --- PASS: TestSQLiteCentralStore/Stats (0.00s)
+    --- PASS: TestSQLiteCentralStore/CoverageMatrix (0.00s)
+    --- PASS: TestSQLiteCentralStore/SyncFilter (0.00s)
+PASS
+ok  	github.com/skyguan92/aima-central-knowledge/internal/central	1.959s

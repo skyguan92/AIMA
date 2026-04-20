@@ -1,0 +1,17 @@
+[
+  {
+    "address": "127.0.0.1:30000",
+    "engine": "sglang-kt",
+    "model": "qwen3.5-122b-a10b",
+    "name": "qwen3.5-122b-a10b",
+    "parameter_count": "122B",
+    "phase": "running",
+    "ready": true,
+    "runtime": "native",
+    "served_model": "qwen3.5-122b-a10b",
+    "slot": "primary",
+    "start_time": "2026-04-15T12:00:17Z",
+    "started_at_unix": 1776254417,
+    "status": "running"
+  }
+]

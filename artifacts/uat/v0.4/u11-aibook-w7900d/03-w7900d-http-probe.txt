@@ -1,0 +1,12 @@
+===== GET http://127.0.0.1:8188/ 200
+<!doctype html><html lang="en"><head><link rel="stylesheet" href="user.css"><link rel="stylesheet" href="api/userdata/user.css"><meta charset="UTF-8"/><title>ComfyUI</title><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/><link rel="stylesheet" href="materialdesignicons.min.css"/><meta name="mobile-web-app-capable" content="yes"/><meta name="apple-mobile-web-app-status-bar-style" content="black"/><style>@media (prefers-color-scheme:dark){:root{--bg-color:#202020;--fg-color:#ffffff}}body,html{width:100%;height:100%;margin:0}body{display:grid;background-color:var(--bg-color);background-image:var(--bg-img);background-position:center;background-size:cover;background-repeat:no-repeat}.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1p
+===== GET http://127.0.0.1:8188/system_stats 200
+{"system": {"os": "linux", "ram_total": 1081862037504, "ram_free": 967330213888, "comfyui_version": "0.18.1", "required_frontend_version": "1.42.8", "installed_templates_version": "0.9.41", "required_templates_version": "0.9.41", "python_version": "3.12.3 (main, Mar  3 2026, 12:15:18) [GCC 13.3.0]", "pytorch_version": "2.5.1+rocm6.2", "embedded_python": false, "argv": ["main.py", "--listen", "0.0.0.0", "--port", "8188"]}, "devices": [{"name": "cuda:0 AMD Radeon PRO W7900D : native", "type": "cuda", "index": 0, "vram_total": 51522830336, "vram_free": 35409454592, "torch_vram_total": 14954790912, "torch_vram_free": 27878912}]}
+===== POST http://127.0.0.1:8188/prompt HTTP 500
+500 Internal Server Error
+
+Server got itself in trouble
+===== POST http://127.0.0.1:8188/v1/images/generations HTTP 405
+405: Method Not Allowed
+===== GET http://127.0.0.1:8006/health ERR timed out
+===== POST http://127.0.0.1:8006 ERR timed out

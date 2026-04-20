@@ -1,0 +1,23 @@
+{
+  "active_params": 2588672000,
+  "detected_arch": "qwen",
+  "detected_params": "3B",
+  "engine_hint": "llamacpp",
+  "format": "gguf",
+  "id": "1cc6e8713340b924bfdfc233d3f5552b77db0e67f341e9bd27fa24ac9a3c7d35",
+  "model_class": "moe",
+  "name": "Qwen3-30B-A3B-Q4_K_M",
+  "path": "C:\\Users\\jguan\\aima-uat\\u10\\data\\models\\qwen3-30b-a3b\\Qwen3-30B-A3B-Q4_K_M.gguf",
+  "quant_src": "filename",
+  "quantization": "int4",
+  "size_bytes": 18556685824,
+  "total_params": 29767761920,
+  "type": "llm"
+}
+
+Model imported: Qwen3-30B-A3B-Q4_K_M (3B, gguf, qwen, int4)
+
+Next steps:
+  Deploy:  aima deploy Qwen3-30B-A3B-Q4_K_M --engine llamacpp
+  Preview: aima deploy Qwen3-30B-A3B-Q4_K_M --dry-run
+  Info:    aima model info Qwen3-30B-A3B-Q4_K_M

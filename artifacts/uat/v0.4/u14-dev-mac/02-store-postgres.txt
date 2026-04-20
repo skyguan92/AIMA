@@ -1,0 +1,26 @@
+=== RUN   TestPostgresCentralStore
+=== RUN   TestPostgresCentralStore/Migrate
+=== RUN   TestPostgresCentralStore/DeviceRoundTrip
+=== RUN   TestPostgresCentralStore/ConfigurationRoundTrip
+=== RUN   TestPostgresCentralStore/BenchmarkRoundTrip
+=== RUN   TestPostgresCentralStore/KnowledgeNoteRoundTrip
+=== RUN   TestPostgresCentralStore/AdvisoryRoundTrip
+=== RUN   TestPostgresCentralStore/AnalysisRunRoundTrip
+=== RUN   TestPostgresCentralStore/ScenarioRoundTrip
+=== RUN   TestPostgresCentralStore/Stats
+=== RUN   TestPostgresCentralStore/CoverageMatrix
+=== RUN   TestPostgresCentralStore/SyncFilter
+--- PASS: TestPostgresCentralStore (0.28s)
+    --- PASS: TestPostgresCentralStore/Migrate (0.05s)
+    --- PASS: TestPostgresCentralStore/DeviceRoundTrip (0.02s)
+    --- PASS: TestPostgresCentralStore/ConfigurationRoundTrip (0.01s)
+    --- PASS: TestPostgresCentralStore/BenchmarkRoundTrip (0.00s)
+    --- PASS: TestPostgresCentralStore/KnowledgeNoteRoundTrip (0.00s)
+    --- PASS: TestPostgresCentralStore/AdvisoryRoundTrip (0.01s)
+    --- PASS: TestPostgresCentralStore/AnalysisRunRoundTrip (0.01s)
+    --- PASS: TestPostgresCentralStore/ScenarioRoundTrip (0.00s)
+    --- PASS: TestPostgresCentralStore/Stats (0.00s)
+    --- PASS: TestPostgresCentralStore/CoverageMatrix (0.00s)
+    --- PASS: TestPostgresCentralStore/SyncFilter (0.00s)
+PASS
+ok  	github.com/skyguan92/aima-central-knowledge/internal/central	0.988s
