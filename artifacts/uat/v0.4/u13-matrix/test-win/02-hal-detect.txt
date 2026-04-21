@@ -1,0 +1,44 @@
+{
+  "gpu": {
+    "vendor": "nvidia",
+    "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "arch": "Ada",
+    "vram_mib": 8188,
+    "compute_id": "8.9",
+    "driver_version": "566.36",
+    "sdk_version": "CUDA 12.7",
+    "power_draw_watts": 15.17,
+    "power_limit_watts": 87,
+    "temperature_celsius": 46,
+    "unified_memory": false,
+    "count": 1
+  },
+  "cpu": {
+    "arch": "amd64",
+    "model": "13th Gen Intel(R) Core(TM) i9-13980HX",
+    "cores": 24,
+    "threads": 32,
+    "freq_ghz": 2.2
+  },
+  "ram": {
+    "total_mib": 32388,
+    "available_mib": 22831,
+    "swap_total_mib": 20480
+  },
+  "storage": {
+    "data_dir_path": "C:\\Users\\jguan\\.aima",
+    "free_mib": 345918,
+    "total_mib": 975145,
+    "volumes": [
+      {
+        "mount_point": "C:\\",
+        "total_mib": 975145,
+        "free_mib": 345918
+      }
+    ]
+  },
+  "os": {
+    "os": "windows",
+    "arch": "amd64"
+  }
+}

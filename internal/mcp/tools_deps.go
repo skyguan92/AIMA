@@ -33,7 +33,7 @@ type ToolDeps struct {
 	// Deployment (runtime package)
 	DeployApply  func(ctx context.Context, engine, model, slot string, configOverrides map[string]any, noPull bool) (json.RawMessage, error)
 	DeployDryRun func(ctx context.Context, engine, model, slot string, configOverrides map[string]any) (json.RawMessage, error)
-	DeployRun    func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool, onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent)) (json.RawMessage, error)
+	DeployRun    func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool, onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent), onModelProgress func(downloaded, total int64)) (json.RawMessage, error)
 	DeployDelete func(ctx context.Context, name string) error
 	DeployStatus func(ctx context.Context, name string) (json.RawMessage, error)
 	DeployList   func(ctx context.Context) (json.RawMessage, error)
@@ -84,6 +84,15 @@ type ToolDeps struct {
 	RollbackRestore   func(ctx context.Context, id int64) (json.RawMessage, error)
 	SupportAskForHelp func(ctx context.Context, description, endpoint, inviteCode, workerCode, recoveryCode, referralCode string) (json.RawMessage, error)
 
+	// Device identity — aima-service self-register lifecycle. Every outbound
+	// Central/aima-service call resolves device_id via DeviceStatus' canonical
+	// keys, so these four tools are how operators bootstrap and troubleshoot
+	// an edge's cloud identity.
+	DeviceRegister func(ctx context.Context, inviteCode, recoveryCode string, force bool) (json.RawMessage, error)
+	DeviceStatus   func(ctx context.Context) (json.RawMessage, error)
+	DeviceRenew    func(ctx context.Context) (json.RawMessage, error)
+	DeviceReset    func(ctx context.Context, confirm bool) (json.RawMessage, error)
+
 	// System
 	SystemStatus func(ctx context.Context) (json.RawMessage, error)
 	GetConfig    func(ctx context.Context, key string) (string, error)
@@ -120,6 +129,11 @@ type ToolDeps struct {
 	ExploreStatus       func(ctx context.Context, runID string) (json.RawMessage, error)
 	ExploreStop         func(ctx context.Context, runID string) (json.RawMessage, error)
 	ExploreResult       func(ctx context.Context, runID string) (json.RawMessage, error)
+	// Read-only inspectors powering the Explorer Web UI (v0.4 MVP).
+	ExploreListRuns     func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
+	ExploreRunDetail    func(ctx context.Context, runID string) (json.RawMessage, error)
+	ExploreRunEvents    func(ctx context.Context, runID string) (json.RawMessage, error)
+	ExploreWorkspaceDoc func(ctx context.Context, doc string) (json.RawMessage, error)
 
 	// Validation (F5)
 	ValidateKnowledge func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
@@ -140,20 +154,33 @@ type ToolDeps struct {
 	OpenClawStatus func(ctx context.Context) (json.RawMessage, error)
 	OpenClawClaim  func(ctx context.Context, sections []string, dryRun bool) (json.RawMessage, error)
 
+	// Onboarding wizard (multi-action)
+	OnboardingStatus    func(ctx context.Context) (json.RawMessage, error)
+	OnboardingScan      func(ctx context.Context) (json.RawMessage, error)
+	OnboardingRecommend func(ctx context.Context, locale string) (json.RawMessage, error)
+	OnboardingInit      func(ctx context.Context, tier string, allowDownload bool) (json.RawMessage, error)
+	OnboardingDeploy    func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool) (json.RawMessage, error)
+
 	// Scenario
 	ScenarioList  func(ctx context.Context) (json.RawMessage, error)
 	ScenarioShow  func(ctx context.Context, name string) (json.RawMessage, error)
 	ScenarioApply func(ctx context.Context, name string, dryRun bool) (json.RawMessage, error)
 
 	// Explorer
-	ExplorerStatus  func(ctx context.Context) (json.RawMessage, error)
-	ExplorerConfig  func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
-	ExplorerTrigger func(ctx context.Context) (json.RawMessage, error)
+	ExplorerStatus   func(ctx context.Context) (json.RawMessage, error)
+	ExplorerConfig   func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
+	ExplorerTrigger  func(ctx context.Context) (json.RawMessage, error)
+	ExplorerCleanup  func(ctx context.Context) (json.RawMessage, error)
+	ExplorerDbDeltas func(ctx context.Context, sinceISO string) (json.RawMessage, error)
+
+	// Onboarding
+	RecommendModels func(ctx context.Context) (json.RawMessage, error)
 
 	// Sync v2: advisory pull/push (v0.4 integration)
 	SyncPullAdvisories   func(ctx context.Context) (json.RawMessage, error)
 	SyncPullScenarios    func(ctx context.Context) (json.RawMessage, error)
 	AdvisoryFeedback     func(ctx context.Context, advisoryID, status, reason string) (json.RawMessage, error)
+	ScenarioFeedback     func(ctx context.Context, scenarioID, status, reason string) (json.RawMessage, error)
 	RequestAdvise        func(ctx context.Context, model, engine, intent string) (json.RawMessage, error)
 	RequestScenario      func(ctx context.Context, hardware string, models []string, goal string) (json.RawMessage, error)
 	ListCentralScenarios func(ctx context.Context, hardware, source string) (json.RawMessage, error)

@@ -6,6 +6,7 @@ hardware:
   gpu:
     arch: RDNA3.5
     vram_mib: 16384
+    bandwidth_gbps: 120
     compute_id: "gfx1151"
     compute_units: 2048
     resource_name: "amd.com/gpu"

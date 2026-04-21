@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"os"
@@ -12,6 +14,43 @@ import (
 
 	"github.com/hashicorp/mdns"
 )
+
+// mdnsLogFilter re-routes lines from hashicorp/mdns. It uses an allow-list of
+// known-noisy patterns caused by malformed packets from other LAN devices
+// (Windows/iOS Bonjour quirks around the DNS truncated bit) — those drop to
+// Debug. Anything NOT on the allow-list surfaces at Warn so a novel library
+// error isn't silently swallowed. The old deny-list masked every unknown
+// message at Debug, which defeated the point of having logs at all.
+type mdnsLogFilter struct{}
+
+// mdnsKnownNoise is the allow-list of substrings that we have confirmed are
+// harmless LAN chatter. When expanding this, document the original message
+// and why it is safe to demote.
+var mdnsKnownNoise = [][]byte{
+	[]byte("Failed to handle query"),     // malformed query from another host
+	[]byte("truncated bit"),              // DNS TC flag quirks from iOS/Windows
+	[]byte("Failed to unpack packet"),    // corrupt LAN packets, not our problem
+	[]byte("mdns: Closing"),              // routine shutdown message
+	[]byte("mdns: Failed to send"),       // transient socket write errors on iface shutdown
+}
+
+func (mdnsLogFilter) Write(p []byte) (int, error) {
+	line := strings.TrimRight(string(p), "\n")
+	for _, needle := range mdnsKnownNoise {
+		if bytes.Contains(p, needle) {
+			slog.Debug("mdns", "line", line)
+			return len(p), nil
+		}
+	}
+	// Unknown message → surface at Warn. If it turns out to be additional
+	// harmless noise, append the substring to mdnsKnownNoise.
+	slog.Warn("mdns: unexpected log line", "line", line)
+	return len(p), nil
+}
+
+func newMDNSLogger() *stdlog.Logger {
+	return stdlog.New(mdnsLogFilter{}, "", 0)
+}
 
 // MDNSConfig configures the mDNS advertiser.
 type MDNSConfig struct {
@@ -58,7 +97,7 @@ func StartMDNS(cfg MDNSConfig) (*MDNSAdvertiser, error) {
 	ifaces := lanInterfaces()
 	if len(ifaces) == 0 {
 		// Fallback: single server on system default interface
-		server, err := mdns.NewServer(&mdns.Config{Zone: service})
+		server, err := mdns.NewServer(&mdns.Config{Zone: service, Logger: newMDNSLogger()})
 		if err != nil {
 			return nil, fmt.Errorf("mdns server: %w", err)
 		}
@@ -67,7 +106,7 @@ func StartMDNS(cfg MDNSConfig) (*MDNSAdvertiser, error) {
 
 	var servers []*mdns.Server
 	for _, iface := range ifaces {
-		server, err := mdns.NewServer(&mdns.Config{Zone: service, Iface: iface})
+		server, err := mdns.NewServer(&mdns.Config{Zone: service, Iface: iface, Logger: newMDNSLogger()})
 		if err != nil {
 			slog.Debug("mdns: skip interface for advertise", "iface", iface.Name, "error", err)
 			continue

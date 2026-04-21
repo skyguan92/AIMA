@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -17,16 +19,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const gpuReleaseGrace = 3 * time.Second // grace period for GPU memory to fully release from driver
+const (
+	gpuReleaseGrace                = 3 * time.Second // grace period for GPU memory to fully release from driver
+	defaultStartAndWaitTimeout     = 30 * time.Minute
+	extendedStartAndWaitTimeout    = 90 * time.Minute
+	startAndWaitStopCleanupTimeout = 45 * time.Second
+)
 
 type ExplorationTarget struct {
-	Hardware     string   `json:"hardware,omitempty"`
-	GPUArch      string   `json:"gpu_arch,omitempty"` // e.g. "Ada" — for overlay YAML, not resolution
-	Model        string   `json:"model"`
-	Engine       string   `json:"engine,omitempty"`
-	Runtime      string   `json:"runtime,omitempty"`
-	ModelType    string   `json:"model_type,omitempty"`    // e.g. "llm", "asr", "tts", "embedding"
-	InternalArgs []string `json:"internal_args,omitempty"` // engine params to exclude from overlay YAML
+	Hardware        string   `json:"hardware,omitempty"`
+	GPUArch         string   `json:"gpu_arch,omitempty"` // e.g. "Ada" — for overlay YAML, not resolution
+	Model           string   `json:"model"`
+	Engine          string   `json:"engine,omitempty"`
+	Runtime         string   `json:"runtime,omitempty"`
+	ModelType       string   `json:"model_type,omitempty"`        // e.g. "llm", "asr", "tts", "embedding"
+	InternalArgs    []string `json:"internal_args,omitempty"`     // engine params to exclude from overlay YAML
+	HealthCheckPath string   `json:"health_check_path,omitempty"` // from engine YAML startup.health_check.path
+	Family          string   `json:"family,omitempty"`            // from catalog metadata.family — overlay YAML
+	ParameterCount  string   `json:"parameter_count,omitempty"`   // from catalog metadata.parameter_count — overlay YAML
 }
 
 type ExplorationConstraints struct {
@@ -36,6 +46,8 @@ type ExplorationConstraints struct {
 type ExplorationBenchmarkProfile struct {
 	Endpoint          string `json:"endpoint,omitempty"`
 	Concurrency       int    `json:"concurrency,omitempty"` // legacy single-point (for tune tasks)
+	InputTokens       int    `json:"input_tokens,omitempty"`
+	MaxTokens         int    `json:"max_tokens,omitempty"`
 	Rounds            int    `json:"rounds,omitempty"`
 	RequestsPerCombo  int    `json:"requests_per_combo,omitempty"`
 	ConcurrencyLevels []int  `json:"concurrency_levels,omitempty"`
@@ -49,6 +61,7 @@ type ExplorationPlan struct {
 	Goal              string                        `json:"goal"`
 	Target            ExplorationTarget             `json:"target"`
 	SourceRef         string                        `json:"source_ref,omitempty"`
+	EngineParams      map[string]any                `json:"engine_params,omitempty"`
 	SearchSpace       map[string][]any              `json:"search_space,omitempty"`
 	Constraints       ExplorationConstraints        `json:"constraints,omitempty"`
 	BenchmarkProfiles []ExplorationBenchmarkProfile `json:"benchmark_profiles,omitempty"`
@@ -72,6 +85,28 @@ func firstProfile(profiles []ExplorationBenchmarkProfile) ExplorationBenchmarkPr
 	return ExplorationBenchmarkProfile{}
 }
 
+func benchmarkModality(modelType string) string {
+	return strings.ToLower(strings.TrimSpace(modelType))
+}
+
+func startAndWaitFallbackTimeout(kind string) time.Duration {
+	switch kind {
+	case "validate", "open_question":
+		return extendedStartAndWaitTimeout
+	default:
+		return defaultStartAndWaitTimeout
+	}
+}
+
+func isTerminalRunStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
 type benchmarkStepResult struct {
 	RequestJSON   string
 	ResponseJSON  string
@@ -84,6 +119,28 @@ type benchmarkStepResult struct {
 	MatrixJSON    string
 	TotalCells    int
 	SuccessCells  int
+}
+
+type deploymentLease struct {
+	Name    string
+	Config  map[string]any
+	Created bool
+}
+
+func meaningfulBenchmarkResult(summary map[string]any) bool {
+	if summary == nil {
+		return false
+	}
+	if primaryBenchmarkRate(summary) > 0 {
+		return true
+	}
+	if reqs := readFloatField(summary, "successful_requests"); reqs > 0 {
+		return true
+	}
+	if outputs := readFloatField(summary, "avg_output_tokens"); outputs > 0 {
+		return true
+	}
+	return false
 }
 
 func (m *ExplorationManager) resolveCurrentDeployConfig(ctx context.Context, model, engine string) map[string]any {
@@ -137,6 +194,7 @@ type ExplorationStart struct {
 	RequestedBy       string                        `json:"requested_by,omitempty"`
 	ApprovalMode      string                        `json:"approval_mode,omitempty"`
 	SourceRef         string                        `json:"source_ref,omitempty"`
+	EngineParams      map[string]any                `json:"engine_params,omitempty"`
 	SearchSpace       map[string][]any              `json:"search_space,omitempty"`
 	Constraints       ExplorationConstraints        `json:"constraints,omitempty"`
 	BenchmarkProfiles []ExplorationBenchmarkProfile `json:"benchmark_profiles,omitempty"`
@@ -153,17 +211,19 @@ type ExplorationManager struct {
 	tuner *Tuner
 	tools ToolExecutor
 
-	mu         sync.Mutex
-	activeRuns map[string]context.CancelFunc
-	tuneRunID  string
+	mu              sync.Mutex
+	activeRuns      map[string]context.CancelFunc
+	activeProbeInfo map[string]string // model name → health check path from engine YAML
+	tuneRunID       string
 }
 
 func NewExplorationManager(db *state.DB, tuner *Tuner, tools ToolExecutor) *ExplorationManager {
 	return &ExplorationManager{
-		db:         db,
-		tuner:      tuner,
-		tools:      tools,
-		activeRuns: make(map[string]context.CancelFunc),
+		db:              db,
+		tuner:           tuner,
+		tools:           tools,
+		activeRuns:      make(map[string]context.CancelFunc),
+		activeProbeInfo: make(map[string]string),
 	}
 }
 
@@ -201,6 +261,9 @@ func (m *ExplorationManager) Start(ctx context.Context, req ExplorationStart) (*
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	m.activeRuns[run.ID] = cancel
+	if req.Target.HealthCheckPath != "" {
+		m.activeProbeInfo[run.ModelID] = req.Target.HealthCheckPath
+	}
 	if run.Kind == "tune" {
 		m.tuneRunID = run.ID
 	}
@@ -218,25 +281,66 @@ func (m *ExplorationManager) StartAndWait(ctx context.Context, req ExplorationSt
 	}
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	timeout := time.After(30 * time.Minute)
+	var timeout <-chan time.Time
+	var timeoutTimer *time.Timer
+	timeoutLabel := time.Duration(0)
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeoutLabel = startAndWaitFallbackTimeout(req.Kind)
+		timeoutTimer = time.NewTimer(timeoutLabel)
+		timeout = timeoutTimer.C
+		defer timeoutTimer.Stop()
+	}
 	for {
 		select {
 		case <-ctx.Done():
-			return m.Stop(context.Background(), run.ID)
+			stopCtx, cancel := context.WithTimeout(context.Background(), startAndWaitStopCleanupTimeout)
+			_, _ = m.stopAndWaitForTerminal(stopCtx, run.ID)
+			cancel()
+			return nil, fmt.Errorf("exploration %s canceled: %w", run.ID, ctx.Err())
 		case <-timeout:
-			_, _ = m.Stop(context.Background(), run.ID)
-			return nil, fmt.Errorf("exploration %s timed out after 30 minutes", run.ID)
+			stopCtx, cancel := context.WithTimeout(context.Background(), startAndWaitStopCleanupTimeout)
+			status, waitErr := m.stopAndWaitForTerminal(stopCtx, run.ID)
+			cancel()
+			timeoutErr := fmt.Errorf("exploration %s timed out after %s", run.ID, timeoutLabel)
+			if waitErr == nil || errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(waitErr, context.Canceled) {
+				return status, timeoutErr
+			}
+			return status, fmt.Errorf("%w (stop wait: %v)", timeoutErr, waitErr)
 		case <-ticker.C:
 			status, err := m.Status(ctx, run.ID)
 			if err != nil {
 				return nil, err
 			}
-			switch status.Run.Status {
-			case "completed", "failed", "cancelled":
+			if isTerminalRunStatus(status.Run.Status) && !m.isRunActive(run.ID) {
 				return status, nil
 			}
 		}
 	}
+}
+
+func (m *ExplorationManager) finishRunWithError(run *state.ExplorationRun, err error) {
+	if run == nil || err == nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		run.Status = "cancelled"
+	} else {
+		run.Status = "failed"
+	}
+	run.Error = err.Error()
+	run.CompletedAt = time.Now()
+	_ = m.db.UpdateExplorationRun(context.Background(), run)
+}
+
+func (m *ExplorationManager) finishRunIfContextDone(ctx context.Context, run *state.ExplorationRun) bool {
+	if ctx == nil {
+		return false
+	}
+	if err := ctx.Err(); err != nil {
+		m.finishRunWithError(run, err)
+		return true
+	}
+	return false
 }
 
 func (m *ExplorationManager) Stop(ctx context.Context, runID string) (*ExplorationStatus, error) {
@@ -285,8 +389,45 @@ func (m *ExplorationManager) Result(ctx context.Context, runID string) (*Explora
 	return m.Status(ctx, runID)
 }
 
+func (m *ExplorationManager) isRunActive(runID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.activeRuns[runID]
+	return ok
+}
+
+func (m *ExplorationManager) waitForTerminalStatus(ctx context.Context, runID string) (*ExplorationStatus, error) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		status, err := m.Status(ctx, runID)
+		if err != nil {
+			return nil, err
+		}
+		if isTerminalRunStatus(status.Run.Status) && !m.isRunActive(runID) {
+			return status, nil
+		}
+		select {
+		case <-ctx.Done():
+			return status, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *ExplorationManager) stopAndWaitForTerminal(ctx context.Context, runID string) (*ExplorationStatus, error) {
+	status, err := m.Stop(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if status != nil && isTerminalRunStatus(status.Run.Status) {
+		return status, nil
+	}
+	return m.waitForTerminalStatus(ctx, runID)
+}
+
 func (m *ExplorationManager) execute(ctx context.Context, run *state.ExplorationRun) {
-	defer m.cleanup(run.ID, run.Kind)
+	defer m.cleanup(run.ID, run.Kind, run.ModelID)
 
 	switch run.Kind {
 	case "tune":
@@ -318,6 +459,7 @@ func (m *ExplorationManager) executeTune(ctx context.Context, run *state.Explora
 	_ = m.db.UpdateExplorationRun(context.Background(), run)
 
 	bp := firstProfile(plan.BenchmarkProfiles)
+	bp = tuneBenchmarkProfile(bp)
 	tuningConfig := TuningConfig{
 		Model:       plan.Target.Model,
 		Hardware:    plan.Target.Hardware,
@@ -325,20 +467,31 @@ func (m *ExplorationManager) executeTune(ctx context.Context, run *state.Explora
 		Endpoint:    bp.Endpoint,
 		Parameters:  buildTuningParams(plan.SearchSpace),
 		Concurrency: bp.Concurrency,
+		NumRequests: bp.RequestsPerCombo,
+		InputTokens: bp.InputTokens,
+		MaxTokens:   bp.MaxTokens,
 		Rounds:      bp.Rounds,
+		Modality:    benchmarkModality(plan.Target.ModelType),
 		MaxConfigs:  plan.Constraints.MaxCandidates,
+		// Bug-8: explorer runs task-boundary teardown, so skip the tuner's
+		// final best-config redeploy to keep the GPU cold between tasks.
+		CleanupAfter: true,
 	}
 
 	requestJSON, _ := json.Marshal(map[string]any{
-		"action":      "start",
-		"model":       tuningConfig.Model,
-		"hardware":    tuningConfig.Hardware,
-		"engine":      tuningConfig.Engine,
-		"endpoint":    tuningConfig.Endpoint,
-		"parameters":  tuningConfig.Parameters,
-		"concurrency": tuningConfig.Concurrency,
-		"rounds":      tuningConfig.Rounds,
-		"max_configs": tuningConfig.MaxConfigs,
+		"action":       "start",
+		"model":        tuningConfig.Model,
+		"hardware":     tuningConfig.Hardware,
+		"engine":       tuningConfig.Engine,
+		"endpoint":     tuningConfig.Endpoint,
+		"parameters":   tuningConfig.Parameters,
+		"concurrency":  tuningConfig.Concurrency,
+		"num_requests": tuningConfig.NumRequests,
+		"input_tokens": tuningConfig.InputTokens,
+		"max_tokens":   tuningConfig.MaxTokens,
+		"rounds":       tuningConfig.Rounds,
+		"modality":     tuningConfig.Modality,
+		"max_configs":  tuningConfig.MaxConfigs,
 	})
 	_ = m.db.InsertExplorationEvent(context.Background(), &state.ExplorationEvent{
 		RunID:       run.ID,
@@ -380,7 +533,7 @@ func (m *ExplorationManager) executeTune(ctx context.Context, run *state.Explora
 			return
 		}
 
-		summaryJSON, _ := json.Marshal(current)
+		summaryJSON, _ := json.Marshal(summarizeTuningSession(current))
 		run.SummaryJSON = string(summaryJSON)
 
 		switch current.Status {
@@ -442,6 +595,154 @@ func (m *ExplorationManager) executeTune(ctx context.Context, run *state.Explora
 	}
 }
 
+func tuneBenchmarkProfile(profile ExplorationBenchmarkProfile) ExplorationBenchmarkProfile {
+	tuned := profile
+	tuned.Concurrency = firstPositiveInt(profile.Concurrency, firstPositiveTokenLevel(profile.ConcurrencyLevels))
+	tuned.InputTokens = firstPositiveInt(profile.InputTokens, firstPositiveTokenLevel(profile.InputTokenLevels))
+	tuned.MaxTokens = firstPositiveInt(profile.MaxTokens, firstPositiveTokenLevel(profile.MaxTokenLevels))
+	if tuned.Rounds <= 0 {
+		tuned.Rounds = 1
+	}
+	if tuned.RequestsPerCombo <= 0 {
+		tuned.RequestsPerCombo = 10
+	}
+	return tuned
+}
+
+func firstPositiveTokenLevel(values []int) int {
+	for _, value := range normalizeTokenLevels(values) {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func summarizeTuningSession(session *TuningSession) map[string]any {
+	payload := map[string]any{
+		"tuning_session": session,
+	}
+	if session == nil || len(session.Results) == 0 {
+		return payload
+	}
+
+	best := tuningBestResult(session)
+	payload["benchmark_id"] = best.BenchmarkID
+	payload["config_id"] = best.ConfigID
+	payload["engine_version"] = best.EngineVersion
+	payload["engine_image"] = best.EngineImage
+	if cfg := cloneAnyMap(session.BestConfig); len(cfg) > 0 {
+		payload["deploy_config"] = cfg
+	}
+	if usage := cloneAnyMap(best.ResourceUsage); len(usage) > 0 {
+		payload["resource_usage"] = usage
+	}
+	payload["result"] = map[string]any{
+		"throughput_tps": best.ThroughputTPS,
+		"latency_p50_ms": best.LatencyP50Ms,
+		"ttft_p50_ms":    best.TTFTP50Ms,
+		"ttft_p95_ms":    best.TTFTP95Ms,
+		"tpot_p50_ms":    best.TPOTP50Ms,
+		"tpot_p95_ms":    best.TPOTP95Ms,
+		"qps":            best.QPS,
+		"config": map[string]any{
+			"concurrency":  best.Concurrency,
+			"num_requests": best.NumRequests,
+			"warmup_count": best.WarmupCount,
+			"rounds":       best.Rounds,
+			"input_tokens": best.InputTokens,
+			"max_tokens":   best.MaxTokens,
+		},
+	}
+	payload["benchmark_profile"] = map[string]any{
+		"concurrency":       best.Concurrency,
+		"num_requests":      best.NumRequests,
+		"warmup_count":      best.WarmupCount,
+		"rounds":            best.Rounds,
+		"input_tokens":      best.InputTokens,
+		"max_tokens":        best.MaxTokens,
+		"avg_input_tokens":  best.AvgInputTokens,
+		"avg_output_tokens": best.AvgOutputTokens,
+	}
+	payload["matrix_profiles"] = tuningMatrixProfiles(session.Results)
+	// total_cells = planned cells; success_cells = cells that produced a
+	// usable benchmark row. Keeping them distinct lets the partial-preserve
+	// branch tell "2 attempted, 1 succeeded" apart from "1 of 1 succeeded".
+	payload["total_cells"] = session.Total
+	payload["success_cells"] = len(session.Results)
+	return payload
+}
+
+func tuningBestResult(session *TuningSession) TuningResult {
+	best := session.Results[0]
+	for _, result := range session.Results[1:] {
+		if result.Score > best.Score {
+			best = result
+			continue
+		}
+		if sameConfigMap(session.BestConfig, result.ConfigOverrides) {
+			best = result
+		}
+	}
+	return best
+}
+
+func tuningMatrixProfiles(results []TuningResult) []map[string]any {
+	profiles := make([]map[string]any, 0, len(results))
+	for _, result := range results {
+		cell := map[string]any{
+			"concurrency":  result.Concurrency,
+			"input_tokens": result.InputTokens,
+			"max_tokens":   result.MaxTokens,
+			"result": map[string]any{
+				"throughput_tps": result.ThroughputTPS,
+				"latency_p50_ms": result.LatencyP50Ms,
+				"ttft_p50_ms":    result.TTFTP50Ms,
+				"ttft_p95_ms":    result.TTFTP95Ms,
+				"tpot_p50_ms":    result.TPOTP50Ms,
+				"tpot_p95_ms":    result.TPOTP95Ms,
+				"qps":            result.QPS,
+			},
+		}
+		if result.BenchmarkID != "" {
+			cell["benchmark_id"] = result.BenchmarkID
+		}
+		if result.ConfigID != "" {
+			cell["config_id"] = result.ConfigID
+		}
+		if result.EngineVersion != "" {
+			cell["engine_version"] = result.EngineVersion
+		}
+		if result.EngineImage != "" {
+			cell["engine_image"] = result.EngineImage
+		}
+		if usage := cloneAnyMap(result.ResourceUsage); len(usage) > 0 {
+			cell["resource_usage"] = usage
+		}
+		profiles = append(profiles, map[string]any{
+			"label": tuningResultLabel(result.ConfigOverrides),
+			"cells": []map[string]any{cell},
+		})
+	}
+	return profiles
+}
+
+func tuningResultLabel(config map[string]any) string {
+	if len(config) == 0 {
+		return "candidate"
+	}
+	keys := make([]string, 0, len(config))
+	for key := range config {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", key, config[key]))
+	}
+	return strings.Join(parts, ", ")
+}
+
 func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.ExplorationRun) {
 	if m.tools == nil {
 		run.Status = "failed"
@@ -466,12 +767,15 @@ func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.Exp
 
 	// Pre-flight: ensure the model is deployed before benchmarking.
 	// Without this, benchmark.run hits an empty endpoint and gets 0 tok/s.
-	deployCfg, err := m.ensureDeployed(ctx, run, plan)
+	lease, err := m.ensureDeployed(ctx, run, plan)
 	if err != nil {
-		run.Status = "failed"
-		run.Error = fmt.Sprintf("pre-flight deploy: %s", err)
-		run.CompletedAt = time.Now()
-		_ = m.db.UpdateExplorationRun(context.Background(), run)
+		m.finishRunWithError(run, fmt.Errorf("pre-flight deploy: %w", err))
+		return
+	}
+	if lease != nil {
+		defer m.releaseDeployment(lease)
+	}
+	if m.finishRunIfContextDone(ctx, run) {
 		return
 	}
 
@@ -488,19 +792,27 @@ func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.Exp
 
 	stepResult, err := m.executeBenchmarkStep(ctx, run, plan, "validate", 0)
 	if err != nil {
-		run.Status = "failed"
-		run.Error = err.Error()
-		run.CompletedAt = time.Now()
-		_ = m.db.UpdateExplorationRun(context.Background(), run)
+		if stepResult != nil {
+			run.SummaryJSON = stepResult.ResponseJSON
+		}
+		m.finishRunWithError(run, err)
+		return
+	}
+	if m.finishRunIfContextDone(ctx, run) {
 		return
 	}
 
 	run.Status = "completed"
+	run.Error = ""
 	run.CompletedAt = time.Now()
 	run.SummaryJSON = stepResult.ResponseJSON
 	_ = m.db.UpdateExplorationRun(context.Background(), run)
 
 	// Task #13: After successful benchmark, write discovered knowledge as overlay YAML.
+	var deployCfg map[string]any
+	if lease != nil {
+		deployCfg = lease.Config
+	}
 	m.maybeCreateKnowledge(ctx, run, plan, stepResult, deployCfg)
 }
 
@@ -508,7 +820,7 @@ func (m *ExplorationManager) executeValidate(ctx context.Context, run *state.Exp
 // Returns the resolved deployment config (for overlay YAML creation).
 // B17: checks deploy.status first — if already ready, skip deploy; if starting, wait;
 // only call deploy.apply when no existing deployment or previous one failed.
-func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.ExplorationRun, plan ExplorationPlan) (map[string]any, error) {
+func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.ExplorationRun, plan ExplorationPlan) (*deploymentLease, error) {
 	if m.tools == nil {
 		return nil, fmt.Errorf("no tool executor")
 	}
@@ -523,16 +835,16 @@ func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.Expl
 		strings.EqualFold(ds.Engine, plan.Target.Engine)
 
 	if ds.Ready && engineMatch {
-		// D1: deploy.status can report ready=true while container health is still
-		// "starting". Do a single inference probe to verify. If it fails, proceed
-		// anyway — benchmark will fail fast with a clear error.
-		if !m.probeInferenceEndpoint(ctx, plan.Target.Model) {
-			slog.Warn("exploration: deploy reports ready but inference probe failed, proceeding anyway",
-				"model", plan.Target.Model)
+		if err := m.waitForInferenceReady(ctx, plan.Target.Model); err != nil {
+			return nil, fmt.Errorf("verify ready deployment %s: %w", plan.Target.Model, err)
 		}
 		slog.Info("exploration: model already deployed, skipping deploy",
 			"model", plan.Target.Model, "engine", plan.Target.Engine)
-		return nil, nil
+		return &deploymentLease{
+			Name:    plan.Target.Model,
+			Config:  m.resolveCurrentDeployConfig(ctx, plan.Target.Model, plan.Target.Engine),
+			Created: false,
+		}, nil
 	}
 	if ds.Ready && !engineMatch {
 		// Wrong engine deployed. Delete the existing deployment so we can redeploy
@@ -554,12 +866,14 @@ func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.Expl
 		if err := m.waitForReady(ctx, plan.Target.Model); err != nil {
 			return nil, fmt.Errorf("wait for in-progress deploy %s: %w", plan.Target.Model, err)
 		}
-		// D1: After deploy.status reports ready, also verify inference is serving.
 		if err := m.waitForInferenceReady(ctx, plan.Target.Model); err != nil {
-			slog.Warn("exploration: inference probe failed after deploy wait, proceeding anyway",
-				"model", plan.Target.Model, "error", err)
+			return nil, fmt.Errorf("wait for in-progress deployment endpoint %s: %w", plan.Target.Model, err)
 		}
-		return nil, nil
+		return &deploymentLease{
+			Name:    plan.Target.Model,
+			Config:  m.resolveCurrentDeployConfig(ctx, plan.Target.Model, plan.Target.Engine),
+			Created: false,
+		}, nil
 	}
 
 	// Native runtime is exclusive. Only same-runtime (native) deployments are
@@ -576,9 +890,19 @@ func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.Expl
 		"engine":    plan.Target.Engine,
 		"auto_pull": false, // Explorer must never download — only use locally available resources.
 	}
-	// Flatten SearchSpace into config overrides for deploy.
-	if len(plan.SearchSpace) > 0 {
-		config := make(map[string]any, len(plan.SearchSpace))
+	// Merge planner-authored engine_params and SearchSpace into deploy config.
+	// SearchSpace entries win over EngineParams for the same key: tune tasks
+	// already flatten their engine_params into SearchSpace upstream, so the
+	// overlap is deliberate and search_space always represents the resolved
+	// point to probe.
+	if len(plan.EngineParams) > 0 || len(plan.SearchSpace) > 0 {
+		config := make(map[string]any, len(plan.EngineParams)+len(plan.SearchSpace))
+		for k, v := range plan.EngineParams {
+			if v == nil {
+				continue
+			}
+			config[k] = v
+		}
 		for k, vals := range plan.SearchSpace {
 			if len(vals) > 0 {
 				config[k] = vals[0]
@@ -632,21 +956,28 @@ func (m *ExplorationManager) ensureDeployed(ctx context.Context, run *state.Expl
 
 	// Extract resolved config from deploy.apply response for overlay YAML.
 	deployCfg := parseDeployConfig(responseJSON)
+	lease := &deploymentLease{
+		Name:    plan.Target.Model,
+		Config:  deployCfg,
+		Created: true,
+	}
 
 	slog.Info("exploration: model deployed for validation",
 		"model", plan.Target.Model, "engine", plan.Target.Engine)
 
 	// B14: Wait for the service to become ready before benchmarking.
 	if err := m.waitForReady(ctx, plan.Target.Model); err != nil {
-		slog.Warn("exploration: readiness check failed, proceeding anyway",
-			"model", plan.Target.Model, "error", err)
+		m.releaseDeployment(lease)
+		return nil, fmt.Errorf("wait for deployed service %s: %w", plan.Target.Model, err)
 	}
-	// D1: Also verify inference endpoint is actually serving.
 	if err := m.waitForInferenceReady(ctx, plan.Target.Model); err != nil {
-		slog.Warn("exploration: inference probe failed after deploy, proceeding anyway",
-			"model", plan.Target.Model, "error", err)
+		m.releaseDeployment(lease)
+		return nil, fmt.Errorf("wait for deployed endpoint %s: %w", plan.Target.Model, err)
 	}
-	return deployCfg, nil
+	if len(lease.Config) == 0 {
+		lease.Config = m.resolveCurrentDeployConfig(ctx, plan.Target.Model, plan.Target.Engine)
+	}
+	return lease, nil
 }
 
 // deployStatusResult holds the parsed deploy.status response.
@@ -701,7 +1032,7 @@ func (m *ExplorationManager) activeConflictingDeploys(ctx context.Context, targe
 	}
 	var conflicts []string
 	for _, d := range deploys {
-		if d.Name == targetModel {
+		if strings.EqualFold(d.Name, targetModel) {
 			continue
 		}
 		// Only running/starting deployments actively hold resources.
@@ -721,6 +1052,25 @@ func (m *ExplorationManager) activeConflictingDeploys(ctx context.Context, targe
 // waitForDeleteComplete polls deploy.status until the deployment is no longer running.
 func (m *ExplorationManager) waitForDeleteComplete(ctx context.Context, name string) {
 	waitForGPURelease(ctx, m.tools, name, gpuReleaseGrace)
+}
+
+func (m *ExplorationManager) releaseDeployment(lease *deploymentLease) {
+	if lease == nil || !lease.Created || m.tools == nil || strings.TrimSpace(lease.Name) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	deleteArgs, _ := json.Marshal(map[string]string{"name": lease.Name})
+	result, err := m.tools.ExecuteTool(ctx, "deploy.delete", deleteArgs)
+	if err == nil {
+		err = toolResultError(result)
+	}
+	if err != nil {
+		slog.Warn("exploration: cleanup deployment failed", "model", lease.Name, "error", err)
+		return
+	}
+	m.waitForDeleteComplete(ctx, lease.Name)
+	slog.Info("exploration: cleaned up owned deployment", "model", lease.Name)
 }
 
 // waitForGPURelease polls deploy.status until the named deployment is no longer active,
@@ -774,29 +1124,62 @@ func checkDeployPhase(ctx context.Context, tools ToolExecutor, name string) stri
 // Uses progress-based stall detection instead of a fixed timeout.
 // Safety net = max(EstimatedTotalS * 3, 15min) prevents infinite wait
 // when an engine has no log_patterns.
+//
+// deployVanishGrace tolerates transient "not found" responses (runtime
+// registration race after deploy.apply) before concluding the deployment
+// has truly disappeared; without this grace a slow runtime would spin the
+// full safety-net window before failing.
 func (m *ExplorationManager) waitForReady(ctx context.Context, model string) error {
 	if m.tools == nil {
 		return nil
 	}
-	const pollInterval = 5 * time.Second
+	const (
+		pollInterval      = 5 * time.Second
+		deployVanishGrace = 2
+	)
 
 	// First poll to get EstimatedTotalS for safety net calculation
 	safetyNet := 15 * time.Minute
 	deadline := time.Now().Add(safetyNet)
 
+	everSeenAlive := false
+	consecutiveMissing := 0
+
 	for time.Now().Before(deadline) {
 		statusArgs, _ := json.Marshal(map[string]string{"name": model})
 		result, err := m.tools.ExecuteTool(ctx, "deploy.status", statusArgs)
-		if err == nil && result != nil {
+		if err != nil {
+			// A "not found" response means the runtime no longer knows about
+			// this deployment. If the deploy was alive earlier in the wait
+			// loop, treat the first miss as authoritative — it vanished. If
+			// we have not yet seen it alive, allow deployVanishGrace polls
+			// before giving up so we don't race the runtime's registration.
+			if isDeploymentNotFound(err) {
+				consecutiveMissing++
+				threshold := deployVanishGrace
+				if everSeenAlive {
+					threshold = 1
+				}
+				if consecutiveMissing >= threshold {
+					return fmt.Errorf("deployment %s disappeared before becoming ready: %w", model, err)
+				}
+			}
+			// Other transient errors: keep polling.
+		} else if result != nil {
 			var status struct {
 				Phase           string `json:"phase"`
 				Ready           bool   `json:"ready"`
 				Stalled         bool   `json:"stalled"`
 				StartupProgress int    `json:"startup_progress"`
 				StartupPhase    string `json:"startup_phase"`
+				StartupMessage  string `json:"startup_message"`
 				EstimatedTotalS int    `json:"estimated_total_s"`
+				ErrorLines      string `json:"error_lines"`
 			}
 			if json.Unmarshal([]byte(result.Content), &status) == nil {
+				everSeenAlive = true
+				consecutiveMissing = 0
+
 				// Adjust safety net on first EstimatedTotalS reading
 				if status.EstimatedTotalS > 0 {
 					dynamic := time.Duration(status.EstimatedTotalS*3) * time.Second
@@ -814,6 +1197,12 @@ func (m *ExplorationManager) waitForReady(ctx context.Context, model string) err
 				// Fast fail on terminal phases
 				switch status.Phase {
 				case "failed", "stopped", "error", "exited":
+					if detail := summarizeDiagnosticErrorLines(status.ErrorLines); detail != "" {
+						return fmt.Errorf("deployment %s entered terminal phase %q: %s", model, status.Phase, detail)
+					}
+					if detail := strings.TrimSpace(status.StartupMessage); detail != "" {
+						return fmt.Errorf("deployment %s entered terminal phase %q: %s", model, status.Phase, detail)
+					}
 					return fmt.Errorf("deployment %s entered terminal phase %q", model, status.Phase)
 				}
 
@@ -832,8 +1221,19 @@ func (m *ExplorationManager) waitForReady(ctx context.Context, model string) err
 	return fmt.Errorf("timeout waiting for %s to become ready (safety net %v)", model, safetyNet)
 }
 
-// resolveDeployEndpoint queries deploy.status to get the actual inference address.
-// Returns an OpenAI-compatible endpoint URL or empty string.
+// isDeploymentNotFound is true when an error from deploy.status / a runtime's
+// Status() signals that the deployment is unknown to every runtime. Keeping
+// detection substring-based tolerates variation in error wrapping across the
+// docker/k3s/native runtimes without requiring a shared error type.
+func isDeploymentNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not found") || strings.Contains(msg, "no such container") || strings.Contains(msg, "no matching deployment")
+}
+
+// resolveDeployEndpoint queries deploy.status to get the actual inference base address.
 func (m *ExplorationManager) resolveDeployEndpoint(ctx context.Context, model string) string {
 	statusArgs, _ := json.Marshal(map[string]string{"name": model})
 	result, err := m.tools.ExecuteTool(ctx, "deploy.status", statusArgs)
@@ -847,18 +1247,23 @@ func (m *ExplorationManager) resolveDeployEndpoint(ctx context.Context, model st
 	if json.Unmarshal([]byte(result.Content), &status) != nil || status.Address == "" {
 		return ""
 	}
-	return fmt.Sprintf("http://%s/v1/chat/completions", status.Address)
+	return fmt.Sprintf("http://%s", status.Address)
 }
 
-// probeInferenceEndpoint does a quick GET /v1/models to verify the inference
-// engine is actually serving, not just that the container is running.
+// probeInferenceEndpoint verifies the inference engine is actually serving.
+// Uses the engine YAML's health_check.path when available; falls back to
+// /v1/models (the standard OpenAI endpoint) for engines without explicit config.
 func (m *ExplorationManager) probeInferenceEndpoint(ctx context.Context, model string) bool {
 	addr := m.resolveDeployEndpoint(ctx, model)
 	if addr == "" {
 		return false
 	}
-	modelsURL := strings.Replace(addr, "/v1/chat/completions", "/v1/models", 1)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	baseURL := strings.TrimRight(addr, "/")
+	probePath := "/v1/models"
+	if hp := m.healthCheckPath(model); hp != "" {
+		probePath = hp
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+probePath, nil)
 	if err != nil {
 		return false
 	}
@@ -871,18 +1276,35 @@ func (m *ExplorationManager) probeInferenceEndpoint(ctx context.Context, model s
 	return resp.StatusCode == http.StatusOK
 }
 
+// healthCheckPath returns the engine YAML health_check.path for a running exploration.
+func (m *ExplorationManager) healthCheckPath(model string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activeProbeInfo[model]
+}
+
 // waitForInferenceReady polls the inference endpoint until it actually serves
 // requests. This catches the gap where deploy.status reports ready=true but the
 // engine is still loading weights or running health checks.
 func (m *ExplorationManager) waitForInferenceReady(ctx context.Context, model string) error {
-	const (
-		pollInterval = 5 * time.Second
-		timeout      = 5 * time.Minute
-	)
+	const pollInterval = 5 * time.Second
 
 	// Fast path: already serving.
 	if m.probeInferenceEndpoint(ctx, model) {
 		return nil
+	}
+
+	// Use remaining context deadline if available, otherwise default to 10 minutes.
+	// The caller (executeValidate) may have already consumed time in waitForReady(),
+	// so the context deadline naturally shrinks for larger models.
+	timeout := 10 * time.Minute
+	if dl, ok := ctx.Deadline(); ok {
+		remaining := time.Until(dl)
+		if remaining > pollInterval {
+			timeout = remaining
+		} else {
+			return fmt.Errorf("timeout waiting for inference endpoint %s (context deadline too close: %v)", model, remaining)
+		}
 	}
 
 	slog.Info("exploration: inference not yet serving, waiting for endpoint",
@@ -900,7 +1322,74 @@ func (m *ExplorationManager) waitForInferenceReady(ctx context.Context, model st
 			return nil
 		}
 	}
+	if detail := m.summarizeInferenceReadinessFailure(ctx, model); detail != "" {
+		return fmt.Errorf("timeout waiting for inference endpoint %s (%v): %s", model, timeout, detail)
+	}
 	return fmt.Errorf("timeout waiting for inference endpoint %s (%v)", model, timeout)
+}
+
+func (m *ExplorationManager) summarizeInferenceReadinessFailure(ctx context.Context, model string) string {
+	if m.tools == nil || strings.TrimSpace(model) == "" {
+		return ""
+	}
+	logsArgs, _ := json.Marshal(map[string]any{"name": model, "tail": 120})
+	result, err := m.tools.ExecuteTool(ctx, "deploy.logs", logsArgs)
+	if err == nil {
+		err = toolResultError(result)
+	}
+	if err != nil || result == nil {
+		return ""
+	}
+	return summarizeDiagnosticErrorLines(result.Content)
+}
+
+func summarizeDiagnosticErrorLines(errorLines string) string {
+	lines := strings.Split(errorLines, "\n")
+	bestLine := ""
+	bestScore := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		score := diagnosticLineScore(trimmed)
+		if score > bestScore {
+			bestLine = trimmed
+			bestScore = score
+		}
+	}
+	return bestLine
+}
+
+func diagnosticLineScore(line string) int {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	switch {
+	case lower == "":
+		return 0
+	case strings.HasPrefix(lower, "error in cpuinfo:"):
+		return 0
+	case strings.Contains(lower, "outofmemoryerror"), strings.Contains(lower, "out of memory"):
+		return 130
+	case strings.Contains(lower, "keyerror:"),
+		strings.Contains(lower, "valueerror:"),
+		strings.Contains(lower, "assertionerror:"),
+		strings.Contains(lower, "typeerror:"),
+		strings.Contains(lower, "indexerror:"),
+		strings.Contains(lower, "filenotfounderror:"),
+		strings.Contains(lower, "modulenotfounderror:"),
+		strings.Contains(lower, "permission denied"),
+		strings.Contains(lower, "no such file"),
+		strings.Contains(lower, "not found"):
+		return 120
+	case strings.Contains(lower, "error:"),
+		strings.Contains(lower, "exception"),
+		strings.Contains(lower, "failed"),
+		strings.Contains(lower, "cannot"),
+		strings.Contains(lower, "panic"):
+		return 80
+	default:
+		return 10
+	}
 }
 
 // maybeCreateKnowledge writes a model YAML overlay when Explorer successfully
@@ -935,6 +1424,9 @@ func (m *ExplorationManager) maybeCreateKnowledge(ctx context.Context, run *stat
 		} `json:"result"`
 	}
 
+	// resourceUsage tracks GPU/memory usage from the benchmark for overlay YAML.
+	resourceUsage := result.ResourceUsage
+
 	if result.TotalCells > 0 {
 		// Matrix benchmark — extract representative cell for overlay
 		repCell, ok := extractRepresentativeCell(result.ResponseJSON)
@@ -945,6 +1437,25 @@ func (m *ExplorationManager) maybeCreateKnowledge(ctx context.Context, run *stat
 		repResult, _ := repCell["result"].(map[string]any)
 		if repResult == nil {
 			return
+		}
+		// Use resource_usage from representative cell if available
+		if ru, ok := repCell["resource_usage"].(map[string]any); ok && len(ru) > 0 {
+			resourceUsage = ru
+		}
+		if benchmarkID, _ := repCell["benchmark_id"].(string); benchmarkID != "" {
+			result.BenchmarkID = benchmarkID
+		}
+		if configID, _ := repCell["config_id"].(string); configID != "" {
+			result.ConfigID = configID
+		}
+		if engineVersion, _ := repCell["engine_version"].(string); engineVersion != "" {
+			result.EngineVersion = engineVersion
+		}
+		if engineImage, _ := repCell["engine_image"].(string); engineImage != "" {
+			result.EngineImage = engineImage
+		}
+		if cfg, ok := repCell["deploy_config"].(map[string]any); ok && len(cfg) > 0 {
+			result.DeployConfig = cloneAnyMap(cfg)
 		}
 		// Marshal the representative cell's result and re-parse into envelope
 		wrapped, _ := json.Marshal(map[string]any{"result": repResult})
@@ -968,9 +1479,14 @@ func (m *ExplorationManager) maybeCreateKnowledge(ctx context.Context, run *stat
 		return
 	}
 
-	// Start with the deploy config passed from ensureDeployed.
+	sourceConfig := deployCfg
+	if len(result.DeployConfig) > 0 {
+		sourceConfig = result.DeployConfig
+	}
+
+	// Start with the deploy config passed from ensureDeployed or benchmark output.
 	deployConfig := make(map[string]any)
-	for k, v := range deployCfg {
+	for k, v := range sourceConfig {
 		deployConfig[k] = v
 	}
 
@@ -1023,14 +1539,38 @@ func (m *ExplorationManager) maybeCreateKnowledge(ctx context.Context, run *stat
 		modelType = "llm"
 	}
 
+	// Infer VRAM from benchmark resource usage
+	vramMinMiB := 0
+	if resourceUsage != nil {
+		if v, ok := resourceUsage["vram_usage_mib"]; ok {
+			switch vf := v.(type) {
+			case float64:
+				vramMinMiB = int(vf)
+			case int:
+				vramMinMiB = vf
+			}
+		}
+	}
+
+	// Prefer catalog metadata for family/parameter_count (INV-1: knowledge from YAML),
+	// fall back to name-based inference for models not yet in the catalog.
+	family := plan.Target.Family
+	if family == "" {
+		family = inferModelFamily(plan.Target.Model)
+	}
+	paramCount := plan.Target.ParameterCount
+	if paramCount == "" {
+		paramCount = inferParameterCount(plan.Target.Model)
+	}
+
 	// Build structured overlay as a map and marshal to YAML.
 	overlay := map[string]any{
 		"kind": "model_asset",
 		"metadata": map[string]any{
 			"name":            plan.Target.Model,
 			"type":            modelType,
-			"family":          "explorer-discovered",
-			"parameter_count": "unknown",
+			"family":          family,
+			"parameter_count": paramCount,
 			"notes": fmt.Sprintf("Auto-discovered by Explorer on %s. Benchmark ID: %s. Engine version: %s. Engine image: %s.",
 				time.Now().Format("2006-01-02"), result.BenchmarkID, result.EngineVersion, result.EngineImage),
 		},
@@ -1041,7 +1581,7 @@ func (m *ExplorationManager) maybeCreateKnowledge(ctx context.Context, run *stat
 			"name": variantName,
 			"hardware": map[string]any{
 				"gpu_arch":     gpuArch,
-				"vram_min_mib": 0,
+				"vram_min_mib": vramMinMiB,
 			},
 			"engine":         plan.Target.Engine,
 			"format":         "safetensors",
@@ -1170,7 +1710,7 @@ func extractRepresentativeCell(matrixJSON string) (map[string]any, bool) {
 			continue
 		}
 		for _, c := range profile.Cells {
-			if c.Error != "" || c.Result == nil {
+			if c.Error != "" || !meaningfulBenchmarkResult(c.Result) {
 				continue
 			}
 			score := c.Concurrency * repCellConcurrencyPenalty
@@ -1234,6 +1774,33 @@ func parseDeployConfig(responseJSON string) map[string]any {
 	return resp.Config
 }
 
+// inferModelFamily extracts the model family from a model name by prefix matching.
+func inferModelFamily(model string) string {
+	lower := strings.ToLower(model)
+	for _, f := range []struct{ prefix, family string }{
+		{"qwen", "qwen"}, {"glm", "glm"}, {"llama", "llama"},
+		{"mistral", "mistral"}, {"deepseek", "deepseek"},
+		{"minicpm", "minicpm"}, {"phi", "phi"}, {"gemma", "gemma"},
+		{"baichuan", "baichuan"}, {"internlm", "internlm"},
+		{"chatglm", "glm"}, {"codegeex", "glm"},
+	} {
+		if strings.HasPrefix(lower, f.prefix) {
+			return f.family
+		}
+	}
+	return "unknown"
+}
+
+var paramCountRe = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)[Bb]`)
+
+// inferParameterCount extracts the parameter count (e.g. "3B") from a model name.
+func inferParameterCount(model string) string {
+	if m := paramCountRe.FindStringSubmatch(model); len(m) > 1 {
+		return m[1] + "B"
+	}
+	return "unknown"
+}
+
 func (m *ExplorationManager) executeOpenQuestion(ctx context.Context, run *state.ExplorationRun) {
 	if m.tools == nil {
 		run.Status = "failed"
@@ -1280,20 +1847,27 @@ func (m *ExplorationManager) executeOpenQuestion(ctx context.Context, run *state
 	_ = m.db.UpdateExplorationRun(context.Background(), run)
 
 	// Pre-flight: ensure the model is deployed before benchmarking.
-	if _, err := m.ensureDeployed(ctx, run, plan); err != nil {
-		run.Status = "failed"
-		run.Error = fmt.Sprintf("pre-flight deploy: %s", err)
-		run.CompletedAt = time.Now()
-		_ = m.db.UpdateExplorationRun(context.Background(), run)
+	lease, err := m.ensureDeployed(ctx, run, plan)
+	if err != nil {
+		m.finishRunWithError(run, fmt.Errorf("pre-flight deploy: %w", err))
+		return
+	}
+	if lease != nil {
+		defer m.releaseDeployment(lease)
+	}
+	if m.finishRunIfContextDone(ctx, run) {
 		return
 	}
 
 	stepResult, err := m.executeBenchmarkStep(ctx, run, plan, "resolve_open_question", 0)
 	if err != nil {
-		run.Status = "failed"
-		run.Error = err.Error()
-		run.CompletedAt = time.Now()
-		_ = m.db.UpdateExplorationRun(context.Background(), run)
+		if stepResult != nil {
+			run.SummaryJSON = stepResult.ResponseJSON
+		}
+		m.finishRunWithError(run, err)
+		return
+	}
+	if m.finishRunIfContextDone(ctx, run) {
 		return
 	}
 
@@ -1336,10 +1910,11 @@ func (m *ExplorationManager) executeOpenQuestion(ctx context.Context, run *state
 	_ = m.db.UpdateExplorationRun(context.Background(), run)
 }
 
-func (m *ExplorationManager) cleanup(runID, kind string) {
+func (m *ExplorationManager) cleanup(runID, kind, modelID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.activeRuns, runID)
+	delete(m.activeProbeInfo, modelID)
 	if kind == "tune" && m.tuneRunID == runID {
 		m.tuneRunID = ""
 	}
@@ -1391,6 +1966,7 @@ func (m *ExplorationManager) newRun(ctx context.Context, req ExplorationStart) (
 		Goal:              req.Goal,
 		SourceRef:         req.SourceRef,
 		Target:            req.Target,
+		EngineParams:      req.EngineParams,
 		SearchSpace:       req.SearchSpace,
 		Constraints:       req.Constraints,
 		BenchmarkProfiles: req.BenchmarkProfiles,
@@ -1438,6 +2014,9 @@ func (m *ExplorationManager) executeBenchmarkStep(ctx context.Context, run *stat
 		"model":       plan.Target.Model,
 		"concurrency": bp.Concurrency,
 		"rounds":      bp.Rounds,
+	}
+	if modality := benchmarkModality(plan.Target.ModelType); modality != "" {
+		benchArgs["modality"] = modality
 	}
 	if bp.Endpoint != "" {
 		benchArgs["endpoint"] = bp.Endpoint
@@ -1544,6 +2123,9 @@ func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *st
 			"rounds":             profile.Rounds,
 			"save":               true,
 		}
+		if modality := benchmarkModality(plan.Target.ModelType); modality != "" {
+			matrixArgs["modality"] = modality
+		}
 		if len(deployConfig) > 0 {
 			matrixArgs["deploy_config"] = deployConfig
 		}
@@ -1610,13 +2192,8 @@ func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *st
 
 		for _, cell := range matrixResp.Cells {
 			totalCells++
-			if cell.Error == "" && cell.Result != nil {
-				// A cell with zero throughput is not a real success — the
-				// endpoint was unreachable or not yet ready. Only count cells
-				// where inference actually produced output.
-				if tp, ok := cell.Result["throughput_tps"].(float64); ok && tp > 0 {
-					successCells++
-				}
+			if cell.Error == "" && meaningfulBenchmarkResult(cell.Result) {
+				successCells++
 			}
 		}
 
@@ -1637,24 +2214,65 @@ func (m *ExplorationManager) executeBenchmarkMatrix(ctx context.Context, run *st
 		})
 	}
 
-	if totalCells == 0 || successCells == 0 {
-		return nil, fmt.Errorf("benchmark matrix: no successful cells (total=%d)", totalCells)
-	}
-
-	combinedJSON, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"matrix_profiles": allCellsJSON,
 		"total_cells":     totalCells,
 		"success_cells":   successCells,
 		"deploy_config":   cloneAnyMap(deployConfig),
-	})
+	}
+	combinedJSON, _ := json.Marshal(payload)
+	if repCell, ok := extractRepresentativeCell(string(combinedJSON)); ok {
+		if repResult, ok := repCell["result"]; ok {
+			payload["result"] = repResult
+		}
+		if benchmarkID, _ := repCell["benchmark_id"].(string); benchmarkID != "" {
+			payload["benchmark_id"] = benchmarkID
+		}
+		if configID, _ := repCell["config_id"].(string); configID != "" {
+			payload["config_id"] = configID
+		}
+		if engineVersion, _ := repCell["engine_version"].(string); engineVersion != "" {
+			payload["engine_version"] = engineVersion
+		}
+		if engineImage, _ := repCell["engine_image"].(string); engineImage != "" {
+			payload["engine_image"] = engineImage
+		}
+		if usage, ok := repCell["resource_usage"].(map[string]any); ok && len(usage) > 0 {
+			payload["resource_usage"] = usage
+		}
+		if cfg, ok := repCell["deploy_config"].(map[string]any); ok && len(cfg) > 0 {
+			payload["deploy_config"] = cloneAnyMap(cfg)
+		}
+	}
+	combinedJSON, _ = json.Marshal(payload)
 
-	return &benchmarkStepResult{
-		ResponseJSON: string(combinedJSON),
-		MatrixJSON:   string(combinedJSON),
-		DeployConfig: cloneAnyMap(deployConfig),
-		TotalCells:   totalCells,
-		SuccessCells: successCells,
-	}, nil
+	stepResult := &benchmarkStepResult{
+		ResponseJSON:  string(combinedJSON),
+		MatrixJSON:    string(combinedJSON),
+		BenchmarkID:   firstNonEmptyJSON(payload, "benchmark_id"),
+		ConfigID:      firstNonEmptyJSON(payload, "config_id"),
+		EngineVersion: firstNonEmptyJSON(payload, "engine_version"),
+		EngineImage:   firstNonEmptyJSON(payload, "engine_image"),
+		ResourceUsage: cloneAnyMap(mapValue(payload, "resource_usage")),
+		DeployConfig:  cloneAnyMap(mapValue(payload, "deploy_config")),
+		TotalCells:    totalCells,
+		SuccessCells:  successCells,
+	}
+	if totalCells == 0 {
+		return nil, fmt.Errorf("benchmark matrix: no cells returned")
+	}
+	if successCells == 0 {
+		return stepResult, fmt.Errorf("benchmark matrix: no successful cells (total=%d)", totalCells)
+	}
+	return stepResult, nil
+}
+
+func mapValue(payload map[string]any, key string) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	value, _ := payload[key].(map[string]any)
+	return value
 }
 
 func (m *ExplorationManager) executeDeployStep(ctx context.Context, run *state.ExplorationRun, plan ExplorationPlan, stepKind string, stepIndex int) (*deploymentStepResult, error) {

@@ -1,0 +1,1 @@
+Seeded canonical config key device.id=dev-u14-postgres directly into /tmp/aima-uat-u14/postgres-edge/aima.db via sqlite3 because CLI config whitelist does not expose device.* keys.

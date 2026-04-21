@@ -1,0 +1,31 @@
+{
+  "address": "127.0.0.1:8080",
+  "config": {
+    "ctx_size": 4096,
+    "n_gpu_layers": 999,
+    "port": 8080,
+    "quantization": "int4"
+  },
+  "engine": "llamacpp",
+  "labels": {
+    "aima.dev/context_window": "4096",
+    "aima.dev/engine": "llamacpp",
+    "aima.dev/host-port": "8080",
+    "aima.dev/model": "qwen3-30b-a3b",
+    "aima.dev/parameter_count": "30B",
+    "aima.dev/port": "8080",
+    "aima.dev/served-model": "qwen3-30b-a3b",
+    "aima.dev/slot": "primary"
+  },
+  "model": "qwen3-30b-a3b",
+  "name": "qwen3-30b-a3b",
+  "phase": "starting",
+  "ready": false,
+  "runtime": "native",
+  "slot": "primary",
+  "start_time": "2026-04-20T09:58:34Z",
+  "started_at_unix": 1776679114,
+  "startup_message": "Loading model...",
+  "startup_phase": "loading_model",
+  "startup_progress": 35
+}

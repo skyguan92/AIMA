@@ -233,12 +233,118 @@ func TestPullAdvisoriesToEventBusWithoutEventBusStillReturnsItems(t *testing.T) 
 func TestBuildSyncURLEncodesSince(t *testing.T) {
 	t.Parallel()
 
-	got, err := buildSyncURL("http://localhost:18080", "2026-04-07 07:37:48")
+	got, err := buildSyncURL("http://localhost:18080", "2026-04-07 07:37:48", "dev-42")
 	if err != nil {
 		t.Fatalf("buildSyncURL: %v", err)
 	}
-	want := "http://localhost:18080/api/v1/sync?since=2026-04-07+07%3A37%3A48"
+	want := "http://localhost:18080/api/v1/sync?device_id=dev-42&since=2026-04-07+07%3A37%3A48"
 	if got != want {
 		t.Fatalf("buildSyncURL = %q, want %q", got, want)
+	}
+}
+
+func TestBuildSyncURLWithoutDeviceIDOmitsParam(t *testing.T) {
+	t.Parallel()
+
+	got, err := buildSyncURL("http://localhost:18080", "", "")
+	if err != nil {
+		t.Fatalf("buildSyncURL: %v", err)
+	}
+	want := "http://localhost:18080/api/v1/sync"
+	if got != want {
+		t.Fatalf("buildSyncURL = %q, want %q", got, want)
+	}
+}
+
+func TestWithDeviceIDAppendsQueryParam(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		inURL    string
+		deviceID string
+		want     string
+	}{
+		{"no-existing-query", "https://c/api/v1/ingest", "dev-1", "https://c/api/v1/ingest?device_id=dev-1"},
+		{"with-existing-query", "https://c/api/v1/advisories?hardware=abc", "dev-2", "https://c/api/v1/advisories?hardware=abc&device_id=dev-2"},
+		{"empty-device-id-unchanged", "https://c/api/v1/ingest?x=1", "", "https://c/api/v1/ingest?x=1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := withDeviceID(tc.inURL, tc.deviceID); got != tc.want {
+				t.Errorf("withDeviceID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildCentralIngestPayloadNormalizesEmbeddedConfigJSON(t *testing.T) {
+	t.Parallel()
+
+	exportData := []byte(`{
+		"stats": {"configurations": 1, "benchmark_results": 1, "knowledge_notes": 1},
+		"data": {
+			"configurations": [
+				{
+					"id": "cfg-1",
+					"hardware_id": "nvidia-gb10-arm64",
+					"engine_id": "vllm-nightly",
+					"model_id": "qwen3-8b",
+					"config": "{\"gpu_memory_utilization\":0.8}",
+					"config_hash": "hash-1"
+				}
+			],
+			"benchmark_results": [
+				{"id": "bench-1", "config_id": "cfg-1", "throughput_tps": 42.5}
+			],
+			"knowledge_notes": [
+				{"id": "note-1", "title": "ok", "content": "done"}
+			]
+		}
+	}`)
+
+	payload, stats, err := buildCentralIngestPayload(exportData, "device-1", "Blackwell", "nvidia-gb10-arm64")
+	if err != nil {
+		t.Fatalf("buildCentralIngestPayload: %v", err)
+	}
+	if stats["configurations"] != 1 || stats["benchmark_results"] != 1 || stats["knowledge_notes"] != 1 {
+		t.Fatalf("stats = %#v, want all counts = 1", stats)
+	}
+
+	var got struct {
+		SchemaVersion   int               `json:"schema_version"`
+		DeviceID        string            `json:"device_id"`
+		GPUArch         string            `json:"gpu_arch"`
+		HardwareProfile string            `json:"hardware_profile"`
+		Configs         []json.RawMessage `json:"configurations"`
+		Benchmarks      []json.RawMessage `json:"benchmarks"`
+		Notes           []json.RawMessage `json:"knowledge_notes"`
+	}
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got.SchemaVersion != 1 || got.DeviceID != "device-1" || got.GPUArch != "Blackwell" || got.HardwareProfile != "nvidia-gb10-arm64" {
+		t.Fatalf("header = %+v", got)
+	}
+	if len(got.Configs) != 1 || len(got.Benchmarks) != 1 || len(got.Notes) != 1 {
+		t.Fatalf("payload counts = cfg:%d bench:%d note:%d", len(got.Configs), len(got.Benchmarks), len(got.Notes))
+	}
+
+	var cfg struct {
+		ID              string          `json:"id"`
+		HardwareProfile string          `json:"hardware_profile"`
+		Config          json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(got.Configs[0], &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if cfg.ID != "cfg-1" {
+		t.Fatalf("config id = %q, want cfg-1", cfg.ID)
+	}
+	if cfg.HardwareProfile != "nvidia-gb10-arm64" {
+		t.Fatalf("config hardware_profile = %q, want nvidia-gb10-arm64", cfg.HardwareProfile)
+	}
+	if string(cfg.Config) != `{"gpu_memory_utilization":0.8}` {
+		t.Fatalf("config payload = %s, want raw JSON object", string(cfg.Config))
 	}
 }

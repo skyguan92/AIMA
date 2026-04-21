@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ var readOnlyDocs = map[string]bool{
 	"device-profile.md":   true,
 	"available-combos.md": true,
 	"knowledge-base.md":   true,
+	"experiment-facts.md": true,
 }
 
 // ExplorerWorkspace manages the file workspace for an Explorer session.
@@ -51,6 +54,12 @@ func (w *ExplorerWorkspace) EnsureWorkingDocuments() error {
 		return err
 	}
 	return nil
+}
+
+// WriteClosedPlanDocument resets plan.md when there is no pending Do phase.
+// plan.md is scratch space for the next executable plan, not a historical log.
+func (w *ExplorerWorkspace) WriteClosedPlanDocument(status string, metrics *PlanMetrics) error {
+	return w.WriteFile("plan.md", closedPlanTemplate(status, metrics))
 }
 
 func (w *ExplorerWorkspace) ensureFile(rel, content string) error {
@@ -255,12 +264,29 @@ func parsePlanTasks(md string) ([]TaskSpec, error) {
 		// like "No new tasks needed" or omit the block entirely.
 		return nil, nil
 	}
-	var tasks []TaskSpec
-	if err := yaml.Unmarshal([]byte(matches[1]), &tasks); err != nil {
+	tasks, err := parseTaskSpecYAML([]byte(matches[1]))
+	if err != nil {
 		return nil, fmt.Errorf("parse tasks yaml: %w", err)
 	}
 	// D2: comment-only yaml blocks unmarshal to nil — also valid "no tasks".
 	return tasks, nil
+}
+
+func parseTaskSpecYAML(data []byte) ([]TaskSpec, error) {
+	var tasks []TaskSpec
+	listErr := yaml.Unmarshal(data, &tasks)
+	if listErr == nil {
+		return tasks, nil
+	}
+
+	var wrapped struct {
+		Tasks []TaskSpec `yaml:"tasks"`
+	}
+	if err := yaml.Unmarshal(data, &wrapped); err == nil {
+		return wrapped.Tasks, nil
+	}
+
+	return nil, listErr
 }
 
 // parseRecommendedConfigs extracts RecommendedConfig list from summary.md.
@@ -287,6 +313,7 @@ type ConfirmedBlocker struct {
 	Scope      string `yaml:"scope" json:"scope,omitempty"`
 	Model      string `yaml:"model" json:"model,omitempty"`
 	Engine     string `yaml:"engine" json:"engine,omitempty"`
+	Hardware   string `yaml:"hardware" json:"hardware,omitempty"`
 	Reason     string `yaml:"reason" json:"reason"`
 	RetryWhen  string `yaml:"retry_when" json:"retry_when,omitempty"`
 	Confidence string `yaml:"confidence" json:"confidence,omitempty"`
@@ -374,11 +401,20 @@ func parseYAMLListSection(section string, out any) (bool, error) {
 // Uses writeFactDocument to bypass the read-only guard (these are AIMA-owned files).
 func (w *ExplorerWorkspace) RefreshFactDocuments(input PlanInput) error {
 	now := time.Now().Format("2006-01-02 15:04:05")
+
+	// Close the v0.4 frontier loop (2026-04-16 coverage spec §2): pull
+	// confirmed blockers and do-not-retry entries out of the agent-authored
+	// summary.md so this cycle's available-combos.md reflects them. Without
+	// this, an earlier cycle's "validated-broken" combo keeps reappearing in
+	// Ready and the next PDCA wastes another round retrying it.
+	blockers, denies := w.loadSummaryConstraints()
+
 	docs := map[string]string{
 		"index.md":            w.generateIndex(input, now),
 		"device-profile.md":   w.generateDeviceProfile(input, now),
-		"available-combos.md": w.generateAvailableCombos(input, now),
+		"available-combos.md": w.generateAvailableCombos(input, now, blockers, denies),
 		"knowledge-base.md":   w.generateKnowledgeBase(input, now),
+		"experiment-facts.md": w.generateExperimentFacts(now),
 	}
 	for name, content := range docs {
 		if err := w.writeFactDocument(name, content); err != nil {
@@ -388,11 +424,105 @@ func (w *ExplorerWorkspace) RefreshFactDocuments(input PlanInput) error {
 	return nil
 }
 
+// loadSummaryConstraints reads agent-authored blockers and retry-denies from
+// summary.md. Returns empty slices when summary.md is missing or malformed —
+// the downstream combo generator treats "no constraints" as safe fallback.
+func (w *ExplorerWorkspace) loadSummaryConstraints() ([]ConfirmedBlocker, []RetryDenyEntry) {
+	md, err := w.ReadFile("summary.md")
+	if err != nil {
+		return nil, nil
+	}
+	blockers, _ := parseConfirmedBlockers(md)
+	denies, _ := parseDoNotRetryThisCycle(md)
+	return blockers, denies
+}
+
+// comboBlockedBySummary matches a (model, engine) pair against summary-authored
+// blockers and retry-denies, scoped to the current hardware. Agent MUST use one
+// of the reserved scope keywords: "combo" (model+engine exact), "model"
+// (any engine on that model), or "engine" (any model on that engine). A
+// non-empty `hardware` field on a blocker further constrains the match to that
+// hardware profile — a blocker for `engine: sglang, hardware: nvidia-gb10-arm64`
+// never demotes combos on other profiles. Free-form `scope` text is treated as
+// prose and does NOT match.
+func comboBlockedBySummary(model, engine, hardware string, blockers []ConfirmedBlocker, denies []RetryDenyEntry) (bool, string) {
+	for _, b := range blockers {
+		if confirmedBlockerMatches(b, model, engine, hardware) {
+			reason := strings.TrimSpace(b.Reason)
+			if reason == "" {
+				reason = "confirmed blocker (from summary.md)"
+			}
+			return true, reason
+		}
+	}
+	for _, d := range denies {
+		if retryDenyMatches(d, model, engine) {
+			reason := strings.TrimSpace(d.Reason)
+			if reason == "" {
+				reason = "do not retry this cycle (from summary.md)"
+			}
+			return true, reason
+		}
+	}
+	return false, ""
+}
+
+func confirmedBlockerMatches(b ConfirmedBlocker, model, engine, hardware string) bool {
+	// Hardware filter: if the blocker declares a hardware, the current combo's
+	// profile must match. Empty hardware means "applies to all hardware".
+	if hw := strings.TrimSpace(b.Hardware); hw != "" {
+		if !strings.EqualFold(hw, strings.TrimSpace(hardware)) {
+			return false
+		}
+	}
+	bModel := strings.TrimSpace(b.Model)
+	bEngine := strings.TrimSpace(b.Engine)
+	modelEq := strings.EqualFold(bModel, strings.TrimSpace(model))
+	engineEq := strings.EqualFold(bEngine, strings.TrimSpace(engine))
+	switch strings.ToLower(strings.TrimSpace(b.Scope)) {
+	case "combo":
+		return modelEq && engineEq
+	case "model":
+		return modelEq
+	case "engine":
+		return engineEq
+	}
+	// Unrecognized / empty scope: fall back to exact field match. Prose in
+	// scope (e.g. "sglang on GB10") is ignored — agent must use a reserved
+	// keyword + hardware field to express engine-wide intent.
+	if bModel != "" && bEngine != "" {
+		return modelEq && engineEq
+	}
+	if bModel != "" {
+		return modelEq
+	}
+	if bEngine != "" {
+		return engineEq
+	}
+	return false
+}
+
+func retryDenyMatches(d RetryDenyEntry, model, engine string) bool {
+	modelSet := strings.TrimSpace(d.Model) != ""
+	engineSet := strings.TrimSpace(d.Engine) != ""
+	modelEq := strings.EqualFold(strings.TrimSpace(d.Model), strings.TrimSpace(model))
+	engineEq := strings.EqualFold(strings.TrimSpace(d.Engine), strings.TrimSpace(engine))
+	switch {
+	case modelSet && engineSet:
+		return modelEq && engineEq
+	case modelSet:
+		return modelEq
+	case engineSet:
+		return engineEq
+	}
+	return false
+}
+
 func (w *ExplorerWorkspace) generateIndex(input PlanInput, now string) string {
 	readyCombos, blockedCombos, exploredCombos := comboFactCounts(input)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Explorer Index\n\n_Generated: %s_\n\n", now)
+	fmt.Fprintf(&sb, "# Explorer Index\n\n_Generated: %s · Agent: read-only · AIMA: regenerates each cycle_\n\n", now)
 	fmt.Fprintf(&sb, "This workspace is the Explorer's file-based memory. Read this file first in every phase.\n\n")
 
 	fmt.Fprintf(&sb, "## Mission\n\n")
@@ -405,8 +535,9 @@ func (w *ExplorerWorkspace) generateIndex(input PlanInput, now string) string {
 	fmt.Fprintf(&sb, "2. `available-combos.md`\n")
 	fmt.Fprintf(&sb, "3. `device-profile.md`\n")
 	fmt.Fprintf(&sb, "4. `knowledge-base.md`\n")
-	fmt.Fprintf(&sb, "5. `summary.md`\n")
-	fmt.Fprintf(&sb, "6. `experiments/`\n\n")
+	fmt.Fprintf(&sb, "5. `experiment-facts.md`\n")
+	fmt.Fprintf(&sb, "6. `summary.md`\n")
+	fmt.Fprintf(&sb, "7. `experiments/`\n\n")
 
 	fmt.Fprintf(&sb, "## Source Of Truth\n\n")
 	fmt.Fprintf(&sb, "| Document | Owner | Writable | Purpose |\n")
@@ -415,7 +546,8 @@ func (w *ExplorerWorkspace) generateIndex(input PlanInput, now string) string {
 	fmt.Fprintf(&sb, "| available-combos.md | AIMA | no | Authoritative ready/blocked combo frontier |\n")
 	fmt.Fprintf(&sb, "| device-profile.md | AIMA | no | Hardware, local models, local engines, deployed state |\n")
 	fmt.Fprintf(&sb, "| knowledge-base.md | AIMA | no | History, advisories, catalog capability hints |\n")
-	fmt.Fprintf(&sb, "| plan.md | Agent | yes | Current executable plan for the next Do phase |\n")
+	fmt.Fprintf(&sb, "| experiment-facts.md | AIMA | no | Machine-generated digest of experiment outcomes and benchmark evidence |\n")
+	fmt.Fprintf(&sb, "| plan.md | Agent | yes | Scratch pad for the next executable Do phase; AIMA resets it when no Do phase is pending |\n")
 	fmt.Fprintf(&sb, "| summary.md | Agent | yes | Running memory of findings, bugs, doubts, and strategy |\n")
 	fmt.Fprintf(&sb, "| experiments/*.md | AIMA + Agent Notes | append notes only | Raw experiment outcomes |\n\n")
 
@@ -428,13 +560,16 @@ func (w *ExplorerWorkspace) generateIndex(input PlanInput, now string) string {
 	fmt.Fprintf(&sb, "- Keep the required headings in `plan.md` and `summary.md` so later phases can continue from them.\n\n")
 
 	fmt.Fprintf(&sb, "## Current Fact Snapshot\n\n")
-	fmt.Fprintf(&sb, "| Metric | Value |\n|--------|-------|\n")
-	fmt.Fprintf(&sb, "| Hardware Profile | %s |\n", input.Hardware.Profile)
-	fmt.Fprintf(&sb, "| Local Models | %d |\n", len(input.LocalModels))
-	fmt.Fprintf(&sb, "| Local Engines | %d |\n", len(input.LocalEngines))
-	fmt.Fprintf(&sb, "| Ready Combos | %d |\n", readyCombos)
-	fmt.Fprintf(&sb, "| Blocked Combos | %d |\n", blockedCombos)
-	fmt.Fprintf(&sb, "| Already Explored Combos | %d |\n\n", exploredCombos)
+	fmt.Fprintf(&sb, "_All counts below are for this exact phase; the authoritative rows are in `available-combos.md`. "+
+		"If you see a different Ready/Blocked count anywhere (logs, prior plan.md, explorer.status JSON), this snapshot wins._\n\n")
+	fmt.Fprintf(&sb, "| Metric | Value | Meaning |\n|--------|-------|---------|\n")
+	fmt.Fprintf(&sb, "| Hardware Profile | %s | current device |\n", input.Hardware.Profile)
+	fmt.Fprintf(&sb, "| Local Models | %d | models present on disk |\n", len(input.LocalModels))
+	fmt.Fprintf(&sb, "| Local Engines | %d | engines installed locally |\n", len(input.LocalEngines))
+	fmt.Fprintf(&sb, "| Ready Combos | %d | model×engine pairs eligible for new tasks |\n", readyCombos)
+	fmt.Fprintf(&sb, "| Blocked Combos | %d | pairs known to fail (format/type/VRAM/prior error) |\n", blockedCombos)
+	fmt.Fprintf(&sb, "| Already Explored Combos | %d | pairs with successful or failed history |\n", exploredCombos)
+	fmt.Fprintf(&sb, "| Pending Work Items | %d | durable obligations on ready combos |\n\n", len(input.PendingWork))
 
 	fmt.Fprintf(&sb, "## Required Working Doc Structure\n\n")
 	fmt.Fprintf(&sb, "`plan.md` should keep these sections:\n")
@@ -466,7 +601,7 @@ func (w *ExplorerWorkspace) generateDeviceProfile(input PlanInput, now string) s
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Device Profile\n\n_Generated: %s_\n\n", now)
+	fmt.Fprintf(&sb, "# Device Profile\n\n_Generated: %s · Agent: read-only · AIMA: regenerates each cycle_\n\n", now)
 
 	// Hardware section
 	fmt.Fprintf(&sb, "## Hardware\n\n")
@@ -479,8 +614,8 @@ func (w *ExplorerWorkspace) generateDeviceProfile(input PlanInput, now string) s
 
 	// Models table
 	fmt.Fprintf(&sb, "## Local Models\n\n")
-	fmt.Fprintf(&sb, "| Name | Format | Type | Size (GiB) | Fits VRAM |\n")
-	fmt.Fprintf(&sb, "|------|--------|------|------------|----------|\n")
+	fmt.Fprintf(&sb, "| Name | Format | Type | Size (GiB) | Max Context | Fits VRAM |\n")
+	fmt.Fprintf(&sb, "|------|--------|------|------------|-------------|----------|\n")
 	for _, m := range input.LocalModels {
 		sizeGiB := float64(m.SizeBytes) / (1024 * 1024 * 1024)
 		fits := "✅"
@@ -489,7 +624,11 @@ func (w *ExplorerWorkspace) generateDeviceProfile(input PlanInput, now string) s
 			fits = "❌"
 			reason = " (VRAM overflow)"
 		}
-		fmt.Fprintf(&sb, "| %s | %s | %s | %.2f | %s%s |\n", m.Name, m.Format, m.Type, sizeGiB, fits, reason)
+		ctxStr := "—"
+		if m.MaxContextLen > 0 {
+			ctxStr = fmt.Sprintf("%dK", m.MaxContextLen/1024)
+		}
+		fmt.Fprintf(&sb, "| %s | %s | %s | %.2f | %s | %s%s |\n", m.Name, m.Format, m.Type, sizeGiB, ctxStr, fits, reason)
 	}
 	fmt.Fprintf(&sb, "\n")
 
@@ -512,8 +651,11 @@ func (w *ExplorerWorkspace) generateDeviceProfile(input PlanInput, now string) s
 	}
 	fmt.Fprintf(&sb, "\n")
 
-	// Active deployments
-	fmt.Fprintf(&sb, "## Active Deployments\n\n")
+	// Active deployments — live snapshot captured at the start of this phase.
+	fmt.Fprintf(&sb, "## Active Deployments (Live Snapshot)\n\n")
+	fmt.Fprintf(&sb, "_This table is a live `deploy list` snapshot taken just before the current phase. "+
+		"If a deploy appears here while this cycle's experiments were running, its GPU/VRAM/port resources "+
+		"were still held during those experiments — consider handoff effects when diagnosing failures._\n\n")
 	if len(input.ActiveDeploys) == 0 {
 		fmt.Fprintf(&sb, "_None_\n")
 	} else {
@@ -527,10 +669,12 @@ func (w *ExplorerWorkspace) generateDeviceProfile(input PlanInput, now string) s
 	return sb.String()
 }
 
-// generateAvailableCombos produces available-combos.md classifying all model×engine pairs.
-func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string) string {
+// generateAvailableCombos produces available-combos.md classifying all
+// model×engine pairs, demoting any pair covered by summary.md blockers or
+// retry-denies from Ready into Blocked so the v0.4 frontier loop converges.
+func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string, blockers []ConfirmedBlocker, denies []RetryDenyEntry) string {
 	if len(input.ComboFacts) > 0 {
-		return w.generateResolvedAvailableCombos(input, now)
+		return w.generateResolvedAvailableCombos(input, now, blockers, denies)
 	}
 
 	hw := input.Hardware
@@ -539,11 +683,7 @@ func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string)
 		totalVRAM = hw.VRAMMiB
 	}
 
-	// Build skip set for quick lookup
-	skipSet := make(map[string]string) // "model|engine" → reason
-	for _, s := range input.SkipCombos {
-		skipSet[s.Model+"|"+s.Engine] = s.Reason
-	}
+	skipSet, modelSkipSet := splitSkipCombos(input.SkipCombos)
 
 	type comboRow struct {
 		model, engine, reason string
@@ -558,7 +698,7 @@ func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string)
 			var incompat string
 			if !engineFormatCompatible(e.Type, m.Format) {
 				incompat = fmt.Sprintf("format mismatch (%s vs %s)", e.Type, m.Format)
-			} else if !engineSupportsModelType(e.Type, m.Type) {
+			} else if !engineSupportsModelTypeFromList(e.SupportedModelTypes, m.Type) {
 				incompat = fmt.Sprintf("type mismatch (%s does not support %s)", e.Type, m.Type)
 			} else if !modelFitsVRAM(m.Name, input.LocalModels, totalVRAM) {
 				incompat = "VRAM overflow"
@@ -569,8 +709,17 @@ func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string)
 				continue
 			}
 
+			if reason, ok := modelSkipSet[m.Name]; ok {
+				explored = append(explored, comboRow{m.Name, e.Type, reason})
+				continue
+			}
 			if reason, ok := skipSet[key]; ok {
 				explored = append(explored, comboRow{m.Name, e.Type, reason})
+				continue
+			}
+
+			if blocked, reason := comboBlockedBySummary(m.Name, e.Type, input.Hardware.Profile, blockers, denies); blocked {
+				incompatible = append(incompatible, comboRow{m.Name, e.Type, reason})
 				continue
 			}
 
@@ -579,7 +728,7 @@ func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string)
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Available Combos\n\n_Generated: %s_\n\n", now)
+	fmt.Fprintf(&sb, "# Available Combos\n\n_Generated: %s · Agent: read-only · AIMA: regenerates each cycle_\n\n", now)
 	fmt.Fprintf(&sb, "_Resolver-backed combo facts unavailable; this is a coarse compatibility fallback._\n\n")
 
 	fmt.Fprintf(&sb, "## Ready Combos\n\n")
@@ -618,21 +767,33 @@ func (w *ExplorerWorkspace) generateAvailableCombos(input PlanInput, now string)
 	return sb.String()
 }
 
-func (w *ExplorerWorkspace) generateResolvedAvailableCombos(input PlanInput, now string) string {
-	skipSet := make(map[string]string, len(input.SkipCombos))
-	for _, s := range input.SkipCombos {
-		skipSet[s.Model+"|"+s.Engine] = s.Reason
-	}
+func (w *ExplorerWorkspace) generateResolvedAvailableCombos(input PlanInput, now string, blockers []ConfirmedBlocker, denies []RetryDenyEntry) string {
+	skipSet, modelSkipSet := splitSkipCombos(input.SkipCombos)
+	pendingReasons := pendingWorkSummaryByCombo(input.PendingWork)
 
 	var ready, explored, blocked []ComboFact
 	for _, fact := range input.ComboFacts {
 		key := fact.Model + "|" + fact.Engine
+		if reason, ok := modelSkipSet[fact.Model]; ok {
+			fact.Reason = reason
+			explored = append(explored, fact)
+			continue
+		}
 		if reason, ok := skipSet[key]; ok {
 			fact.Reason = reason
 			explored = append(explored, fact)
 			continue
 		}
 		if fact.Status == "ready" {
+			if blockedBySummary, reason := comboBlockedBySummary(fact.Model, fact.Engine, input.Hardware.Profile, blockers, denies); blockedBySummary {
+				fact.Status = "blocked"
+				fact.Reason = reason
+				blocked = append(blocked, fact)
+				continue
+			}
+			if reason := strings.TrimSpace(pendingReasons[key]); reason != "" {
+				fact.Reason = reason
+			}
 			ready = append(ready, fact)
 			continue
 		}
@@ -640,8 +801,9 @@ func (w *ExplorerWorkspace) generateResolvedAvailableCombos(input PlanInput, now
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Available Combos\n\n_Generated: %s_\n\n", now)
-	fmt.Fprintf(&sb, "This document is authoritative for new scheduling. Only rows under `## Ready Combos` may appear in new tasks.\n\n")
+	fmt.Fprintf(&sb, "# Available Combos\n\n_Generated: %s · Agent: read-only · AIMA: regenerates each cycle_\n\n", now)
+	fmt.Fprintf(&sb, "This document is authoritative for new scheduling. Only rows under `## Ready Combos` may appear in new tasks.\n")
+	fmt.Fprintf(&sb, "This document is refreshed before each PDCA phase; plan.md snapshots may refer to an earlier state.\n\n")
 
 	fmt.Fprintf(&sb, "## Ready Combos\n\n")
 	writeComboTable(&sb, ready, "ready")
@@ -658,7 +820,7 @@ func (w *ExplorerWorkspace) generateResolvedAvailableCombos(input PlanInput, now
 // generateKnowledgeBase produces knowledge-base.md with advisories, history, and engine catalog capabilities.
 func (w *ExplorerWorkspace) generateKnowledgeBase(input PlanInput, now string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Knowledge Base\n\n_Generated: %s_\n\n", now)
+	fmt.Fprintf(&sb, "# Knowledge Base\n\n_Generated: %s · Agent: read-only · AIMA: regenerates each cycle_\n\n", now)
 
 	// Advisories
 	fmt.Fprintf(&sb, "## Advisories\n\n")
@@ -686,6 +848,44 @@ func (w *ExplorerWorkspace) generateKnowledgeBase(input PlanInput, now string) s
 				h.ModelID, h.EngineID, h.Kind, h.Status, h.Goal)
 		}
 		fmt.Fprintf(&sb, "\n")
+		fmt.Fprintf(&sb, "_Showing the last %d exploration events only. "+
+			"Older benchmarks and configurations live in the SQLite archive "+
+			"(`configurations` / `benchmark_results` tables), queryable via "+
+			"the `query` tool (`search`, `compare`, `aggregate`)._\n\n", len(input.History))
+	}
+
+	// Frontier coverage guidance
+	fmt.Fprintf(&sb, "## Frontier Coverage\n\n")
+	coverageRows := readyCoverageRows(input)
+	if len(coverageRows) == 0 {
+		fmt.Fprintf(&sb, "_No ready frontier coverage data_\n\n")
+	} else {
+		fmt.Fprintf(&sb, "| Model | Ready Engines | In Recent History | Guidance |\n")
+		fmt.Fprintf(&sb, "|-------|---------------|-------------------|----------|\n")
+		for _, row := range coverageRows {
+			recent := "no"
+			guidance := "prefer for new coverage"
+			if row.Recent {
+				recent = "yes"
+				guidance = "only pivot again if this narrows a specific blocker"
+			}
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n",
+				row.Model, strings.Join(row.Engines, ", "), recent, guidance)
+		}
+		fmt.Fprintf(&sb, "\n")
+	}
+
+	fmt.Fprintf(&sb, "## Pending Work\n\n")
+	if len(input.PendingWork) == 0 {
+		fmt.Fprintf(&sb, "_No pending work_\n\n")
+	} else {
+		fmt.Fprintf(&sb, "| Model | Engine | Work Kind | Reason | Suggested Action |\n")
+		fmt.Fprintf(&sb, "|-------|--------|-----------|--------|------------------|\n")
+		for _, work := range input.PendingWork {
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s |\n",
+				work.Model, work.Engine, work.Kind, work.Reason, pendingWorkActionSummary(work))
+		}
+		fmt.Fprintf(&sb, "\n")
 	}
 
 	// Catalog Engine Capabilities
@@ -705,15 +905,320 @@ func (w *ExplorerWorkspace) generateKnowledgeBase(input PlanInput, now string) s
 	return sb.String()
 }
 
-func comboFactCounts(input PlanInput) (ready, blocked, explored int) {
-	skipSet := make(map[string]struct{}, len(input.SkipCombos))
-	for _, s := range input.SkipCombos {
-		skipSet[s.Model+"|"+s.Engine] = struct{}{}
+type ExperimentRecord struct {
+	Path   string
+	Task   TaskSpec
+	Result ExperimentResult
+}
+
+func (w *ExplorerWorkspace) LoadExperimentRecords() ([]ExperimentRecord, error) {
+	pattern, err := w.safePath("experiments/*.md")
+	if err != nil {
+		return nil, err
 	}
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("glob experiments: %w", err)
+	}
+	records := make([]ExperimentRecord, 0, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read experiment %s: %w", path, err)
+		}
+		task, result := recoverExperimentRecordMarkdown(string(data))
+		rel, _ := filepath.Rel(w.root, path)
+		records = append(records, ExperimentRecord{
+			Path:   filepath.ToSlash(rel),
+			Task:   task,
+			Result: result,
+		})
+	}
+	return records, nil
+}
+
+func recoverExperimentRecordMarkdown(md string) (TaskSpec, ExperimentResult) {
+	task, taskErr := parseExperimentTaskMarkdown(md)
+	if taskErr != nil {
+		return TaskSpec{}, ExperimentResult{
+			Status: "invalid_record",
+			Error:  fmt.Sprintf("parse task yaml: %v", taskErr),
+		}
+	}
+	result, resultErr := parseExperimentResultMarkdown(md)
+	if resultErr != nil {
+		result = ExperimentResult{
+			Status: "invalid_record",
+			Error:  fmt.Sprintf("parse result yaml: %v", resultErr),
+		}
+	}
+	return task, result
+}
+
+func parseExperimentRecordMarkdown(md string) (TaskSpec, ExperimentResult, error) {
+	task, err := parseExperimentTaskMarkdown(md)
+	if err != nil {
+		return TaskSpec{}, ExperimentResult{}, err
+	}
+	result, err := parseExperimentResultMarkdown(md)
+	if err != nil {
+		return task, ExperimentResult{}, err
+	}
+	return task, result, nil
+}
+
+func parseExperimentTaskMarkdown(md string) (TaskSpec, error) {
+	var task TaskSpec
+	taskSection := extractSection(md, "## Task")
+	taskBlock := yamlBlockRe.FindStringSubmatch(taskSection)
+	if len(taskBlock) < 2 {
+		return task, nil
+	}
+	if err := yaml.Unmarshal([]byte(taskBlock[1]), &task); err != nil {
+		return TaskSpec{}, fmt.Errorf("parse task yaml: %w", err)
+	}
+	return task, nil
+}
+
+func parseExperimentResultMarkdown(md string) (ExperimentResult, error) {
+	var result ExperimentResult
+	resultSection := extractSection(md, "## Result")
+	resultBlock := yamlBlockRe.FindStringSubmatch(resultSection)
+	if len(resultBlock) < 2 {
+		return result, fmt.Errorf("missing result yaml block")
+	}
+	if err := yaml.Unmarshal([]byte(resultBlock[1]), &result); err != nil {
+		return ExperimentResult{}, fmt.Errorf("parse result yaml: %w", err)
+	}
+	return result, nil
+}
+
+func (w *ExplorerWorkspace) generateExperimentFacts(now string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "# Experiment Facts\n\n_Generated: %s · Agent: read-only · AIMA: regenerates each cycle_\n\n", now)
+	records, err := w.LoadExperimentRecords()
+	if err != nil {
+		fmt.Fprintf(&sb, "_Unavailable: %v_\n", err)
+		return sb.String()
+	}
+	if len(records) == 0 {
+		fmt.Fprintf(&sb, "_No experiments yet._\n")
+		return sb.String()
+	}
+	fmt.Fprintf(&sb, "| Experiment | Model | Engine | Status | Signal | Benchmarks | Best Rate | Success Cells | Error |\n")
+	fmt.Fprintf(&sb, "|------------|-------|--------|--------|--------|------------|-----------|---------------|-------|\n")
+	for _, rec := range records {
+		bestRate := 0.0
+		for _, bench := range rec.Result.Benchmarks {
+			if bench.ThroughputTPS > bestRate {
+				bestRate = bench.ThroughputTPS
+			}
+		}
+		errText := strings.TrimSpace(rec.Result.Error)
+		if errText == "" {
+			errText = "—"
+		}
+		fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %d | %s | %d/%d | %s |\n",
+			filepath.Base(rec.Path), rec.Task.Model, rec.Task.Engine, rec.Result.Status,
+			experimentSignal(rec), len(rec.Result.Benchmarks), formatBestRate(bestRate), rec.Result.SuccessCells, rec.Result.MatrixCells, errText)
+	}
+	fmt.Fprintf(&sb, "\n## Hard Facts\n\n")
+	fmt.Fprintf(&sb, "- Treat this file as the machine-generated digest of experiments/*.md.\n")
+	fmt.Fprintf(&sb, "- If summary.md conflicts with this file, this file wins.\n")
+	fmt.Fprintf(&sb, "- `Signal=benchmark_ok` means the combo completed with usable benchmark evidence.\n")
+	fmt.Fprintf(&sb, "- `Signal=inference_no_output` means deploy reached benchmark execution but produced no usable outputs.\n")
+	fmt.Fprintf(&sb, "- A recommendation without a matching successful experiment in this file must stay provisional.\n")
+	return sb.String()
+}
+
+func experimentSignal(rec ExperimentRecord) string {
+	status := strings.ToLower(strings.TrimSpace(rec.Result.Status))
+	switch status {
+	case "invalid_record":
+		return "invalid_record"
+	case "completed":
+		if rec.Result.SuccessCells > 0 || rec.Result.BenchmarkID != "" || rec.Result.ConfigID != "" {
+			return "benchmark_ok"
+		}
+	}
+	if len(rec.Result.Benchmarks) > 0 && rec.Result.SuccessCells == 0 {
+		return "inference_no_output"
+	}
+	errText := strings.ToLower(strings.TrimSpace(rec.Result.Error))
+	switch {
+	case strings.Contains(errText, "pre-flight deploy"),
+		strings.Contains(errText, "wait for deployed"),
+		strings.Contains(errText, "deploy apply"),
+		strings.Contains(errText, "stalled at"):
+		return "deploy_failed"
+	case status != "":
+		return status
+	default:
+		return "unknown"
+	}
+}
+
+func formatBestRate(rate float64) string {
+	switch {
+	case rate <= 0:
+		return "0.0"
+	case rate < 0.1:
+		return fmt.Sprintf("%.3f", rate)
+	case rate < 1:
+		return fmt.Sprintf("%.2f", rate)
+	default:
+		return fmt.Sprintf("%.1f", rate)
+	}
+}
+
+type coverageRow struct {
+	Model   string
+	Engines []string
+	Recent  bool
+}
+
+func pendingWorkSummaryByCombo(pending []PendingWork) map[string]string {
+	if len(pending) == 0 {
+		return nil
+	}
+	parts := make(map[string][]string)
+	for _, work := range pending {
+		key := work.Model + "|" + work.Engine
+		label := strings.TrimSpace(work.Kind)
+		if key == "|" || label == "" {
+			continue
+		}
+		if !containsString(parts[key], label) {
+			parts[key] = append(parts[key], label)
+		}
+	}
+	summary := make(map[string]string, len(parts))
+	for key, kinds := range parts {
+		summary[key] = "pending: " + strings.Join(kinds, ", ")
+	}
+	return summary
+}
+
+func pendingWorkActionSummary(work PendingWork) string {
+	switch work.Kind {
+	case "tune":
+		if len(work.SearchSpace) == 0 {
+			return "run tune with default parameter search"
+		}
+		keys := make([]string, 0, len(work.SearchSpace))
+		for key := range work.SearchSpace {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			parts = append(parts, fmt.Sprintf("%s=%v", key, work.SearchSpace[key]))
+		}
+		return strings.Join(parts, "; ")
+	default:
+		if len(work.Benchmark.InputTokens) == 0 {
+			return "run validate with default benchmark profile"
+		}
+		return fmt.Sprintf("benchmark c=%v input=%v max=%v", work.Benchmark.Concurrency, work.Benchmark.InputTokens, work.Benchmark.MaxTokens)
+	}
+}
+
+func splitSkipCombos(skipCombos []SkipCombo) (map[string]string, map[string]string) {
+	exact := make(map[string]string, len(skipCombos))
+	models := make(map[string]string)
+	for _, skip := range skipCombos {
+		model := strings.TrimSpace(skip.Model)
+		if model == "" {
+			continue
+		}
+		reason := strings.TrimSpace(skip.Reason)
+		if strings.TrimSpace(skip.Engine) == "" {
+			if _, exists := models[model]; !exists {
+				models[model] = reason
+			}
+			continue
+		}
+		key := model + "|" + strings.TrimSpace(skip.Engine)
+		if _, exists := exact[key]; !exists {
+			exact[key] = reason
+		}
+	}
+	return exact, models
+}
+
+func readyCoverageRows(input PlanInput) []coverageRow {
+	if len(input.ComboFacts) == 0 {
+		return nil
+	}
+	skipSet, modelSkipSet := splitSkipCombos(input.SkipCombos)
+	recentModels := make(map[string]bool, len(input.History))
+	for _, h := range input.History {
+		model := strings.TrimSpace(h.ModelID)
+		if model != "" {
+			recentModels[model] = true
+		}
+	}
+	engineSetByModel := make(map[string]map[string]struct{})
+	for _, fact := range input.ComboFacts {
+		if fact.Status != "ready" {
+			continue
+		}
+		if _, skippedModel := modelSkipSet[fact.Model]; skippedModel {
+			continue
+		}
+		key := fact.Model + "|" + fact.Engine
+		if _, skipped := skipSet[key]; skipped {
+			continue
+		}
+		if _, ok := engineSetByModel[fact.Model]; !ok {
+			engineSetByModel[fact.Model] = make(map[string]struct{})
+		}
+		engineSetByModel[fact.Model][fact.Engine] = struct{}{}
+	}
+	rows := make([]coverageRow, 0, len(engineSetByModel))
+	for model, engines := range engineSetByModel {
+		engineList := make([]string, 0, len(engines))
+		for engine := range engines {
+			engineList = append(engineList, engine)
+		}
+		sort.Strings(engineList)
+		rows = append(rows, coverageRow{
+			Model:   model,
+			Engines: engineList,
+			Recent:  recentModels[model],
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Recent != rows[j].Recent {
+			return !rows[i].Recent
+		}
+		if len(rows[i].Engines) != len(rows[j].Engines) {
+			return len(rows[i].Engines) > len(rows[j].Engines)
+		}
+		return strings.ToLower(rows[i].Model) < strings.ToLower(rows[j].Model)
+	})
+	return rows
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func comboFactCounts(input PlanInput) (ready, blocked, explored int) {
+	skipSet, modelSkipSet := splitSkipCombos(input.SkipCombos)
 	if len(input.ComboFacts) == 0 {
 		return 0, 0, len(input.SkipCombos)
 	}
 	for _, fact := range input.ComboFacts {
+		if _, ok := modelSkipSet[fact.Model]; ok {
+			explored++
+			continue
+		}
 		if _, ok := skipSet[fact.Model+"|"+fact.Engine]; ok {
 			explored++
 			continue
@@ -762,14 +1267,49 @@ func writeComboTable(sb *strings.Builder, facts []ComboFact, mode string) {
 func defaultPlanTemplate() string {
 	return "# Exploration Plan\n\n" +
 		"## Objective\n\n" +
-		"Summarize the next most valuable fact-grounded experiments for this device.\n\n" +
+		"Draft only the next executable Do-phase tasks for this device.\n\n" +
 		"## Fact Snapshot\n\n" +
-		"- Fill after reading index.md and available-combos.md.\n\n" +
+		"- `plan.md` is scratch space for the next Do phase, not a history log.\n" +
+		"- Fill after reading index.md, available-combos.md, and knowledge-base.md frontier coverage + Pending Work.\n\n" +
 		"## Task Board\n\n" +
 		"- [ ] Read index.md\n" +
 		"- [ ] Read available-combos.md\n" +
+		"- [ ] Read knowledge-base.md frontier coverage\n" +
+		"- [ ] Read knowledge-base.md Pending Work\n" +
 		"- [ ] Read summary.md blockers and evidence\n" +
+		"- [ ] Give at least one slot to a ready model not seen in recent history when such models exist\n" +
 		"- [ ] Write only executable tasks from Ready Combos not on Do Not Retry This Cycle\n\n" +
+		"## Tasks\n" +
+		"```yaml\n[]\n```\n"
+}
+
+func closedPlanTemplate(status string, metrics *PlanMetrics) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "idle"
+	}
+
+	var factLines []string
+	factLines = append(factLines,
+		fmt.Sprintf("- Explorer state: `%s`", status),
+		"- No executable Do phase is currently pending.",
+		"- `plan.md` is scratch space for the next Do phase; use `summary.md` and `experiments/*.md` for completed work.",
+	)
+	if metrics != nil {
+		factLines = append(factLines,
+			fmt.Sprintf("- Last run metrics: total=%d completed=%d failed=%d skipped=%d", metrics.TotalTasks, metrics.Completed, metrics.Failed, metrics.Skipped),
+		)
+	}
+
+	return "# Exploration Plan\n\n" +
+		"## Objective\n\n" +
+		"No pending executable plan. AIMA has closed the previous cycle.\n\n" +
+		"## Fact Snapshot\n\n" +
+		strings.Join(factLines, "\n") + "\n\n" +
+		"## Task Board\n\n" +
+		"- [x] No pending executable tasks\n" +
+		"- [x] See summary.md for conclusions\n" +
+		"- [x] See experiments/*.md for raw outcomes\n\n" +
 		"## Tasks\n" +
 		"```yaml\n[]\n```\n"
 }
@@ -794,6 +1334,37 @@ func defaultSummaryTemplate() string {
 		"Start from Ready Combos only. Treat Confirmed Blockers and Do Not Retry This Cycle as hard constraints.\n\n" +
 		"## Next Cycle Candidates\n\n" +
 		"_No candidates yet._\n"
+}
+
+func normalizeSummaryMarkdown(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return defaultSummaryTemplate()
+	}
+	required := []struct {
+		heading string
+		body    string
+	}{
+		{"## Key Findings", "_No findings yet._"},
+		{"## Bugs And Failures", "_No bugs recorded yet._"},
+		{"## Confirmed Blockers", "```yaml\n[]\n```"},
+		{"## Do Not Retry This Cycle", "```yaml\n[]\n```"},
+		{"## Evidence Ledger", "```yaml\n[]\n```"},
+		{"## Design Doubts", "_No design doubts recorded yet._"},
+		{"## Recommended Configurations", "```yaml\n[]\n```"},
+		{"## Current Strategy", "Start from Ready Combos only. Treat Confirmed Blockers and Do Not Retry This Cycle as hard constraints."},
+		{"## Next Cycle Candidates", "_No candidates yet._"},
+	}
+	var sb strings.Builder
+	sb.WriteString(strings.TrimRight(trimmed, "\n"))
+	for _, section := range required {
+		if strings.Contains(trimmed, section.heading) {
+			continue
+		}
+		fmt.Fprintf(&sb, "\n\n%s\n\n%s", section.heading, section.body)
+	}
+	sb.WriteString("\n")
+	return sb.String()
 }
 
 // ExperimentResult records the outcome of a single experiment task.
@@ -821,7 +1392,10 @@ type BenchmarkEntry struct {
 	InputTokens   int            `yaml:"input_tokens"`
 	MaxTokens     int            `yaml:"max_tokens"`
 	ThroughputTPS float64        `yaml:"throughput_tps,omitempty"`
+	LatencyP50Ms  float64        `yaml:"latency_p50_ms,omitempty"`
+	TTFTP50Ms     float64        `yaml:"ttft_p50_ms,omitempty"`
 	TTFTP95Ms     float64        `yaml:"ttft_p95_ms,omitempty"`
+	TPOTP50Ms     float64        `yaml:"tpot_p50_ms,omitempty"`
 	TPOTP95Ms     float64        `yaml:"tpot_p95_ms,omitempty"`
 	BenchmarkID   string         `yaml:"benchmark_id,omitempty"`
 	ConfigID      string         `yaml:"config_id,omitempty"`
@@ -835,6 +1409,10 @@ type BenchmarkEntry struct {
 // Uses writeFactDocument to bypass the read-only guard (experiments/ is AIMA-owned).
 // Returns the relative path written.
 func (w *ExplorerWorkspace) WriteExperimentResult(index int, task TaskSpec, result ExperimentResult) (string, error) {
+	ordinal, err := w.allocateExperimentOrdinal(index)
+	if err != nil {
+		return "", err
+	}
 	taskYAML, err := yaml.Marshal(task)
 	if err != nil {
 		return "", fmt.Errorf("marshal task: %w", err)
@@ -845,7 +1423,7 @@ func (w *ExplorerWorkspace) WriteExperimentResult(index int, task TaskSpec, resu
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Experiment %03d: %s / %s\n\n", index, task.Model, task.Engine)
+	fmt.Fprintf(&sb, "# Experiment %03d: %s / %s\n\n", ordinal, task.Model, task.Engine)
 
 	fmt.Fprintf(&sb, "## Task\n\n```yaml\n%s```\n\n", string(taskYAML))
 	fmt.Fprintf(&sb, "## Result\n\n```yaml\n%s```\n\n", string(resultYAML))
@@ -855,12 +1433,14 @@ func (w *ExplorerWorkspace) WriteExperimentResult(index int, task TaskSpec, resu
 	if len(result.Benchmarks) == 0 {
 		fmt.Fprintf(&sb, "_No benchmark data_\n\n")
 	} else {
-		fmt.Fprintf(&sb, "| Profile | Concurrency | Input Tokens | Max Tokens | Throughput (TPS) | TTFT P95 (ms) | TPOT P95 (ms) | Status |\n")
+		fmt.Fprintf(&sb, "| Profile | Concurrency | Input Tokens | Max Tokens | Throughput | TTFT P95 (ms) | TPOT P95 (ms) | Status |\n")
 		fmt.Fprintf(&sb, "|---------|-------------|--------------|------------|------------------|---------------|---------------|--------|\n")
 		for _, b := range result.Benchmarks {
 			status := "ok"
 			if strings.TrimSpace(b.Error) != "" {
 				status = b.Error
+			} else if b.ThroughputTPS == 0 && b.TTFTP95Ms == 0 {
+				status = "no-output"
 			}
 			profile := "-"
 			if strings.TrimSpace(b.Profile) != "" {
@@ -875,11 +1455,55 @@ func (w *ExplorerWorkspace) WriteExperimentResult(index int, task TaskSpec, resu
 
 	fmt.Fprintf(&sb, "## Agent Notes\n\n_To be filled by agent after analysis._\n")
 
-	rel := fmt.Sprintf("experiments/%03d-%s-%s.md", index, task.Model, task.Engine)
+	rel := fmt.Sprintf("experiments/%03d-%s-%s.md", ordinal, task.Model, task.Engine)
 	if err := w.writeFactDocument(rel, sb.String()); err != nil {
 		return "", err
 	}
 	return rel, nil
+}
+
+func (w *ExplorerWorkspace) allocateExperimentOrdinal(preferred int) (int, error) {
+	if preferred <= 0 {
+		preferred = 1
+	}
+	pattern, err := w.safePath("experiments/*.md")
+	if err != nil {
+		return 0, err
+	}
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return 0, fmt.Errorf("glob experiments: %w", err)
+	}
+	maxOrdinal := 0
+	for _, path := range paths {
+		name := filepath.Base(path)
+		ordinal := leadingExperimentOrdinal(name)
+		if ordinal > maxOrdinal {
+			maxOrdinal = ordinal
+		}
+	}
+	if maxOrdinal >= preferred {
+		return maxOrdinal + 1, nil
+	}
+	return preferred, nil
+}
+
+func leadingExperimentOrdinal(name string) int {
+	if name == "" {
+		return 0
+	}
+	end := 0
+	for end < len(name) && name[end] >= '0' && name[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(name[:end])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // ParsePlan reads plan.md and returns the task list.
@@ -902,6 +1526,97 @@ func (w *ExplorerWorkspace) ExtractRecommendations() ([]RecommendedConfig, error
 		return nil, fmt.Errorf("read summary.md: %w", err)
 	}
 	return parseRecommendedConfigs(md)
+}
+
+// ForceDowngradeRecommendations rewrites the YAML block under
+// "## Recommended Configurations" in summary.md so that every config whose
+// (model, engine) key appears in downgrades has `confidence: provisional`.
+// Also appends a note to each downgraded entry recording why, and a trailing
+// "Validation Guard" section listing the reasons. Returns the list of keys that
+// were actually rewritten (may be a subset of downgrades if no matching entry
+// is present in the current summary).
+//
+// downgrades maps "<model>|<engine>" (lower-cased, trimmed) → reason string.
+func (w *ExplorerWorkspace) ForceDowngradeRecommendations(downgrades map[string]string) ([]string, error) {
+	if len(downgrades) == 0 {
+		return nil, nil
+	}
+	md, err := w.ReadFile("summary.md")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read summary.md: %w", err)
+	}
+
+	section := extractSection(md, "## Recommended Configurations")
+	if section == "" {
+		return nil, nil
+	}
+	loc := yamlBlockRe.FindStringSubmatchIndex(section)
+	if len(loc) < 4 {
+		return nil, nil
+	}
+	yamlBody := section[loc[2]:loc[3]]
+
+	var configs []RecommendedConfig
+	if err := yaml.Unmarshal([]byte(yamlBody), &configs); err != nil {
+		return nil, fmt.Errorf("parse recommendations yaml: %w", err)
+	}
+
+	applied := make([]string, 0, len(downgrades))
+	appliedReasons := make(map[string]string, len(downgrades))
+	for i := range configs {
+		key := strings.ToLower(strings.TrimSpace(configs[i].Model)) + "|" + strings.ToLower(strings.TrimSpace(configs[i].Engine))
+		reason, ok := downgrades[key]
+		if !ok {
+			continue
+		}
+		configs[i].Confidence = "provisional"
+		notePrefix := "validation_guard: downgraded to provisional (" + reason + ")"
+		if strings.TrimSpace(configs[i].Note) == "" {
+			configs[i].Note = notePrefix
+		} else if !strings.Contains(configs[i].Note, "validation_guard:") {
+			configs[i].Note = notePrefix + "; " + configs[i].Note
+		}
+		applied = append(applied, key)
+		appliedReasons[key] = reason
+	}
+	if len(applied) == 0 {
+		return nil, nil
+	}
+
+	newYAML, err := yaml.Marshal(configs)
+	if err != nil {
+		return nil, fmt.Errorf("marshal downgraded recommendations: %w", err)
+	}
+
+	// Splice the new yaml body back into summary.md at the same position.
+	sectionStart := strings.Index(md, "## Recommended Configurations")
+	if sectionStart < 0 {
+		return nil, nil
+	}
+	absStart := sectionStart + len("## Recommended Configurations") + loc[2]
+	absEnd := sectionStart + len("## Recommended Configurations") + loc[3]
+	updated := md[:absStart] + string(newYAML) + md[absEnd:]
+
+	// Append a trailing guard note if not already present for these keys this cycle.
+	guardHeading := "## Validation Guard"
+	if !strings.Contains(updated, guardHeading) {
+		var sb strings.Builder
+		sb.WriteString("\n\n")
+		sb.WriteString(guardHeading)
+		sb.WriteString("\n\nAIMA downgraded the following recommendations to `provisional` because evidence was missing:\n\n")
+		for _, k := range applied {
+			sb.WriteString("- " + k + ": " + appliedReasons[k] + "\n")
+		}
+		updated += sb.String()
+	}
+
+	if err := w.writeFactDocument("summary.md", updated); err != nil {
+		return nil, err
+	}
+	return applied, nil
 }
 
 // extractSection returns the content from a markdown heading until the next

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/model"
+	"github.com/jguan/aima/internal/onboarding"
 	"github.com/jguan/aima/internal/openclaw"
 	"github.com/jguan/aima/internal/proxy"
 	"github.com/jguan/aima/internal/runtime"
@@ -35,6 +37,44 @@ func main() {
 		fmt.Fprintf(os.Stderr, "aima: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func warmupInferenceReady(ctx context.Context, address, model string, cfg knowledge.WarmupConfig) bool {
+	if !cfg.Enabled {
+		return true
+	}
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return false
+	}
+	if !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") {
+		address = "http://" + address
+	}
+	url := strings.TrimRight(address, "/") + "/v1/chat/completions"
+	prompt := strings.TrimSpace(cfg.Prompt)
+	if prompt == "" {
+		prompt = "Hello"
+	}
+	maxTokens := cfg.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 1
+	}
+	timeout := time.Duration(cfg.TimeoutS) * time.Second
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}],"max_tokens":%d}`, model, prompt, maxTokens)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func run() error {
@@ -212,6 +252,7 @@ func run() error {
 	}
 
 	deps.SupportAskForHelp = supportSvc.AskForHelpJSON
+	wireDeviceDeps(deps, supportSvc)
 	// 9e. Fleet management: registry + client + REST routes + MCP tools
 	fleetRegistry := fleet.NewRegistry(proxy.DefaultPort)
 	fleetClient := fleet.NewClient(os.Getenv("AIMA_API_KEY"))
@@ -344,6 +385,52 @@ func run() error {
 			json.NewEncoder(w).Encode(results)
 		})
 
+		// Onboarding wizard API endpoints
+		mux.HandleFunc("GET /ui/api/onboarding-status", func(w http.ResponseWriter, r *http.Request) {
+			if !requireOnboardingRead(ac, w, r) {
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-cache")
+			data, err := buildOnboardingStatusJSON(r.Context(), ac, deps)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			_, _ = w.Write(data)
+		})
+		mux.HandleFunc("POST /ui/api/onboarding-scan", handleOnboardingScan(ac, deps))
+		mux.HandleFunc("POST /ui/api/onboarding-init", handleOnboardingInit(ac, deps))
+		mux.HandleFunc("POST /ui/api/onboarding-recommend", func(w http.ResponseWriter, r *http.Request) {
+			if !requireOnboardingMutation(ac, w, r) {
+				return
+			}
+			locale := ""
+			if r.Body != nil {
+				body, _ := io.ReadAll(io.LimitReader(r.Body, 4*1024))
+				if len(body) > 0 {
+					var req struct {
+						Locale string `json:"locale"`
+					}
+					if json.Unmarshal(body, &req) == nil {
+						locale = strings.TrimSpace(req.Locale)
+					}
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-cache")
+			data, err := buildModelRecommendations(r.Context(), ac, deps, locale)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			_, _ = w.Write(data)
+		})
+		mux.HandleFunc("POST /ui/api/onboarding-deploy", handleOnboardingDeploy(ac, deps))
+		mux.HandleFunc("POST /ui/api/onboarding-stop-container", handleStopContainer(ac))
+
 		// Start power sampling goroutine (30s interval, 7-day retention)
 		go func() {
 			ticker := time.NewTicker(30 * time.Second)
@@ -399,7 +486,31 @@ func run() error {
 
 	// 9g. Patrol, tuner, healer (A2, A3, A4)
 	healer := agent.NewHealer(automationTools)
-	tuner := agent.NewTuner(automationTools)
+	tuner := agent.NewTuner(automationTools, agent.WithTuningSink(func(ctx context.Context, session *agent.TuningSession) {
+		if session == nil {
+			return
+		}
+		bestConfigJSON := ""
+		if len(session.BestConfig) > 0 {
+			if b, err := json.Marshal(session.BestConfig); err == nil {
+				bestConfigJSON = string(b)
+			}
+		}
+		resultsJSON := ""
+		if len(session.Results) > 0 {
+			if b, err := json.Marshal(session.Results); err == nil {
+				resultsJSON = string(b)
+			}
+		}
+		var completedAt *time.Time
+		if !session.CompletedAt.IsZero() {
+			t := session.CompletedAt
+			completedAt = &t
+		}
+		if err := db.UpsertTuningSession(ctx, session.ID, session.Config.Model, session.Config.Engine, session.Status, session.Progress, session.Total, bestConfigJSON, resultsJSON, session.BestScore, completedAt); err != nil {
+			slog.Warn("tuning: persist session failed", "id", session.ID, "error", err)
+		}
+	}))
 	explorationMgr = agent.NewExplorationManager(db, tuner, automationTools)
 	eventBus := agent.NewEventBus()
 	ac.eventBus = eventBus
@@ -479,6 +590,39 @@ func run() error {
 				})
 			}
 			return statuses, nil
+		}),
+		agent.WithCleanupDeploys(func(ctx context.Context) (int, error) {
+			if deps.DeployList == nil || deps.DeployDelete == nil {
+				return 0, nil
+			}
+			data, err := deps.DeployList(ctx)
+			if err != nil {
+				return 0, err
+			}
+			var deployments []runtime.DeploymentStatus
+			if err := json.Unmarshal(data, &deployments); err != nil {
+				return 0, err
+			}
+			cleaned := 0
+			for _, d := range deployments {
+				name := d.Name
+				if name == "" {
+					continue
+				}
+				slog.Info("explorer: pre-cycle cleanup stopping deployment", "name", name)
+				if err := deps.DeployDelete(ctx, name); err != nil {
+					slog.Warn("explorer: pre-cycle cleanup failed for deployment", "name", name, "error", err)
+					continue
+				}
+				cleaned++
+			}
+			return cleaned, nil
+		}),
+		agent.WithCleanupModelDeploy(func(ctx context.Context, name string) error {
+			if deps.DeployDelete == nil || name == "" {
+				return nil
+			}
+			return deps.DeployDelete(ctx, name)
 		}),
 		agent.WithGatherOpenQuestions(func(ctx context.Context) ([]agent.OpenQuestion, error) {
 			rows, err := db.ListOpenQuestions(ctx, "untested")
@@ -581,12 +725,14 @@ func run() error {
 			result := make([]agent.LocalModel, 0, len(models))
 			for _, m := range models {
 				if m.Name != "" {
-					result = append(result, agent.LocalModel{
-						Name:      m.Name,
-						Format:    m.Format,
-						Type:      m.Type,
-						SizeBytes: m.SizeBytes,
+					lm := enrichExplorerLocalModel(cat, agent.LocalModel{
+						Name:          m.Name,
+						Format:        m.Format,
+						Type:          m.Type,
+						SizeBytes:     m.SizeBytes,
+						MaxContextLen: cat.ModelMaxContextLen(m.Name),
 					})
+					result = append(result, lm)
 				}
 			}
 			return result, nil
@@ -693,6 +839,80 @@ func run() error {
 		explorer.Trigger()
 		return json.Marshal(map[string]string{"status": "triggered"})
 	}
+	deps.ExplorerCleanup = func(ctx context.Context) (json.RawMessage, error) {
+		cleaned, err := explorer.CleanupDeploys(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{
+			"status":  "cleaned",
+			"stopped": cleaned,
+		})
+	}
+	deps.ExplorerDbDeltas = func(ctx context.Context, sinceISO string) (json.RawMessage, error) {
+		var since time.Time
+		if sinceISO != "" {
+			t, err := time.Parse(time.RFC3339, sinceISO)
+			if err != nil {
+				return nil, fmt.Errorf("parse since=%q as RFC3339: %w", sinceISO, err)
+			}
+			since = t
+		}
+		counts, err := db.ExplorationDbDeltas(ctx, since)
+		if err != nil {
+			return nil, err
+		}
+		resp := map[string]any{
+			"configurations":     counts["configurations"],
+			"benchmark_results":  counts["benchmark_results"],
+			"exploration_events": counts["exploration_events"],
+		}
+		if !since.IsZero() {
+			resp["since"] = since.UTC().Format(time.RFC3339)
+		}
+		return json.Marshal(resp)
+	}
+	// Read-only access to the Explorer workspace. The same directory is reused
+	// across runs (see explorer.setupPlannerLocked), so responses reflect the
+	// active Explorer session rather than any specific run_id.
+	allowedWorkspaceDocs := map[string]bool{
+		"plan.md":             true,
+		"summary.md":          true,
+		"device-profile.md":   true,
+		"available-combos.md": true,
+		"knowledge-base.md":   true,
+		"experiment-facts.md": true,
+		"index.md":            true,
+	}
+	deps.ExploreWorkspaceDoc = func(ctx context.Context, doc string) (json.RawMessage, error) {
+		if !allowedWorkspaceDocs[doc] {
+			return nil, fmt.Errorf("doc %q is not in the workspace whitelist", doc)
+		}
+		path := filepath.Join(explorerConfig.WorkspaceDir, doc)
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				return json.Marshal(map[string]any{
+					"doc":    doc,
+					"exists": false,
+					"path":   path,
+				})
+			}
+			return nil, fmt.Errorf("stat workspace doc: %w", statErr)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read workspace doc: %w", err)
+		}
+		return json.Marshal(map[string]any{
+			"doc":     doc,
+			"exists":  true,
+			"path":    path,
+			"mtime":   info.ModTime().UTC().Format(time.RFC3339),
+			"size":    info.Size(),
+			"content": string(data),
+		})
+	}
 
 	// Wire agent, patrol, tuning, exploration, and open questions tools.
 	buildAgentDeps(ac, deps, patrol, tuner, explorationMgr)
@@ -726,6 +946,11 @@ func loadExplorerConfig(ctx context.Context, db *state.DB) agent.ExplorerConfig 
 	config := agent.ExplorerConfig{
 		Schedule: agent.DefaultScheduleConfig(),
 		Enabled:  true,
+		// DC-5: a single plan cycle on a hot workspace can burn 300K+ tokens at
+		// reasoning-model prices. Default to 2M/day — about 5 cycles — so an
+		// unattended multi-cycle scheduler doesn't blow through quota. Users
+		// can raise this explicitly via `automation.patrol config set`.
+		MaxTokensPerDay: 2_000_000,
 	}
 	if db == nil {
 		return config
@@ -740,7 +965,6 @@ func loadExplorerConfig(ctx context.Context, db *state.DB) agent.ExplorerConfig 
 		"enabled",
 		"mode",
 		"max_rounds",
-		"max_plan_duration",
 		"max_tokens_per_day",
 		"max_cycles",
 		"max_tasks",
@@ -802,12 +1026,6 @@ func loadExplorerConfig(ctx context.Context, db *state.DB) agent.ExplorerConfig 
 		case "max_rounds":
 			if n, parseErr := strconv.Atoi(value); parseErr == nil {
 				config.MaxRounds = n
-			} else {
-				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
-			}
-		case "max_plan_duration":
-			if duration, parseErr := time.ParseDuration(value); parseErr == nil {
-				config.MaxPlanDuration = duration
 			} else {
 				slog.Warn("ignore invalid explorer config", "key", key, "value", value, "error", parseErr)
 			}
@@ -1107,7 +1325,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	// Business logic lives here so CLI remains a thin presentation layer.
 	var deps *mcp.ToolDeps
 	deployRunCore := func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool,
-		onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent)) (json.RawMessage, error) {
+		onPhase func(phase, msg string), onEngineProgress func(engine.ProgressEvent), onModelProgress func(downloaded, total int64)) (json.RawMessage, error) {
 
 		notify := func(phase, msg string) {
 			if onPhase != nil {
@@ -1115,11 +1333,18 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 			}
 		}
 
-		waitForDeployment := func(deployName, runtimeName, resolvedEngine string, resolvedConfig map[string]any) (json.RawMessage, error) {
+		waitForDeployment := func(deployName, runtimeName, resolvedEngine string, resolvedConfig map[string]any, warmup knowledge.WarmupConfig, deployTimeout time.Duration) (json.RawMessage, error) {
 			notify("waiting", deployName)
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()
-			timer := time.NewTimer(10 * time.Minute)
+			// deployTimeout caps how long we wait for /health and optional warmup.
+			// Callers pass engine.Startup.HealthCheck.TimeoutS when the engine
+			// specifies one (vllm-nightly sets 600s to cover the transformers
+			// pip-install on first boot); default to 10m otherwise.
+			if deployTimeout <= 0 {
+				deployTimeout = 10 * time.Minute
+			}
+			timer := time.NewTimer(deployTimeout)
 			defer timer.Stop()
 
 			for {
@@ -1129,7 +1354,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 				case <-timer.C:
 					return json.Marshal(map[string]any{
 						"name": deployName, "status": "timeout",
-						"message": "deployment started but not ready within 10 minutes",
+						"message": fmt.Sprintf("deployment started but not ready within %s", deployTimeout),
 					})
 				case <-ticker.C:
 					statusData, err := deps.DeployStatus(ctx, deployName)
@@ -1151,6 +1376,10 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 						continue
 					}
 					if status.Ready {
+						if warmup.Enabled && !warmupInferenceReady(ctx, status.Address, resolvedServedModelName(model, resolvedConfig), warmup) {
+							notify("startup", "warmup")
+							continue
+						}
 						notify("ready", status.Address)
 						if status.Runtime != "" {
 							runtimeName = status.Runtime
@@ -1182,7 +1411,11 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 		}
 
 		// Step 1: Resolve via dry-run
-		notify("resolving", model)
+		resolveMsg := fmt.Sprintf("resolving engine for %s", model)
+		if engineType != "" {
+			resolveMsg = fmt.Sprintf("checking engine %s", engineType)
+		}
+		notify("resolving", resolveMsg)
 		dryRunData, err := deps.DeployDryRun(ctx, engineType, model, slot, configOverrides)
 		if err != nil {
 			return nil, fmt.Errorf("resolve: %w", err)
@@ -1218,6 +1451,7 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 			if err := json.Unmarshal(statusData, &status); err == nil {
 				switch {
 				case status.Ready:
+					notify("reusing", deployName)
 					notify("ready", status.Address)
 					runtimeName := plan.Runtime
 					if status.Runtime != "" {
@@ -1234,7 +1468,16 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 					if status.Runtime != "" {
 						runtimeName = status.Runtime
 					}
-					return waitForDeployment(deployName, runtimeName, plan.Engine, plan.Config)
+					hwInfo := buildHardwareInfo(ctx, cat, rt.Name())
+					warmup := knowledge.WarmupConfig{}
+					deployTimeout := time.Duration(0)
+					if asset := cat.FindEngineByName(plan.Engine, hwInfo); asset != nil {
+						warmup = asset.Startup.Warmup
+						if t := asset.Startup.HealthCheck.TimeoutS; t > 0 {
+							deployTimeout = time.Duration(t) * time.Second
+						}
+					}
+					return waitForDeployment(deployName, runtimeName, plan.Engine, plan.Config, warmup, deployTimeout)
 				}
 			}
 		}
@@ -1247,10 +1490,17 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 			}
 		}
 
-		// Step 3: Pull model (non-fatal — may be local or pre-installed)
+		// Step 3: Pull model (non-fatal — may be local or pre-installed). Use
+		// pullModelCore directly so byte-level progress can flow back to the
+		// caller via onModelProgress (the deps.PullModel closure swallows it).
 		if !noPull {
 			notify("pulling_model", model)
-			if err := deps.PullModel(ctx, model); err != nil {
+			modelStatus := func(phase, msg string) {
+				if msg != "" {
+					notify("pulling_model", msg)
+				}
+			}
+			if err := pullModelCore(ctx, model, modelStatus, onModelProgress); err != nil {
 				notify("model_skip", err.Error())
 			}
 		}
@@ -1268,7 +1518,16 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 		if err := json.Unmarshal(deployData, &deployResult); err != nil || deployResult.Name == "" {
 			return deployData, nil
 		}
-		return waitForDeployment(deployResult.Name, deployResult.Runtime, plan.Engine, plan.Config)
+		hwInfo := buildHardwareInfo(ctx, cat, rt.Name())
+		warmup := knowledge.WarmupConfig{}
+		deployTimeout := time.Duration(0)
+		if asset := cat.FindEngineByName(plan.Engine, hwInfo); asset != nil {
+			warmup = asset.Startup.Warmup
+			if t := asset.Startup.HealthCheck.TimeoutS; t > 0 {
+				deployTimeout = time.Duration(t) * time.Second
+			}
+		}
+		return waitForDeployment(deployResult.Name, deployResult.Runtime, plan.Engine, plan.Config, warmup, deployTimeout)
 	}
 
 	deps = &mcp.ToolDeps{}
@@ -1280,6 +1539,57 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	buildDeployDeps(ac, deps, pullModelCore, deployRunCore)
 	buildKnowledgeDeps(ac, deps)
 	buildBenchmarkDeps(ac, deps, resolveEndpoint)
+
+	// Onboarding (multi-action MCP tool). The 5 closures below wrap the
+	// internal/onboarding package entry points; scan/init/deploy collect
+	// Event slices into the response JSON so MCP callers receive the full
+	// progress log in a single request-response cycle.
+	deps.OnboardingStatus = func(ctx context.Context) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		result, err := onboarding.BuildStatus(ctx, obDeps)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+	deps.OnboardingScan = func(ctx context.Context) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		result, events, err := onboarding.RunScan(ctx, obDeps, nil)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"result": result, "events": events})
+	}
+	deps.OnboardingRecommend = func(ctx context.Context, locale string) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		if locale == "" {
+			locale = "en"
+		}
+		result, err := onboarding.Recommend(ctx, obDeps, locale)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+	deps.OnboardingInit = func(ctx context.Context, tier string, allowDownload bool) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		if tier == "" {
+			tier = "auto"
+		}
+		result, events, err := onboarding.RunInit(ctx, obDeps, tier, allowDownload, nil)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"result": result, "events": events})
+	}
+	deps.OnboardingDeploy = func(ctx context.Context, model, engineType, slot string, configOverrides map[string]any, noPull bool) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		result, events, err := onboarding.RunDeploy(ctx, obDeps, model, engineType, slot, configOverrides, noPull, nil)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"result": result, "events": events})
+	}
 
 	return deps
 }

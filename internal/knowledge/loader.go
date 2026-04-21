@@ -18,16 +18,16 @@ import (
 
 // Catalog holds all knowledge assets loaded from embedded YAML files.
 type Catalog struct {
-	mu                     sync.Mutex
-	HardwareProfiles       []HardwareProfile
-	PartitionStrategies    []PartitionStrategy
-	EngineAssets           []EngineAsset
-	RawEngineAssets        []EngineAsset // unresolved engine assets before profile inheritance/template expansion
-	ModelAssets            []ModelAsset
-	StackComponents        []StackComponent
-	DeploymentScenarios    []DeploymentScenario
-	EngineProfiles         map[string]*EngineProfile // name -> profile (loaded from engines/profiles/)
-	BenchmarkProfileTiers  []BenchmarkProfileTier    // VRAM-tiered benchmark profiles for Explorer
+	mu                    sync.Mutex
+	HardwareProfiles      []HardwareProfile
+	PartitionStrategies   []PartitionStrategy
+	EngineAssets          []EngineAsset
+	RawEngineAssets       []EngineAsset // unresolved engine assets before profile inheritance/template expansion
+	ModelAssets           []ModelAsset
+	StackComponents       []StackComponent
+	DeploymentScenarios   []DeploymentScenario
+	EngineProfiles        map[string]*EngineProfile // name -> profile (loaded from engines/profiles/)
+	BenchmarkProfileTiers []BenchmarkProfileTier    // VRAM-tiered benchmark profiles for Explorer
 }
 
 // EngineProfile captures the shared identity of an engine type.
@@ -73,6 +73,7 @@ type HardwareSpec struct {
 type GPUSpec struct {
 	Arch             string `yaml:"arch"`
 	VRAMMiB          int    `yaml:"vram_mib"`
+	BandwidthGbps    int    `yaml:"bandwidth_gbps"`               // Per-GPU memory bandwidth in GB/s (unified mem: shared bus; discrete: GDDR/HBM)
 	ComputeID        string `yaml:"compute_id"`
 	ComputeUnits     int    `yaml:"compute_units"`
 	ResourceName     string `yaml:"resource_name,omitempty"`      // K8s GPU resource name, e.g. "nvidia.com/gpu", "amd.com/gpu"
@@ -194,11 +195,14 @@ type EngineAsset struct {
 }
 
 type EngineMetadata struct {
-	Name             string   `yaml:"name"              json:"name"`
-	Type             string   `yaml:"type"              json:"type"`
-	Version          string   `yaml:"version"           json:"version"`
-	Default          bool     `yaml:"default,omitempty" json:"default,omitempty"`
-	SupportedFormats []string `yaml:"supported_formats,omitempty" json:"supported_formats,omitempty"`
+	Name                string   `yaml:"name"              json:"name"`
+	Type                string   `yaml:"type"              json:"type"`
+	Version             string   `yaml:"version"           json:"version"`
+	Default             bool     `yaml:"default,omitempty" json:"default,omitempty"`
+	SupportedFormats    []string `yaml:"supported_formats,omitempty"    json:"supported_formats,omitempty"`
+	SupportedModelTypes []string `yaml:"supported_model_types,omitempty" json:"supported_model_types,omitempty"`
+	Status              string   `yaml:"status,omitempty"        json:"status,omitempty"`
+	StatusReason        string   `yaml:"status_reason,omitempty" json:"status_reason,omitempty"`
 }
 
 type EngineImage struct {
@@ -209,6 +213,13 @@ type EngineImage struct {
 	Registries   []string `yaml:"registries"     json:"registries"`
 	Digest       string   `yaml:"digest,omitempty" json:"digest,omitempty"`
 	Distribution string   `yaml:"distribution,omitempty" json:"distribution,omitempty"` // "registry" (default) or "local"
+	// CompatibleTags lists other tags of the same image that are known to be
+	// functionally equivalent for the engine's purpose (e.g. a newer rolling
+	// tag that embeds an older pinned version). If any of them is already
+	// present locally, engine pull aliases it to the primary tag instead of
+	// downloading multi-GB of bytes. Knowledge-driven — no Go branch per
+	// engine type. Default empty: strict pin behavior.
+	CompatibleTags []string `yaml:"compatible_tags,omitempty" json:"compatible_tags,omitempty"`
 }
 
 type EngineHardware struct {
@@ -318,6 +329,16 @@ type ModelMetadata struct {
 	Type           string `yaml:"type"`
 	Family         string `yaml:"family"`
 	ParameterCount string `yaml:"parameter_count"`
+	// ReleasedAt is the model's public release date in YYYY-MM or YYYY-MM-DD
+	// form. Optional; when populated it feeds the onboarding recommend recency
+	// bonus so newer models float to the top of the wizard's first-run list.
+	ReleasedAt string `yaml:"released_at,omitempty"`
+	// Aliases lists alternative names (e.g. huggingface repo names, common
+	// user-typed variants) that should resolve to this model. Each alias is
+	// normalized via the same key as Name so scan results like
+	// "Qwen3-Embedding-0.6B" can hit the canonical "qwen3-emb-0.6b" without
+	// hardcoded mappings in Go.
+	Aliases []string `yaml:"aliases,omitempty"`
 }
 
 type OpenClawHints struct {
@@ -358,6 +379,7 @@ type ModelVariant struct {
 
 type ModelCompatibility struct {
 	RepairInitCommands []string `yaml:"repair_init_commands,omitempty"`
+	UnsupportedReason  string   `yaml:"unsupported_reason,omitempty"`
 }
 
 // ExpectedPerf holds structured performance estimates extracted from a variant's
@@ -398,6 +420,7 @@ type ModelVariantHardware struct {
 	GPUArch       string `yaml:"gpu_arch"`
 	GPUModel      string `yaml:"gpu_model,omitempty"`
 	VRAMMinMiB    int    `yaml:"vram_min_mib"`
+	RAMMinMiB     int    `yaml:"ram_min_mib,omitempty"` // system RAM needed (llamacpp CPU inference); used for scoring when vram_min_mib=0
 	GPUCountMin   int    `yaml:"gpu_count_min,omitempty"` // minimum GPUs required (0 = any; typically matches tensor_parallel_size)
 	UnifiedMemory *bool  `yaml:"unified_memory,omitempty"`
 }
@@ -1201,8 +1224,20 @@ func LoadCatalogLenient(fsys fs.FS) (*Catalog, []string) {
 		}
 	}
 
-	// Phase 3: Merge profiles + expand URL templates
-	warnings = append(warnings, finalizeEngineAssets(cat)...)
+	// Phase 3: Merge profiles + expand URL templates.
+	// Overlay assets that reference a profile frequently only define the asset
+	// file itself (e.g. a single vllm-nightly-blackwell.yaml without the
+	// accompanying engines/profiles/vllm.yaml). The overlay is always merged
+	// into the factory catalog after this; MergeCatalog re-finalizes with the
+	// full profile set. Swallow "unknown profile" warnings here so that typical
+	// overlays don't log spurious messages; genuinely missing profiles are
+	// re-surfaced by MergeCatalog after the merge.
+	for _, w := range finalizeEngineAssets(cat) {
+		if strings.Contains(w, "unknown profile") {
+			continue
+		}
+		warnings = append(warnings, w)
+	}
 
 	return cat, warnings
 }
@@ -1258,9 +1293,10 @@ func extractName(data []byte) string {
 }
 
 // MergeCatalog merges overlay into base. Overlay assets with the same
-// metadata.name replace the base asset; new names are appended.
-// Returns the mutated base catalog.
-func MergeCatalog(base, overlay *Catalog) *Catalog {
+// metadata.name replace the base asset; new names are appended. Returns the
+// mutated base catalog plus any post-merge finalize warnings (e.g. engine
+// assets whose profile reference can't be resolved even after merging).
+func MergeCatalog(base, overlay *Catalog) (*Catalog, []string) {
 	base.HardwareProfiles = mergeSlice(base.HardwareProfiles, overlay.HardwareProfiles, func(v HardwareProfile) string { return v.Metadata.Name })
 	base.RawEngineAssets = mergeSlice(rawEngineAssets(base), rawEngineAssets(overlay), func(v EngineAsset) string { return v.Metadata.Name })
 	base.ModelAssets = mergeSlice(base.ModelAssets, overlay.ModelAssets, func(v ModelAsset) string { return v.Metadata.Name })
@@ -1268,8 +1304,7 @@ func MergeCatalog(base, overlay *Catalog) *Catalog {
 	base.StackComponents = mergeSlice(base.StackComponents, overlay.StackComponents, func(v StackComponent) string { return v.Metadata.Name })
 	base.DeploymentScenarios = mergeSlice(base.DeploymentScenarios, overlay.DeploymentScenarios, func(v DeploymentScenario) string { return v.Metadata.Name })
 	base.EngineProfiles = mergeEngineProfiles(base.EngineProfiles, overlay.EngineProfiles)
-	_ = finalizeEngineAssets(base)
-	return base
+	return base, finalizeEngineAssets(base)
 }
 
 func rawEngineAssets(cat *Catalog) []EngineAsset {
@@ -1304,11 +1339,12 @@ func MergeCatalogWithDigests(base, overlay *Catalog, factoryDigests map[string]s
 	// Collect overlay asset names (before merge) to check staleness
 	overlayNames := CollectNames(overlay)
 
-	// Merge
-	base = MergeCatalog(base, overlay)
+	// Merge (and capture post-merge finalize warnings — e.g. profile references
+	// that survive merge still point at a missing engine_profile).
+	base, finalizeWarnings := MergeCatalog(base, overlay)
+	warnings := append([]string(nil), finalizeWarnings...)
 
 	// Check staleness for each overlay asset that shadows a factory asset
-	var warnings []string
 	for name := range overlayNames {
 		factoryD, inFactory := factoryDigests[name]
 		if !inFactory {

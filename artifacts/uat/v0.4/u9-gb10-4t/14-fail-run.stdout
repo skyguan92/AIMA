@@ -1,0 +1,9 @@
+Resolving checking engine vllm-nightly-blackwell-u9-fail...
+  engine=vllm-nightly-blackwell-u9-fail runtime=docker
+  Warning: unified memory system has swap enabled (16383 MiB); high gmu may cause swap thrashing instead of clean OOM-kill
+Deploying...
+Waiting for qwen3-5-9b-vllm-nightly-blackwell-u9-fail to be ready
+  initializing 5%
+
+Timed out waiting for deployment to be ready.
+Check status with: aima deploy status qwen3-5-9b-vllm-nightly-blackwell-u9-fail

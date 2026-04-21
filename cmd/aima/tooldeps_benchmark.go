@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +16,39 @@ import (
 
 	state "github.com/jguan/aima/internal"
 )
+
+// modalityParams holds all modality-specific parameters shared between
+// benchmark.run and benchmark.matrix handlers.
+type modalityParams struct {
+	Modality string `json:"modality"`
+	Prompt   string `json:"prompt"`
+	// VLM
+	ImageURLs []string `json:"image_urls"`
+	// TTS
+	Voice       string   `json:"voice"`
+	AudioFormat string   `json:"audio_format"`
+	Texts       []string `json:"texts"`
+	// ASR
+	AudioFiles []string `json:"audio_files"`
+	Language   string   `json:"language"`
+	// T2I / T2V
+	Width         int     `json:"width"`
+	Height        int     `json:"height"`
+	Steps         int     `json:"steps"`
+	GuidanceScale float64 `json:"guidance_scale"`
+	NumImages     int     `json:"num_images"`
+	// T2V
+	DurationS     float64 `json:"duration_s"`
+	FPS           int     `json:"fps"`
+	InputImageURL string  `json:"input_image_url"`
+}
+
+func (mp *modalityParams) resolvedModality() string {
+	if mp.Modality == "" {
+		return "llm"
+	}
+	return mp.Modality
+}
 
 // buildBenchmarkDeps wires benchmark.record, benchmark.run, benchmark.matrix,
 // benchmark.list, and knowledge.promote tools.
@@ -36,6 +71,7 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 			Model           string         `json:"model"`
 			DeviceID        string         `json:"device_id"`
 			Config          map[string]any `json:"config"`
+			Modality        string         `json:"modality"`
 			Concurrency     int            `json:"concurrency"`
 			InputLenBucket  string         `json:"input_len_bucket"`
 			OutputLenBucket string         `json:"output_len_bucket"`
@@ -99,7 +135,7 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 			Concurrency:     p.Concurrency,
 			InputLenBucket:  p.InputLenBucket,
 			OutputLenBucket: p.OutputLenBucket,
-			Modality:        "text",
+			Modality:        storageBenchmarkModality(p.Modality),
 			TTFTP50ms:       p.TTFTP50ms,
 			TTFTP95ms:       p.TTFTP95ms,
 			TPOTP50ms:       p.TPOTP50ms,
@@ -156,6 +192,7 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 
 	deps.RunBenchmark = func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
 		var p struct {
+			modalityParams
 			Model          string         `json:"model"`
 			Endpoint       string         `json:"endpoint"`
 			Concurrency    int            `json:"concurrency"`
@@ -177,6 +214,8 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 			return nil, fmt.Errorf("parse benchmark params: %w", err)
 		}
 
+		modality := p.resolvedModality()
+
 		endpoint := resolveEndpoint(p.Endpoint, p.Model)
 
 		warmup := 2
@@ -197,7 +236,12 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 			MaxRetries:     p.MaxRetries,
 		}
 
-		result, observedMetrics, err := runBenchmarkWithMetrics(ctx, cfg)
+		req, err := buildRequester(modality, cfg, &p.modalityParams)
+		if err != nil {
+			return nil, fmt.Errorf("build requester: %w", err)
+		}
+
+		result, observedMetrics, err := runBenchmarkWithMetricsAndRequester(ctx, cfg, req)
 		if err != nil {
 			return nil, fmt.Errorf("benchmark run: %w", err)
 		}
@@ -216,8 +260,8 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 		if save && p.Hardware != "" && p.Engine != "" {
 			var err error
 			benchmarkID, configID, savedBench, err = saveBenchmarkResult(ctx, db,
-				p.Hardware, p.Engine, p.Model, result, deployConfig, observedMetrics,
-				cfg.Concurrency, cfg.InputTokens, cfg.MaxTokens, p.Notes)
+				p.Hardware, p.Engine, p.Model, modality, result, deployConfig, observedMetrics,
+				cfg.Concurrency, p.Notes)
 			if err != nil {
 				return nil, err
 			}
@@ -272,7 +316,7 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 			}
 
 			// L2c auto-promote: if new benchmark beats current golden by >5%
-			if promoted, oldID := maybeAutoPromote(ctx, db, configID, result.ThroughputTPS, p.Hardware, p.Engine, p.Model); promoted {
+			if promoted, oldID := maybeAutoPromote(ctx, db, configID, result.ThroughputTPS, p.Hardware, p.Engine, p.Model, modality); promoted {
 				resp["auto_promoted"] = true
 				if oldID != "" {
 					resp["old_golden_id"] = oldID
@@ -289,6 +333,7 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 
 	deps.RunBenchmarkMatrix = func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
 		var p struct {
+			modalityParams
 			Model             string         `json:"model"`
 			Endpoint          string         `json:"endpoint"`
 			ConcurrencyLevels []int          `json:"concurrency_levels"`
@@ -306,6 +351,9 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse matrix params: %w", err)
 		}
+
+		modality := p.resolvedModality()
+
 		if len(p.ConcurrencyLevels) == 0 {
 			p.ConcurrencyLevels = []int{1, 4}
 		}
@@ -315,6 +363,7 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 		if len(p.MaxTokenLevels) == 0 {
 			p.MaxTokenLevels = []int{128, 512}
 		}
+		p.MaxTokenLevels = effectiveMatrixMaxTokenLevels(modality, p.MaxTokenLevels)
 		if p.RequestsPerCombo <= 0 {
 			p.RequestsPerCombo = 5
 		}
@@ -346,9 +395,20 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 
 		var cells []matrixCell
 		refreshVectors := false
+		totalCells := len(p.ConcurrencyLevels) * len(p.InputTokenLevels) * len(p.MaxTokenLevels)
+		cellIdx := 0
 		for _, conc := range p.ConcurrencyLevels {
 			for _, inTok := range p.InputTokenLevels {
 				for _, maxTok := range p.MaxTokenLevels {
+					cellIdx++
+					// Bug-3: log cell start so operators tailing serve.log see
+					// progress during long matrices (previously the matrix ran
+					// silently for minutes).
+					cellStart := time.Now()
+					slog.Info("benchmark matrix: cell start",
+						"model", p.Model, "engine", p.Engine,
+						"progress", fmt.Sprintf("%d/%d", cellIdx, totalCells),
+						"concurrency", conc, "input_tokens", inTok, "max_tokens", maxTok)
 					cfg := benchpkg.RunConfig{
 						Endpoint:       endpoint,
 						Model:          p.Model,
@@ -361,7 +421,15 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 						MinOutputRatio: p.MinOutputRatio,
 						MaxRetries:     p.MaxRetries,
 					}
-					result, observedMetrics, err := runBenchmarkWithMetrics(ctx, cfg)
+					req, reqErr := buildRequester(modality, cfg, &p.modalityParams)
+					var result *benchpkg.RunResult
+					var observedMetrics benchmarkSystemMetrics
+					var err error
+					if reqErr != nil {
+						err = reqErr
+					} else {
+						result, observedMetrics, err = runBenchmarkWithMetricsAndRequester(ctx, cfg, req)
+					}
 					cell := matrixCell{
 						Concurrency: conc,
 						InputTokens: inTok,
@@ -381,7 +449,7 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 						save := p.Save == nil || *p.Save
 						if save && p.Hardware != "" && p.Engine != "" {
 							notes := fmt.Sprintf("matrix: conc=%d in=%d out=%d", conc, inTok, maxTok)
-							benchmarkID, configID, _, saveErr := saveBenchmarkResult(ctx, db, p.Hardware, p.Engine, p.Model, result, deployConfig, observedMetrics, conc, inTok, maxTok, notes)
+							benchmarkID, configID, _, saveErr := saveBenchmarkResult(ctx, db, p.Hardware, p.Engine, p.Model, modality, result, deployConfig, observedMetrics, conc, notes)
 							if saveErr != nil {
 								slog.Warn("benchmark matrix: save failed", "error", saveErr, "concurrency", conc, "input_tokens", inTok, "max_tokens", maxTok)
 							} else {
@@ -393,6 +461,23 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 								cell.ConfigID = configID
 							}
 						}
+					}
+					// Bug-3: log cell end with duration + headline metric so the
+					// matrix execution shows up meaningfully in serve.log.
+					dur := time.Since(cellStart).Round(time.Millisecond)
+					if cell.Error != "" {
+						slog.Info("benchmark matrix: cell end",
+							"model", p.Model,
+							"progress", fmt.Sprintf("%d/%d", cellIdx, totalCells),
+							"duration", dur.String(), "status", "error",
+							"error", cell.Error)
+					} else if cell.Result != nil {
+						slog.Info("benchmark matrix: cell end",
+							"model", p.Model,
+							"progress", fmt.Sprintf("%d/%d", cellIdx, totalCells),
+							"duration", dur.String(), "status", "ok",
+							"throughput_tps", cell.Result.ThroughputTPS,
+							"ttft_p95_ms", cell.Result.TTFTP95ms)
 					}
 					cells = append(cells, cell)
 				}
@@ -416,6 +501,7 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 			Hardware string `json:"hardware"`
 			Model    string `json:"model"`
 			Engine   string `json:"engine"`
+			Modality string `json:"modality"`
 			Limit    int    `json:"limit"`
 		}
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -448,12 +534,32 @@ func buildBenchmarkDeps(ac *appContext, deps *mcp.ToolDeps, resolveEndpoint func
 		if err != nil {
 			return nil, fmt.Errorf("list benchmarks: %w", err)
 		}
+		if p.Modality != "" {
+			want := storageBenchmarkModality(p.Modality)
+			filtered := make([]*state.BenchmarkResult, 0, len(results))
+			for _, item := range results {
+				if item != nil && strings.EqualFold(item.Modality, want) {
+					filtered = append(filtered, item)
+				}
+			}
+			results = filtered
+		}
 
 		return json.Marshal(map[string]any{
 			"results": results,
 			"total":   len(results),
 		})
 	}
+}
+
+func effectiveMatrixMaxTokenLevels(modality string, levels []int) []int {
+	if strings.EqualFold(modality, "embedding") || strings.EqualFold(modality, "reranker") {
+		return []int{0}
+	}
+	if len(levels) == 0 {
+		return []int{128, 512}
+	}
+	return levels
 }
 
 func selectReadyDeployConfig(engineName string, explicit map[string]any, matches []matchedDeployment) map[string]any {
@@ -482,6 +588,102 @@ func cloneConfigMapForBenchmark(src map[string]any) map[string]any {
 		dst[key] = value
 	}
 	return dst
+}
+
+// buildRequester creates the appropriate Requester for the given modality.
+func buildRequester(modality string, cfg benchpkg.RunConfig, mp *modalityParams) (benchpkg.Requester, error) {
+	switch modality {
+	case "llm":
+		req := defaultChatRequester(cfg)
+		req.Prompt = mp.Prompt
+		return req, nil
+	case "vlm":
+		req := defaultChatRequester(cfg)
+		req.Prompt = mp.Prompt
+		req.ImageURLs = mp.ImageURLs
+		return req, nil
+	case "embedding":
+		return &benchpkg.EmbeddingRequester{
+			Model:       cfg.Model,
+			InputTokens: cfg.InputTokens,
+			Prompt:      mp.Prompt,
+			APIKey:      cfg.APIKey,
+			Timeout:     cfg.Timeout,
+		}, nil
+	case "reranker":
+		return &benchpkg.RerankRequester{
+			Model:       cfg.Model,
+			InputTokens: cfg.InputTokens,
+			Prompt:      mp.Prompt,
+			APIKey:      cfg.APIKey,
+			Timeout:     cfg.Timeout,
+		}, nil
+	case "tts":
+		return &benchpkg.AudioSpeechRequester{
+			Model:   cfg.Model,
+			Voice:   mp.Voice,
+			Format:  mp.AudioFormat,
+			Texts:   mp.Texts,
+			Timeout: cfg.Timeout,
+		}, nil
+	case "asr":
+		loaded, err := loadAudioInputs(mp.AudioFiles)
+		if err != nil {
+			return nil, fmt.Errorf("load ASR audio files: %w", err)
+		}
+		return &benchpkg.TranscriptionRequester{
+			Model:      cfg.Model,
+			AudioFiles: loaded,
+			Language:   mp.Language,
+			Timeout:    cfg.Timeout,
+		}, nil
+	case "image_gen":
+		return &benchpkg.ImageGenRequester{
+			Model:         cfg.Model,
+			Prompt:        mp.Prompt,
+			Width:         mp.Width,
+			Height:        mp.Height,
+			Steps:         mp.Steps,
+			GuidanceScale: mp.GuidanceScale,
+			NumImages:     mp.NumImages,
+			Timeout:       cfg.Timeout,
+		}, nil
+	case "video_gen":
+		return &benchpkg.VideoGenRequester{
+			Model:         cfg.Model,
+			Prompt:        mp.Prompt,
+			Width:         mp.Width,
+			Height:        mp.Height,
+			DurationS:     mp.DurationS,
+			FPS:           mp.FPS,
+			Steps:         mp.Steps,
+			GuidanceScale: mp.GuidanceScale,
+			InputImageURL: mp.InputImageURL,
+			Timeout:       cfg.Timeout,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported modality %q", modality)
+	}
+}
+
+// loadAudioInputs reads audio files from disk into memory for ASR benchmarking.
+func loadAudioInputs(paths []string) ([]benchpkg.AudioInput, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	var inputs []benchpkg.AudioInput
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		inputs = append(inputs, benchpkg.AudioInput{
+			Filename:  filepath.Base(path),
+			Data:      data,
+			DurationS: 0, // duration calculated by server or unknown
+		})
+	}
+	return inputs, nil
 }
 
 // suppress "imported and not used" for packages only used in type literals

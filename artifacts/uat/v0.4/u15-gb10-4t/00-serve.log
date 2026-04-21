@@ -1,0 +1,8 @@
+2026/04/20 10:54:47 INFO runtime selected runtime=docker docker_available=true k3s_available=false
+2026/04/20 10:54:47 INFO explorer started tier=1
+2026/04/20 10:54:47 INFO starting proxy server addr=0.0.0.0:6295
+2026/04/20 10:54:47 INFO proxy server starting addr=[::]:6295
+2026/04/20 10:54:47 INFO mDNS broadcasting service=_llm._tcp port=6295
+2026/04/20 10:54:47 INFO openclaw sync complete llm=0 vlm=0 asr=0 tts=false image_gen=0 config=/home/qujing/.openclaw/openclaw.json
+2026/04/20 10:54:47 WARN device registration blocked on user input — run `aima device register` after providing the credential kind=recovery_code detail="valid recovery_code required to refresh existing device credentials"
+2026/04/20 10:54:47 INFO startup engine scan completed

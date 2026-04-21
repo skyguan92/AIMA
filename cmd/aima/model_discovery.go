@@ -10,6 +10,7 @@ import (
 	goruntime "runtime"
 	"strings"
 
+	"github.com/jguan/aima/internal/agent"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/model"
 	"github.com/jguan/aima/internal/runtime"
@@ -18,18 +19,10 @@ import (
 )
 
 func findModelAsset(cat *knowledge.Catalog, name string) (*knowledge.ModelAsset, *knowledge.ModelSource) {
-	// 1. Exact catalog name
+	// 1. Case-insensitive catalog name match
 	for i := range cat.ModelAssets {
 		ma := &cat.ModelAssets[i]
-		if ma.Metadata.Name == name && len(ma.Storage.Sources) > 0 {
-			return ma, &ma.Storage.Sources[0]
-		}
-	}
-	// 2. Case-insensitive catalog name
-	lower := strings.ToLower(name)
-	for i := range cat.ModelAssets {
-		ma := &cat.ModelAssets[i]
-		if strings.ToLower(ma.Metadata.Name) == lower && len(ma.Storage.Sources) > 0 {
+		if strings.EqualFold(ma.Metadata.Name, name) && len(ma.Storage.Sources) > 0 {
 			return ma, &ma.Storage.Sources[0]
 		}
 	}
@@ -139,6 +132,46 @@ func upsertScannedModelInfo(ctx context.Context, info *model.ModelInfo, db *stat
 	})
 }
 
+func enrichExplorerLocalModel(cat *knowledge.Catalog, local agent.LocalModel) agent.LocalModel {
+	if cat == nil {
+		return local
+	}
+	ma, _ := findModelAssetOrVariant(cat, local.Name)
+	if ma == nil {
+		for i := range cat.ModelAssets {
+			if strings.EqualFold(cat.ModelAssets[i].Metadata.Name, local.Name) {
+				ma = &cat.ModelAssets[i]
+				break
+			}
+			for j := range cat.ModelAssets[i].Variants {
+				if strings.EqualFold(cat.ModelAssets[i].Variants[j].Name, local.Name) {
+					ma = &cat.ModelAssets[i]
+					break
+				}
+			}
+			if ma != nil {
+				break
+			}
+		}
+	}
+	if ma == nil {
+		return local
+	}
+	if local.Type == "" {
+		local.Type = strings.TrimSpace(ma.Metadata.Type)
+	}
+	if local.Family == "" {
+		local.Family = strings.TrimSpace(ma.Metadata.Family)
+	}
+	if local.ParameterCount == "" {
+		local.ParameterCount = strings.TrimSpace(ma.Metadata.ParameterCount)
+	}
+	if local.MaxContextLen == 0 {
+		local.MaxContextLen = cat.ModelMaxContextLen(ma.Metadata.Name)
+	}
+	return local
+}
+
 func variantQuantizationHint(variant *knowledge.ModelVariant) string {
 	if variant == nil {
 		return ""
@@ -208,7 +241,7 @@ func deploymentMatchesQuery(d *runtime.DeploymentStatus, query string) bool {
 	if d == nil {
 		return false
 	}
-	if d.Name == query {
+	if strings.EqualFold(d.Name, query) {
 		return true
 	}
 	modelName := strings.TrimSpace(d.Model)
@@ -219,11 +252,12 @@ func deploymentMatchesQuery(d *runtime.DeploymentStatus, query string) bool {
 	if engineName == "" {
 		engineName = strings.TrimSpace(d.Labels["aima.dev/engine"])
 	}
-	if modelName == query {
+	if strings.EqualFold(modelName, query) {
 		return true
 	}
 	if modelName != "" && engineName != "" {
-		return knowledge.SanitizePodName(modelName+"-"+engineName) == query
+		sanitized := knowledge.SanitizePodName(modelName + "-" + engineName)
+		return sanitized == strings.ToLower(query)
 	}
 	return false
 }
@@ -296,6 +330,33 @@ func findModelDir(modelName, primaryDataDir, format, quantization string) string
 		return unreadableExact[0]
 	}
 	return ""
+}
+
+func resolveLocalModelPathNoPull(modelName string, resolved *knowledge.ResolvedConfig, dataDir string) (string, error) {
+	if resolved == nil {
+		return "", fmt.Errorf("resolved config is nil")
+	}
+	modelPath := strings.TrimSpace(resolved.ModelPath)
+	if modelPath == "" {
+		modelPath = filepath.Join(dataDir, "models", modelName)
+	}
+	requiredFormat := strings.TrimSpace(resolved.ModelFormat)
+	requiredQuantization := resolvedQuantizationHint(resolved)
+	if !model.PathLooksCompatible(modelPath, requiredFormat, requiredQuantization) {
+		if alt := findModelDir(modelName, dataDir, requiredFormat, requiredQuantization); alt != "" {
+			modelPath = alt
+		} else {
+			return "", fmt.Errorf("model %s not found locally and auto-pull is disabled", modelName)
+		}
+	}
+	if resolved.Source != nil {
+		if fi, err := os.Stat(modelPath); err == nil && fi.IsDir() && dirRequiresSingleFileModelPath(modelPath) {
+			if f := findModelFileInDir(modelPath); f != "" {
+				modelPath = f
+			}
+		}
+	}
+	return modelPath, nil
 }
 
 func looksUnreadableModelDir(path string) bool {

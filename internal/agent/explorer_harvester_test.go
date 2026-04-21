@@ -176,13 +176,13 @@ func TestHarvester_MatrixNote(t *testing.T) {
 			PowerWatts:    245.0,
 			MatrixCells:   4,
 			SuccessCells:  3,
-			MatrixJSON: `[{"label":"latency","cells":[` +
+			MatrixJSON: `{"matrix_profiles":[{"label":"latency","cells":[` +
 				`{"concurrency":1,"input_tokens":128,"max_tokens":256,"result":{"throughput_tps":170.5,"ttft_p95_ms":45}},` +
 				`{"concurrency":1,"input_tokens":1024,"max_tokens":256,"result":{"throughput_tps":155.0,"ttft_p95_ms":120}}` +
 				`]},{"label":"throughput","cells":[` +
 				`{"concurrency":4,"input_tokens":512,"max_tokens":1024,"result":{"throughput_tps":520.0,"ttft_p95_ms":200}},` +
 				`{"concurrency":4,"input_tokens":2048,"max_tokens":1024,"error":"timeout"}` +
-				`]}]`,
+				`]}]}`,
 			Config: map[string]any{"gpu_memory_utilization": 0.85},
 		},
 	}
@@ -228,5 +228,37 @@ func TestHarvester_SinglePointNote(t *testing.T) {
 	}
 	if !strings.Contains(note, "TTFT P95 45ms") {
 		t.Errorf("note missing TTFT: %s", note)
+	}
+}
+
+func TestHarvester_SkipsAllFailureNotes(t *testing.T) {
+	var savedTitle string
+	h := NewHarvester(1, WithSaveNote(func(ctx context.Context, title, content, hardware, model, engine string) error {
+		savedTitle = title
+		return nil
+	}))
+
+	// Structural failure: should NOT be persisted (no failure notes at all)
+	h.Harvest(context.Background(), HarvestInput{
+		Task: PlanTask{Hardware: "nvidia-rtx4090-x86", Model: "qwen3-tts-0.6b", Engine: "vllm"},
+		Result: HarvestResult{
+			Success: false,
+			Error:   "Transformers does not recognize this architecture qwen3_tts",
+		},
+	})
+	if savedTitle != "" {
+		t.Fatalf("failure notes should not be persisted, got title=%q", savedTitle)
+	}
+
+	// Transient failure: also should NOT be persisted
+	h.Harvest(context.Background(), HarvestInput{
+		Task: PlanTask{Hardware: "nvidia-rtx4090-x86", Model: "qwen3-8b", Engine: "vllm"},
+		Result: HarvestResult{
+			Success: false,
+			Error:   "CUDA out of memory",
+		},
+	})
+	if savedTitle != "" {
+		t.Fatalf("failure notes should not be persisted, got title=%q", savedTitle)
 	}
 }

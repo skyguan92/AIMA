@@ -1575,6 +1575,449 @@ body {
 }
 .modal textarea:focus { border-color: var(--accent); background: var(--msg-tool-hover); }
 
+/* ===== Explorer view ===== */
+.agent-explorer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 0.5px solid var(--border-medium);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-smooth),
+              border-color var(--duration-fast) var(--ease-smooth),
+              background var(--duration-fast) var(--ease-smooth);
+}
+.agent-explorer-btn:hover { color: var(--text); border-color: var(--border-light); }
+.agent-explorer-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(10, 132, 255, 0.12);
+}
+.agent-explorer-btn .explorer-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-tertiary);
+  transition: background var(--duration-fast) var(--ease-smooth),
+              box-shadow var(--duration-fast) var(--ease-smooth);
+}
+.agent-explorer-btn.running .explorer-dot {
+  background: var(--success);
+  box-shadow: 0 0 6px rgba(48, 209, 88, 0.5);
+}
+.agent-explorer-btn.blocked .explorer-dot {
+  background: var(--warning);
+  box-shadow: 0 0 6px rgba(255, 159, 10, 0.45);
+}
+
+.explorer-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.explorer-tabbar {
+  display: flex;
+  gap: 4px;
+  padding: 0 16px;
+  border-bottom: 0.5px solid var(--border-medium);
+  flex-shrink: 0;
+}
+.explorer-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-smooth),
+              border-color var(--duration-fast) var(--ease-smooth);
+}
+.explorer-tab:hover { color: var(--text-dim); }
+.explorer-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.explorer-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.explorer-section {
+  background: var(--bg-secondary);
+  border: 0.5px solid var(--border-medium);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: var(--panel-shadow, 0 4px 24px rgba(0, 0, 0, 0.2));
+}
+.explorer-section-title {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0 0 12px 0;
+}
+
+.explorer-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.explorer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  border: 0.5px solid var(--border-medium);
+  color: var(--text-dim);
+  background: transparent;
+}
+.explorer-chip.idle { color: var(--text-tertiary); }
+.explorer-chip.running { color: var(--success); border-color: rgba(48, 209, 88, 0.5); background: rgba(48, 209, 88, 0.08); }
+.explorer-chip.planning { color: var(--accent); border-color: rgba(10, 132, 255, 0.5); background: rgba(10, 132, 255, 0.08); }
+.explorer-chip.blocked { color: var(--warning); border-color: rgba(255, 159, 10, 0.5); background: rgba(255, 159, 10, 0.08); }
+.explorer-chip.completed { color: var(--success); border-color: rgba(48, 209, 88, 0.35); }
+.explorer-chip.failed { color: var(--error); border-color: rgba(255, 69, 58, 0.5); background: rgba(255, 69, 58, 0.08); }
+
+.explorer-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.explorer-meta-primary {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.explorer-meta-secondary {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.explorer-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 8px;
+}
+.explorer-kpi {
+  background: var(--msg-tool-hover, rgba(255, 255, 255, 0.02));
+  border: 0.5px solid var(--border-light);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.explorer-kpi-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.explorer-kpi-value {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+.explorer-kpi-value.success { color: var(--success); }
+.explorer-kpi-value.failed  { color: var(--error); }
+.explorer-kpi-value.skipped { color: var(--warning); }
+
+.explorer-progress {
+  margin-top: 12px;
+}
+.explorer-progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.explorer-progress-bar {
+  height: 6px;
+  background: var(--border-light);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.explorer-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width var(--duration-fast) var(--ease-smooth);
+}
+
+.explorer-task-chips {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.explorer-task-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 0.5px solid var(--border-light);
+  color: var(--text-dim);
+}
+.explorer-task-chip.success { color: var(--success); border-color: rgba(48, 209, 88, 0.35); }
+.explorer-task-chip.failed  { color: var(--error);   border-color: rgba(255, 69, 58, 0.35); }
+.explorer-task-chip.skipped { color: var(--warning); border-color: rgba(255, 159, 10, 0.35); }
+
+.explorer-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.explorer-btn {
+  background: transparent;
+  border: 0.5px solid var(--border-medium);
+  color: var(--text-dim);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-smooth),
+              border-color var(--duration-fast) var(--ease-smooth),
+              background var(--duration-fast) var(--ease-smooth);
+}
+.explorer-btn:hover { color: var(--text); border-color: var(--border-light); }
+.explorer-btn.primary {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(10, 132, 255, 0.08);
+}
+.explorer-btn.primary:hover { background: rgba(10, 132, 255, 0.18); }
+.explorer-btn.danger {
+  color: var(--error);
+  border-color: rgba(255, 69, 58, 0.5);
+}
+.explorer-btn.danger:hover { background: rgba(255, 69, 58, 0.1); }
+.explorer-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.explorer-empty {
+  text-align: center;
+  padding: 24px 12px;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.explorer-md {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  background: var(--msg-tool-hover, rgba(255, 255, 255, 0.02));
+  border: 0.5px solid var(--border-light);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.explorer-feedback {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+.explorer-feedback.info { color: var(--text-dim); background: rgba(10, 132, 255, 0.08); border: 0.5px solid rgba(10, 132, 255, 0.3); }
+.explorer-feedback.error { color: var(--error); background: rgba(255, 69, 58, 0.08); border: 0.5px solid rgba(255, 69, 58, 0.4); }
+
+/* Runs tab + Run Detail drawer (D3) */
+.explorer-runs-filterbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.explorer-filter-input {
+  padding: 6px 10px;
+  background: var(--msg-tool-hover, rgba(255, 255, 255, 0.02));
+  color: var(--text);
+  border: 0.5px solid var(--border-medium);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+.explorer-select {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--msg-tool-hover, rgba(255, 255, 255, 0.02));
+  color: var(--text);
+  border: 0.5px solid var(--border-medium);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+.explorer-runs-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.explorer-runs-head,
+.explorer-runs-row {
+  display: grid;
+  grid-template-columns: 96px 72px minmax(0, 1fr) 60px 104px 72px 72px 64px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.explorer-runs-head {
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  border-bottom: 0.5px solid var(--border-medium);
+  border-radius: 0;
+  padding-bottom: 10px;
+}
+.explorer-runs-row {
+  background: rgba(255, 255, 255, 0.015);
+  border: 0.5px solid transparent;
+  transition: background var(--duration-fast) var(--ease-smooth),
+              border-color var(--duration-fast) var(--ease-smooth);
+}
+.explorer-runs-row:hover {
+  background: var(--msg-tool-hover, rgba(255, 255, 255, 0.03));
+  border-color: var(--border-light);
+}
+.explorer-runs-cell-mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.explorer-runs-cell-goal {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorer-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(520px, 100vw);
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-medium);
+  box-shadow: -20px 0 36px rgba(0, 0, 0, 0.28);
+  display: flex;
+  flex-direction: column;
+  z-index: 141;
+}
+.explorer-drawer-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--border-light);
+  margin-bottom: 10px;
+}
+
+.explorer-events {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.explorer-event {
+  border: 0.5px solid var(--border-light);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.015);
+}
+.explorer-event-summary {
+  display: grid;
+  grid-template-columns: 40px 110px 1fr 90px 70px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.explorer-event-summary:hover {
+  background: var(--msg-tool-hover, rgba(255, 255, 255, 0.03));
+}
+.explorer-event-body {
+  padding: 4px 10px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 0.5px dashed var(--border-light);
+}
+.explorer-event-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 2px;
+}
+
+@media (max-width: 768px) {
+  .explorer-runs-head { display: none; }
+  .explorer-runs-row {
+    grid-template-columns: auto 1fr auto;
+    grid-auto-rows: auto;
+    row-gap: 4px;
+  }
+  .explorer-drawer { width: 100vw; }
+  .explorer-event-summary {
+    grid-template-columns: 40px 1fr auto;
+  }
+}
+
 /* ===== Mobile ===== */
 .mobile-tabs {
   display: none;
@@ -2272,6 +2715,23 @@ body {
   opacity: 0.45;
   cursor: not-allowed;
 }
+.support-skip-btn {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-smooth);
+  white-space: nowrap;
+}
+.support-skip-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
 .support-disconnect-btn {
   align-self: center;
   padding: 8px 24px;
@@ -2343,6 +2803,496 @@ body {
     padding: 14px;
   }
 }
+
+/* ===== Onboarding Wizard (Full-Screen Overlay) ===== */
+.wiz-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: var(--bg-primary);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-y: auto;
+  padding: var(--spacing-lg);
+}
+.wiz-container {
+  width: 100%;
+  max-width: 800px;
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  animation: modalIn var(--duration-normal) var(--ease-smooth);
+}
+.wiz-header {
+  text-align: center;
+}
+.wiz-header h2 {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.5px;
+  margin-bottom: var(--spacing-xs);
+}
+.wiz-header p {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+.wiz-phase-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.wiz-phase-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  transition: background var(--duration-normal) var(--ease-smooth);
+}
+.wiz-phase-dot.active {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-dim);
+}
+.wiz-phase-dot.done {
+  background: var(--success);
+}
+.wiz-card {
+  background: var(--bg-secondary);
+  border: 0.5px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  box-shadow: var(--panel-shadow);
+}
+.wiz-card-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: var(--spacing-md);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+.wiz-card-title .wiz-icon {
+  font-size: 18px;
+}
+
+/* Hardware info grid */
+.wiz-hw-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-sm);
+}
+.wiz-hw-item {
+  background: var(--bg-panel);
+  border: var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+.wiz-hw-item .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.wiz-hw-item .value {
+  font-size: 14px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  word-break: break-word;
+}
+.wiz-hw-item .value.success { color: var(--success); }
+.wiz-hw-item .value.warning { color: var(--warning); }
+.wiz-hw-item .value.error { color: var(--error); }
+
+/* Stack status badges */
+.wiz-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+.wiz-badge.ready {
+  color: var(--success);
+  background: rgba(48, 209, 88, 0.12);
+}
+.wiz-badge.missing {
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+}
+
+/* Buttons */
+.wiz-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 28px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-smooth);
+}
+.wiz-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.wiz-btn-primary {
+  color: #fff;
+  background: var(--accent);
+}
+.wiz-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.wiz-btn-secondary {
+  color: var(--text-dim);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-medium);
+}
+.wiz-btn-secondary:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-input);
+}
+.wiz-btn-lg {
+  width: 100%;
+  padding: 18px;
+  font-size: 15px;
+  border-radius: var(--radius-md);
+}
+.wiz-actions {
+  display: flex;
+  gap: var(--spacing-md);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Init phase: command copy box */
+.wiz-cmd-box {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  background: var(--bg-panel);
+  border: var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text);
+}
+.wiz-cmd-box code {
+  flex: 1;
+  word-break: break-all;
+}
+.wiz-cmd-box .wiz-copy-btn {
+  background: var(--accent-dim);
+  border: none;
+  color: var(--accent);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  white-space: nowrap;
+}
+.wiz-cmd-box .wiz-copy-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.wiz-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+}
+.wiz-polling-note {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.wiz-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-medium);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: wizSpin 0.8s linear infinite;
+}
+@keyframes wizSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* Scan progress list */
+.wiz-scan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: var(--spacing-sm);
+  background: var(--bg-panel);
+  border: var(--panel-border);
+  border-radius: var(--radius-sm);
+}
+.wiz-scan-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--text);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.wiz-scan-item .wiz-scan-icon {
+  font-size: 14px;
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.wiz-scan-item .wiz-scan-type {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  width: 50px;
+  flex-shrink: 0;
+}
+
+/* Choosing phase: big choice cards */
+.wiz-choice-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-md);
+}
+.wiz-choice-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-lg);
+  cursor: pointer;
+  text-align: center;
+  transition: all var(--duration-fast) var(--ease-smooth);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+.wiz-choice-card:hover:not(.disabled) {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.wiz-choice-card.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.wiz-choice-card .wiz-choice-icon {
+  font-size: 32px;
+  margin-bottom: var(--spacing-xs);
+}
+.wiz-choice-card .wiz-choice-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.wiz-choice-card .wiz-choice-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* Recommend / local model cards */
+.wiz-model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--spacing-md);
+}
+.wiz-model-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  transition: border-color var(--duration-fast) var(--ease-smooth);
+}
+.wiz-model-card:hover {
+  border-color: var(--accent);
+}
+.wiz-model-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+.wiz-model-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.wiz-model-card-meta .wiz-tag {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-dim);
+}
+.wiz-model-card-perf {
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wiz-model-card-actions {
+  margin-top: auto;
+  padding-top: var(--spacing-sm);
+}
+.wiz-model-card-actions .wiz-btn {
+  width: 100%;
+  padding: 10px;
+  font-size: 13px;
+}
+
+/* Deploy progress */
+.wiz-deploy-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+.wiz-deploy-step {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md);
+  background: var(--bg-panel);
+  border: var(--panel-border);
+  border-radius: var(--radius-sm);
+}
+.wiz-deploy-step .wiz-step-icon {
+  font-size: 20px;
+  width: 32px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.wiz-deploy-step .wiz-step-body {
+  flex: 1;
+  min-width: 0;
+}
+.wiz-deploy-step .wiz-step-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.wiz-deploy-step .wiz-step-detail {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+/* Progress bar */
+.wiz-progress {
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.wiz-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s var(--ease-smooth);
+}
+.wiz-progress-fill.indeterminate {
+  width: 30% !important;
+  animation: wizIndeterminate 1.2s ease-in-out infinite;
+}
+@keyframes wizIndeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+/* Complete phase */
+.wiz-complete {
+  text-align: center;
+  padding: var(--spacing-xl) 0;
+}
+.wiz-complete-icon {
+  font-size: 56px;
+  margin-bottom: var(--spacing-md);
+}
+.wiz-complete h3 {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: var(--spacing-sm);
+}
+.wiz-complete p {
+  font-size: 14px;
+  color: var(--text-dim);
+  margin-bottom: var(--spacing-lg);
+}
+.wiz-complete .wiz-endpoint {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  padding: 6px 12px;
+  border-radius: 6px;
+  display: inline-block;
+  margin-bottom: var(--spacing-lg);
+}
+
+/* Error display */
+.wiz-error {
+  background: rgba(255, 69, 58, 0.08);
+  border: 1px solid rgba(255, 69, 58, 0.25);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-md);
+  color: var(--error);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* Wizard responsive */
+@media (max-width: 640px) {
+  .wiz-overlay {
+    padding: var(--spacing-md);
+  }
+  .wiz-header h2 {
+    font-size: 22px;
+  }
+  .wiz-hw-grid {
+    grid-template-columns: 1fr;
+  }
+  .wiz-choice-grid {
+    grid-template-columns: 1fr;
+  }
+  .wiz-model-grid {
+    grid-template-columns: 1fr;
+  }
+  .wiz-actions {
+    flex-direction: column;
+  }
+  .wiz-btn-lg {
+    padding: 14px;
+  }
+}
 </style>
 
 <script>
@@ -2355,6 +3305,414 @@ body {
 
 <body>
 <div id="app" x-data="aimaApp()" x-init="init()" @keydown.window="handleGlobalKey($event)">
+
+  <!-- ===== Onboarding Wizard Overlay ===== -->
+  <template x-if="wizActive()">
+    <div class="wiz-overlay" @keydown.escape.prevent="wizSkip()">
+      <div class="wiz-container">
+
+        <!-- Header -->
+        <div class="wiz-header">
+          <h2 x-text="t('wiz_title')"></h2>
+          <p x-text="t('wiz_subtitle')"></p>
+          <!-- Phase dots — dynamic: hide init when not needed -->
+          <div class="wiz-phase-indicator" style="margin-top:12px">
+            <template x-for="ph in wizDotPhases()" :key="ph">
+              <div class="wiz-phase-dot"
+                :class="{
+                  active: wizDotActive(ph),
+                  done: wizDotDone(ph)
+                }"
+                :style="wizDotDone(ph) ? 'cursor:pointer' : ''"
+                @click="wizDotDone(ph) && wizGoToPhase(ph)"></div>
+            </template>
+          </div>
+        </div>
+
+        <!-- LOADING phase -->
+        <div x-show="onboardingPhase === 'loading'" class="wiz-card" style="text-align:center;padding:48px">
+          <div class="wiz-spinner" style="width:24px;height:24px;margin:0 auto 16px"></div>
+          <p style="color:var(--text-dim)" x-text="t('wiz_loading')"></p>
+        </div>
+
+        <!-- DETECTING phase -->
+        <div x-show="onboardingPhase === 'detecting'" x-cloak>
+          <div class="wiz-card">
+            <div class="wiz-card-title"><span class="wiz-icon">&#x1F4BB;</span> <span x-text="t('wiz_detecting')"></span></div>
+            <div class="wiz-hw-grid">
+              <!-- GPU -->
+              <div class="wiz-hw-item">
+                <div class="label" x-text="t('wiz_gpu')"></div>
+                <div class="value" x-text="wizHwGpu()"></div>
+              </div>
+              <!-- VRAM -->
+              <div class="wiz-hw-item">
+                <div class="label" x-text="t('wiz_vram')"></div>
+                <div class="value" x-text="wizHwVram()"></div>
+              </div>
+              <!-- CPU -->
+              <div class="wiz-hw-item">
+                <div class="label" x-text="t('wiz_cpu')"></div>
+                <div class="value" x-text="wizHwCpu()"></div>
+              </div>
+              <!-- RAM -->
+              <div class="wiz-hw-item">
+                <div class="label" x-text="t('wiz_ram')"></div>
+                <div class="value" x-text="wizHwRam()"></div>
+              </div>
+              <!-- OS -->
+              <div class="wiz-hw-item">
+                <div class="label" x-text="t('wiz_os')"></div>
+                <div class="value" x-text="wizHwOs()"></div>
+              </div>
+              <!-- Profile -->
+              <div class="wiz-hw-item">
+                <div class="label" x-text="t('wiz_profile')"></div>
+                <div class="value" x-text="wizHwProfile()"></div>
+              </div>
+              <!-- Docker -->
+              <div class="wiz-hw-item">
+                <div class="label" x-text="t('wiz_docker')"></div>
+                <div class="value" :class="wizStackReady('docker') ? 'success' : 'warning'">
+                  <span class="wiz-badge" :class="wizStackReady('docker') ? 'ready' : 'missing'"
+                    x-text="wizStackReady('docker') ? t('wiz_ready') : t('wiz_not_found')"></span>
+                </div>
+              </div>
+              <!-- K3S -->
+              <div class="wiz-hw-item">
+                <div class="label" x-text="t('wiz_k3s')"></div>
+                <div class="value" :class="wizStackReady('k3s') ? 'success' : 'warning'">
+                  <span class="wiz-badge" :class="wizStackReady('k3s') ? 'ready' : 'missing'"
+                    x-text="wizStackReady('k3s') ? t('wiz_ready') : t('wiz_not_found')"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- GPU Occupancy Warning -->
+          <template x-if="onboardingData && onboardingData.gpu_occupancy && onboardingData.gpu_occupancy.length > 0">
+            <div class="wiz-card" style="margin-top:16px;border-color:var(--warning)">
+              <div class="wiz-card-title" style="color:var(--warning)">
+                <span class="wiz-icon">&#x26A0;</span>
+                <span x-text="t('wiz_gpu_occupied')"></span>
+              </div>
+              <p style="color:var(--text-dim);font-size:13px;margin-bottom:12px" x-text="t('wiz_gpu_occupied_desc')"></p>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <template x-for="(proc, pi) in onboardingData.gpu_occupancy" :key="pi">
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-panel);border:var(--panel-border);border-radius:var(--radius-sm)">
+                    <div>
+                      <div style="font-size:14px;font-weight:600;color:var(--text)" x-text="proc.name"></div>
+                      <div style="font-size:12px;color:var(--text-dim)">
+                        <span x-text="proc.image"></span>
+                        <span x-show="proc.gpu_mem_mib > 0" x-text="' \u00B7 GPU ' + (proc.gpu_mem_mib / 1024).toFixed(1) + ' GB'"></span>
+                      </div>
+                    </div>
+                    <button class="wiz-btn wiz-btn-secondary" style="font-size:12px;padding:6px 14px;white-space:nowrap"
+                      :style="proc._stopping ? 'opacity:0.5;pointer-events:none' : ''"
+                      @click="wizStopContainer(proc, pi)"
+                      x-text="proc._stopping ? t('wiz_stopping') : t('wiz_stop_container')"></button>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+          <div class="wiz-actions" style="margin-top:16px">
+            <template x-if="wizNeedsInit()">
+              <button class="wiz-btn wiz-btn-primary" @click="wizEnterInit()" x-text="t('wiz_continue_setup')"></button>
+            </template>
+            <template x-if="!wizNeedsInit()">
+              <button class="wiz-btn wiz-btn-primary" @click="wizStartScan()" x-text="t('wiz_continue_scan')"></button>
+            </template>
+            <button class="wiz-btn wiz-btn-secondary" @click="wizSkip()">Skip</button>
+          </div>
+        </div>
+
+        <!-- INIT phase -->
+        <div x-show="onboardingPhase === 'init'" x-cloak>
+          <div class="wiz-card">
+            <div class="wiz-card-title"><span class="wiz-icon">&#x2699;</span> <span x-text="t('wiz_init')"></span></div>
+            <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px" x-text="t('wiz_needs_init')"></p>
+
+            <template x-if="wizCanAutoInit()">
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div class="wiz-hint">
+                  <span x-text="'Automatic ' + wizInitTier() + ' stack setup is running in this browser session.'"></span>
+                </div>
+                <div class="wiz-scan-list">
+                  <template x-for="(item, i) in onboardingInitLog" :key="i">
+                    <div class="wiz-scan-item">
+                      <span class="wiz-scan-icon" x-text="item.type === 'component' ? '\u2714' : '\u2699'"></span>
+                      <span class="wiz-scan-type" x-text="item.type"></span>
+                      <span x-text="item.name"></span>
+                    </div>
+                  </template>
+                  <div class="wiz-scan-item" x-show="onboardingInitLog.length === 0 || onboardingInitRunning">
+                    <span class="wiz-spinner"></span>
+                    <span x-text="onboardingInitRunning ? t('wiz_init_polling') : ('Waiting for ' + wizInitTier() + ' stack setup...')"></span>
+                  </div>
+                </div>
+                <div class="wiz-error" x-show="onboardingInitError" x-text="onboardingInitError"></div>
+              </div>
+            </template>
+
+            <template x-if="!wizCanAutoInit()">
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <!-- Linux instructions -->
+                <template x-if="wizPlatform() === 'linux'">
+                  <div style="display:flex;flex-direction:column;gap:12px">
+                    <p style="font-size:13px;color:var(--text-dim)" x-text="t('wiz_init_linux')"></p>
+                    <div class="wiz-cmd-box">
+                      <code x-text="wizInitCommand()"></code>
+                      <button class="wiz-copy-btn" @click="wizCopyText(wizInitCommand(), $event)" x-text="t('wiz_copy')"></button>
+                    </div>
+                    <p class="wiz-hint" x-show="wizInitBlockedReason()" x-text="wizInitBlockedReason()"></p>
+                  </div>
+                </template>
+
+                <!-- macOS instructions -->
+                <template x-if="wizPlatform() === 'darwin'">
+                  <div style="display:flex;flex-direction:column;gap:12px">
+                    <template x-if="wizStackReady('docker')">
+                      <p style="font-size:13px;color:var(--success)" x-text="t('wiz_init_mac_ready')"></p>
+                    </template>
+                    <template x-if="!wizStackReady('docker')">
+                      <p style="font-size:13px;color:var(--text-dim)" x-text="t('wiz_init_mac')"></p>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- Windows instructions -->
+                <template x-if="wizPlatform() === 'windows'">
+                  <div>
+                    <p style="font-size:13px;color:var(--text-dim)" x-text="t('wiz_init_win')"></p>
+                  </div>
+                </template>
+
+                <!-- Polling status -->
+                <div class="wiz-polling-note" style="margin-top:16px">
+                  <span class="wiz-spinner"></span>
+                  <span x-text="onboardingInitTimeout ? t('wiz_init_timeout') : t('wiz_init_polling')"></span>
+                </div>
+              </div>
+            </template>
+          </div>
+          <div class="wiz-actions" style="margin-top:16px">
+            <button class="wiz-btn wiz-btn-secondary" @click="wizCanAutoInit() ? wizCancelInit() : wizSkipInit()" x-text="wizCanAutoInit() ? t('wiz_cancel') : t('wiz_skip_native')"></button>
+          </div>
+        </div>
+
+        <!-- SCANNING phase -->
+        <div x-show="onboardingPhase === 'scanning'" x-cloak>
+          <div class="wiz-card">
+            <div class="wiz-card-title"><span class="wiz-icon">&#x1F50D;</span> <span x-text="t('wiz_scanning')"></span></div>
+            <div class="wiz-scan-list">
+              <template x-for="(item, i) in onboardingScanLog" :key="i">
+                <div class="wiz-scan-item">
+                  <span class="wiz-scan-icon" x-text="item.type === 'engine' ? '\u2699' : item.type === 'model' ? '\u25A0' : '\u2714'"></span>
+                  <span class="wiz-scan-type" x-text="item.type"></span>
+                  <span x-text="item.name"></span>
+                </div>
+              </template>
+              <div class="wiz-scan-item" x-show="!onboardingScanDone && onboardingScanLog.length === 0">
+                <span class="wiz-spinner"></span>
+                <span x-text="t('wiz_scanning_engines')"></span>
+              </div>
+            </div>
+            <!-- Central status -->
+            <div style="margin-top:12px;display:flex;align-items:center;gap:8px">
+              <span style="font-size:12px;color:var(--text-tertiary)" x-text="t('wiz_scan_central') + ':'"></span>
+              <span class="wiz-badge" :class="onboardingScanResults.centralConnected ? 'ready' : 'missing'"
+                x-text="onboardingScanResults.centralConnected ? t('wiz_scan_central_connected') : t('wiz_scan_central_offline')"></span>
+            </div>
+            <!-- Scan summary + continue (shown when scan completes) -->
+            <template x-if="onboardingScanDone">
+              <div style="margin-top:16px;padding:12px;background:var(--bg-panel);border-radius:var(--radius-sm)">
+                <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:4px" x-text="t('wiz_scan_complete')"></div>
+                <div style="font-size:13px;color:var(--text-dim)">
+                  <span x-text="t('wiz_engine_label') + ': ' + onboardingScanResults.engines.length"></span>
+                  <span style="margin-left:16px" x-text="t('models') + ': ' + onboardingScanResults.models.length"></span>
+                </div>
+              </div>
+            </template>
+          </div>
+          <div class="wiz-actions" style="margin-top:16px">
+            <button class="wiz-btn wiz-btn-secondary" @click="onboardingPhase = 'detecting'" x-text="t('wiz_back')"></button>
+            <template x-if="onboardingScanDone">
+              <button class="wiz-btn wiz-btn-primary" @click="onboardingPhase = 'choosing'" x-text="t('wiz_continue')"></button>
+            </template>
+          </div>
+        </div>
+
+        <!-- CHOOSING phase -->
+        <div x-show="onboardingPhase === 'choosing'" x-cloak>
+          <div class="wiz-card">
+            <div class="wiz-card-title"><span class="wiz-icon">&#x1F914;</span> <span x-text="t('wiz_choosing')"></span></div>
+            <div class="wiz-choice-grid">
+              <div class="wiz-choice-card" @click="wizGoRecommend()">
+                <div class="wiz-choice-icon">&#x2728;</div>
+                <div class="wiz-choice-title" x-text="t('wiz_choose_recommended')"></div>
+                <div class="wiz-choice-desc" x-text="t('wiz_choose_recommended_desc')"></div>
+              </div>
+              <div class="wiz-choice-card"
+                :class="{ disabled: onboardingScanResults.models.length === 0 }"
+                @click="onboardingScanResults.models.length > 0 && (onboardingPhase = 'local')">
+                <div class="wiz-choice-icon">&#x1F4BE;</div>
+                <div class="wiz-choice-title" x-text="t('wiz_choose_local')"></div>
+                <div class="wiz-choice-desc" x-text="onboardingScanResults.models.length > 0 ? (onboardingScanResults.models.length + ' ' + t('models')) : t('wiz_no_local_models')"></div>
+              </div>
+            </div>
+          </div>
+          <div class="wiz-actions" style="margin-top:16px">
+            <button class="wiz-btn wiz-btn-secondary" @click="onboardingPhase = 'scanning'" x-text="t('wiz_back')"></button>
+            <button class="wiz-btn wiz-btn-secondary" @click="wizSkip()">Skip</button>
+          </div>
+        </div>
+
+        <!-- RECOMMEND phase -->
+        <div x-show="onboardingPhase === 'recommend'" x-cloak>
+          <div class="wiz-card">
+            <div class="wiz-card-title"><span class="wiz-icon">&#x2728;</span> <span x-text="t('wiz_recommend')"></span></div>
+            <!-- Loading -->
+            <div x-show="onboardingRecommendLoading" style="text-align:center;padding:24px">
+              <div class="wiz-spinner" style="width:20px;height:20px;margin:0 auto 12px"></div>
+            </div>
+            <!-- No results -->
+            <div x-show="!onboardingRecommendLoading && onboardingRecommendations.length === 0" class="wiz-hint" x-text="t('wiz_no_recommendations')"></div>
+            <!-- Model grid -->
+            <div class="wiz-model-grid" x-show="!onboardingRecommendLoading && onboardingRecommendations.length > 0">
+              <template x-for="(rec, i) in onboardingRecommendations" :key="i">
+                <div class="wiz-model-card">
+                  <div class="wiz-model-card-name">
+                    <span x-text="rec.model_name"></span>
+                    <span class="wiz-badge" x-show="rec.fit_score" x-text="'fit: ' + rec.fit_score + '%'" style="float:right;font-size:12px"></span>
+                  </div>
+                  <div class="wiz-model-card-meta">
+                    <span class="wiz-tag" x-show="rec.parameter_count" x-text="rec.parameter_count + (rec.active_params ? ' (' + rec.active_params + ' active)' : '')"></span>
+                    <span class="wiz-tag" x-show="rec.variant && rec.variant.format" x-text="rec.variant.format"></span>
+                    <span class="wiz-tag" x-show="rec.variant && rec.variant.precision_label" x-text="rec.variant.precision_label"></span>
+                    <span class="wiz-tag" x-show="rec.variant && rec.variant.disk_size_mib" x-text="(rec.variant.disk_size_mib / 1024).toFixed(1) + ' GB'"></span>
+                  </div>
+                  <div class="wiz-model-card-perf">
+                    <span x-show="rec.engine && rec.engine.type"><span style="color:var(--text-tertiary)" x-text="t('wiz_engine_label') + ': '"></span><span x-text="rec.engine.type + (rec.engine.image ? ' (' + rec.engine.image.split(':').pop() + ')' : '')"></span></span>
+                    <span x-show="rec.engine && rec.engine.cold_start_s"><span style="color:var(--text-tertiary)" x-text="t('wiz_cold_start') + ': '"></span><span x-text="Array.isArray(rec.engine.cold_start_s) ? rec.engine.cold_start_s[0]+'-'+rec.engine.cold_start_s[1]+'s' : rec.engine.cold_start_s+'s'"></span></span>
+                    <span x-show="rec.performance && rec.performance.tokens_per_second"><span style="color:var(--text-tertiary)" x-text="t('wiz_perf_tps') + ': '"></span><span x-text="Array.isArray(rec.performance.tokens_per_second) ? rec.performance.tokens_per_second[0]+'-'+rec.performance.tokens_per_second[1] : rec.performance.tokens_per_second"></span></span>
+                  </div>
+                  <div class="wiz-model-card-perf" style="margin-top:4px">
+                    <span x-text="(rec.engine_status && rec.engine_status.installed ? '\u2705 ' + t('wiz_engine_installed') : '\uD83D\uDCE5 ' + t('wiz_engine_needs_dl'))"></span>
+                    <span x-text="(rec.model_status && rec.model_status.local_available ? '\u2705 ' + t('wiz_model_local') : '\uD83D\uDCE5 ' + t('wiz_model_needs_dl'))"></span>
+                  </div>
+                  <div class="wiz-model-card-actions">
+                    <button class="wiz-btn wiz-btn-primary"
+                      x-show="rec.engine_status && rec.engine_status.installed && rec.model_status && rec.model_status.local_available"
+                      @click="wizDeploy(rec)" x-text="t('wiz_run')"></button>
+                    <button class="wiz-btn wiz-btn-primary"
+                      x-show="!(rec.engine_status && rec.engine_status.installed && rec.model_status && rec.model_status.local_available) && !(rec.engine_status && rec.engine_status.needs_build)"
+                      @click="wizDeploy(rec)" x-text="t('wiz_download_deploy')"></button>
+                    <button class="wiz-btn wiz-btn-secondary"
+                      x-show="rec.engine_status && rec.engine_status.needs_build"
+                      disabled x-text="t('wiz_build_required')"></button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+          <div class="wiz-actions" style="margin-top:16px">
+            <button class="wiz-btn wiz-btn-secondary" @click="onboardingPhase = 'choosing'" x-text="t('wiz_back')"></button>
+          </div>
+        </div>
+
+        <!-- LOCAL phase -->
+        <div x-show="onboardingPhase === 'local'" x-cloak>
+          <div class="wiz-card">
+            <div class="wiz-card-title"><span class="wiz-icon">&#x1F4BE;</span> <span x-text="t('wiz_local')"></span></div>
+            <div class="wiz-model-grid">
+              <template x-for="(m, i) in onboardingScanResults.models" :key="i">
+                <div class="wiz-model-card">
+                  <div class="wiz-model-card-name" x-text="m.name || m.model"></div>
+                  <div class="wiz-model-card-meta">
+                    <span class="wiz-tag" x-show="m.format" x-text="m.format"></span>
+                    <span class="wiz-tag" x-show="m.size" x-text="m.size"></span>
+                    <span class="wiz-tag" x-show="m.engine" x-text="m.engine"></span>
+                  </div>
+                  <div class="wiz-model-card-actions">
+                    <button class="wiz-btn wiz-btn-primary" @click="wizDeployLocal(m)" x-text="t('wiz_run')"></button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+          <div class="wiz-actions" style="margin-top:16px">
+            <button class="wiz-btn wiz-btn-secondary" @click="onboardingPhase = 'choosing'" x-text="t('wiz_back')"></button>
+          </div>
+        </div>
+
+        <!-- DEPLOYING phase -->
+        <div x-show="onboardingPhase === 'deploying'" x-cloak>
+          <div class="wiz-card">
+            <div class="wiz-card-title"><span class="wiz-icon">&#x1F680;</span> <span x-text="t('wiz_deploying')"></span></div>
+            <div class="wiz-deploy-steps">
+              <template x-for="(step, i) in (onboardingDeployProgress || {}).steps || []" :key="i">
+                <div class="wiz-deploy-step">
+                  <div class="wiz-step-icon" x-text="step.status === 'done' ? '\u2705' : step.status === 'error' ? '\u274C' : step.status === 'active' ? '\u23F3' : '\u23F8'"></div>
+                  <div class="wiz-step-body">
+                    <div class="wiz-step-title" x-text="step.label"></div>
+                    <div class="wiz-step-detail" x-show="step.detail" x-text="step.detail"></div>
+                    <template x-if="step.status === 'active' && step.progress >= 0">
+                      <div class="wiz-progress">
+                        <div class="wiz-progress-fill" :class="{ indeterminate: step.progress < 0 }"
+                          :style="step.progress >= 0 ? 'width:' + step.progress + '%' : ''"></div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+            <!-- Error -->
+            <div class="wiz-error" x-show="(onboardingDeployProgress || {}).error" x-text="(onboardingDeployProgress || {}).error"></div>
+            <!-- GPU Occupancy in deploy error state — let user stop services and retry -->
+            <template x-if="(onboardingDeployProgress || {}).error && onboardingData && onboardingData.gpu_occupancy && onboardingData.gpu_occupancy.length > 0">
+              <div style="margin-top:12px;padding:14px;background:var(--bg-panel);border:1px solid var(--warning);border-radius:var(--radius-sm)">
+                <div style="font-size:13px;font-weight:600;color:var(--warning);margin-bottom:8px" x-text="t('wiz_gpu_occupied')"></div>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  <template x-for="(proc, pi) in onboardingData.gpu_occupancy" :key="'deploy-'+pi">
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg-primary);border-radius:var(--radius-sm)">
+                      <div>
+                        <span style="font-size:13px;font-weight:600;color:var(--text)" x-text="proc.name"></span>
+                        <span style="font-size:11px;color:var(--text-dim);margin-left:6px" x-text="proc.image"></span>
+                      </div>
+                      <button class="wiz-btn wiz-btn-secondary" style="font-size:11px;padding:4px 12px"
+                        @click="wizStopContainer(proc, pi)"
+                        x-text="proc._stopping ? t('wiz_stopping') : t('wiz_stop_container')"></button>
+                    </div>
+                  </template>
+                </div>
+                <button class="wiz-btn wiz-btn-primary" style="margin-top:10px;font-size:13px"
+                  @click="wizRetryDeploy()" x-text="t('wiz_retry_deploy')"></button>
+              </div>
+            </template>
+          </div>
+          <div class="wiz-actions" style="margin-top:16px">
+            <button class="wiz-btn wiz-btn-secondary" @click="wizCancelDeploy()" x-text="t('wiz_cancel')"></button>
+          </div>
+        </div>
+
+        <!-- COMPLETE phase (success screen) -->
+        <template x-if="onboardingPhase === 'done'">
+          <div class="wiz-card">
+            <div class="wiz-complete">
+              <div class="wiz-complete-icon">&#x2705;</div>
+              <h3 x-text="t('wiz_complete_title')"></h3>
+              <p x-text="t('wiz_model_ready') + ' ' + (onboardingDeployModel || '')"></p>
+              <div class="wiz-endpoint" x-show="onboardingDeployEndpoint" x-text="onboardingDeployEndpoint"></div>
+              <div style="margin-top:8px">
+                <button class="wiz-btn wiz-btn-primary wiz-btn-lg" @click="wizFinish()" x-text="t('wiz_start_chatting')"></button>
+              </div>
+            </div>
+          </div>
+        </template>
+
+      </div>
+    </div>
+  </template>
 
   <!-- Top Bar -->
   <div class="topbar">
@@ -2565,6 +3923,13 @@ body {
           <button class="agent-onboarding-btn" x-ref="onboardingTrigger" @click="openOnboardingDrawer()" :title="t('onboarding_title')">
             <span x-text="t('onboarding_title')"></span>
           </button>
+          <button class="agent-explorer-btn"
+            :class="{ active: currentView === 'explorer', running: explorerPhaseTone() === 'running', blocked: explorerPhaseTone() === 'blocked' }"
+            @click="toggleExplorerView()"
+            :title="t('explorer_view')">
+            <span class="explorer-dot"></span>
+            <span x-text="t('explorer_view')"></span>
+          </button>
           <button class="agent-support-btn"
             :class="{ active: currentView === 'support', connected: supportConnected }"
             @click="openSupportFlow()">
@@ -2667,6 +4032,192 @@ body {
         </div>
       </div>
 
+      <!-- Explorer View -->
+      <div x-show="currentView === 'explorer'" class="explorer-page" x-cloak>
+        <div class="explorer-tabbar">
+          <button class="explorer-tab"
+            :class="{ active: explorerTab === 'overview' }"
+            @click="explorerTab = 'overview'"
+            x-text="t('explorer_tab_overview')"></button>
+          <button class="explorer-tab"
+            :class="{ active: explorerTab === 'runs' }"
+            @click="openRunsTab()"
+            x-text="t('explorer_tab_runs')"></button>
+        </div>
+
+        <div class="explorer-scroll" x-show="explorerTab === 'overview'">
+          <!-- A1: Current Run Status -->
+          <section class="explorer-section">
+            <div class="explorer-section-title" x-text="t('explorer_current_run')"></div>
+            <div class="explorer-status-row">
+              <span class="explorer-chip"
+                :class="explorerPhaseTone()"
+                x-text="(explorerStatus && explorerStatus.phase) || 'idle'"></span>
+              <div class="explorer-meta">
+                <div class="explorer-meta-primary" x-text="explorerCurrentGoal()"></div>
+                <div class="explorer-meta-secondary" x-text="explorerCurrentMeta()"></div>
+              </div>
+            </div>
+
+            <!-- Progress bar (only while running) -->
+            <template x-if="explorerTaskTotal() > 0">
+              <div class="explorer-progress">
+                <div class="explorer-progress-label">
+                  <span x-text="t('explorer_tasks_progress') + ': ' + explorerTaskCompleted() + ' / ' + explorerTaskTotal()"></span>
+                  <span x-text="explorerTaskPct() + '%'"></span>
+                </div>
+                <div class="explorer-progress-bar">
+                  <div class="explorer-progress-fill" :style="'width: ' + explorerTaskPct() + '%'"></div>
+                </div>
+                <div class="explorer-task-chips">
+                  <span class="explorer-task-chip success" x-text="'&check; ' + (explorerLastMetrics()?.completed || 0)"></span>
+                  <span class="explorer-task-chip failed"  x-text="'&times; ' + (explorerLastMetrics()?.failed || 0)"></span>
+                  <span class="explorer-task-chip skipped" x-text="'⊘ ' + (explorerLastMetrics()?.skipped || 0)"></span>
+                </div>
+              </div>
+            </template>
+
+            <div class="explorer-actions">
+              <button class="explorer-btn primary"
+                @click="openExplorerTrigger()"
+                :disabled="explorerTriggering"
+                x-text="t('explorer_trigger_btn')"></button>
+              <button class="explorer-btn danger"
+                x-show="explorerStatus && explorerStatus.running"
+                @click="explorerCancel()"
+                x-text="t('explorer_cancel_btn')"></button>
+              <button class="explorer-btn"
+                @click="explorerRefresh()"
+                x-text="t('explorer_refresh_btn')"></button>
+            </div>
+
+            <template x-if="explorerFeedback">
+              <div class="explorer-feedback" :class="explorerFeedback.type" x-text="explorerFeedback.text"></div>
+            </template>
+          </section>
+
+          <!-- A2: DB Delta Counter -->
+          <section class="explorer-section">
+            <div class="explorer-section-title" x-text="t('explorer_db_delta')"></div>
+            <div class="explorer-kpi-grid">
+              <div class="explorer-kpi">
+                <div class="explorer-kpi-label" x-text="t('explorer_db_configurations')"></div>
+                <div class="explorer-kpi-value" x-text="explorerDbDeltas.configurations || 0"></div>
+              </div>
+              <div class="explorer-kpi">
+                <div class="explorer-kpi-label" x-text="t('explorer_db_benchmark_results')"></div>
+                <div class="explorer-kpi-value" x-text="explorerDbDeltas.benchmark_results || 0"></div>
+              </div>
+              <div class="explorer-kpi">
+                <div class="explorer-kpi-label" x-text="t('explorer_db_events')"></div>
+                <div class="explorer-kpi-value" x-text="explorerDbDeltas.exploration_events || 0"></div>
+              </div>
+            </div>
+            <div style="margin-top:8px;font-family:var(--font-mono);font-size:10px;color:var(--text-tertiary);"
+                 x-text="t('explorer_db_since') + ': ' + (explorerDbSince || '—')"></div>
+          </section>
+
+          <!-- A4: Latest Summary -->
+          <section class="explorer-section">
+            <div class="explorer-section-title" x-text="t('explorer_latest_summary')"></div>
+            <template x-if="!explorerLatestRun">
+              <div class="explorer-empty" x-text="t('explorer_no_runs')"></div>
+            </template>
+            <template x-if="explorerLatestRun">
+              <div>
+                <div class="explorer-status-row">
+                  <span class="explorer-chip" :class="explorerLatestRun.status"
+                        x-text="explorerLatestRun.status"></span>
+                  <div class="explorer-meta">
+                    <div class="explorer-meta-primary" x-text="explorerLatestRun.goal || '(no goal)'"></div>
+                    <div class="explorer-meta-secondary"
+                         x-text="(explorerLatestRun.kind || 'run') + ' · ' + (explorerLatestRun.id || '')"></div>
+                  </div>
+                </div>
+                <template x-if="explorerSummaryDoc && explorerSummaryDoc.exists">
+                  <pre class="explorer-md" x-text="explorerSummaryDoc.content"></pre>
+                </template>
+                <template x-if="explorerSummaryDoc && !explorerSummaryDoc.exists">
+                  <div class="explorer-empty" x-text="t('explorer_summary_missing')"></div>
+                </template>
+              </div>
+            </template>
+          </section>
+        </div>
+
+        <!-- Runs tab — historical exploration_runs rows -->
+        <div class="explorer-scroll" x-show="explorerTab === 'runs'">
+          <section class="explorer-section">
+            <div class="explorer-section-title" x-text="t('explorer_runs_title')"></div>
+
+            <div class="explorer-runs-filterbar">
+              <select class="explorer-filter-input"
+                      x-model="explorerRunsFilter.status"
+                      @change="refreshExplorerRuns()">
+                <option value="" x-text="t('explorer_runs_filter_status_all')"></option>
+                <option value="planning">planning</option>
+                <option value="needs_approval">needs_approval</option>
+                <option value="queued">queued</option>
+                <option value="running">running</option>
+                <option value="completed">completed</option>
+                <option value="failed">failed</option>
+                <option value="blocked">blocked</option>
+              </select>
+              <select class="explorer-filter-input"
+                      x-model="explorerRunsFilter.kind"
+                      @change="refreshExplorerRuns()">
+                <option value="" x-text="t('explorer_runs_filter_kind_all')"></option>
+                <option value="validate">validate</option>
+                <option value="tune">tune</option>
+                <option value="open_question">open_question</option>
+              </select>
+              <button class="explorer-btn"
+                      @click="refreshExplorerRuns()"
+                      x-text="t('explorer_refresh_btn')"></button>
+            </div>
+
+            <template x-if="explorerRunsLoading && explorerRuns.length === 0">
+              <div class="explorer-empty" x-text="t('loading')"></div>
+            </template>
+
+            <template x-if="!explorerRunsLoading && explorerRuns.length === 0">
+              <div class="explorer-empty" x-text="t('explorer_no_runs')"></div>
+            </template>
+
+            <template x-if="explorerRuns.length > 0">
+              <div class="explorer-runs-table">
+                <div class="explorer-runs-head">
+                  <span x-text="t('explorer_runs_col_status')"></span>
+                  <span x-text="t('explorer_runs_col_kind')"></span>
+                  <span x-text="t('explorer_runs_col_goal')"></span>
+                  <span x-text="t('explorer_runs_col_tier')"></span>
+                  <span x-text="t('explorer_runs_col_tasks')"></span>
+                  <span x-text="t('explorer_runs_col_started')"></span>
+                  <span x-text="t('explorer_runs_col_duration')"></span>
+                  <span></span>
+                </div>
+                <template x-for="run in explorerRuns" :key="run.id">
+                  <div class="explorer-runs-row">
+                    <span class="explorer-chip" :class="run.status" x-text="run.status"></span>
+                    <span class="explorer-runs-cell-mono" x-text="run.kind"></span>
+                    <span class="explorer-runs-cell-goal"
+                          :title="run.goal || ''"
+                          x-text="run.goal || '—'"></span>
+                    <span class="explorer-runs-cell-mono" x-text="runPlanTier(run)"></span>
+                    <span class="explorer-runs-cell-mono" x-text="runTaskChips(run)"></span>
+                    <span class="explorer-runs-cell-mono" x-text="runRelativeTime(run.started_at)"></span>
+                    <span class="explorer-runs-cell-mono" x-text="runDuration(run)"></span>
+                    <button class="explorer-btn"
+                            @click="openRunDrawer(run.id)"
+                            x-text="t('explorer_runs_detail')"></button>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </section>
+        </div>
+      </div>
+
       <!-- Support View -->
       <div x-show="currentView === 'support'" class="support-page" x-cloak>
         <div class="support-page-shell">
@@ -2758,6 +4309,7 @@ body {
                   :placeholder="supportPageInputPlaceholder()"
                   :disabled="supportPageInputDisabled()">
                 <button @click="submitSupportInput()" :disabled="!supportPageCanSubmit()" x-text="supportPageButtonLabel()"></button>
+                <button x-show="supportPagePrompt" @click="skipSupportConnect()" class="support-skip-btn" x-text="t('support_skip')"></button>
               </div>
 
               <button class="support-disconnect-btn" x-show="supportConnected" @click="disconnectSupport()" x-text="supportDisconnectLabel()"></button>
@@ -3165,6 +4717,7 @@ body {
                   :placeholder="supportPageInputPlaceholder()"
                   :disabled="supportPageInputDisabled()">
                 <button @click="submitSupportInput()" :disabled="!supportPageCanSubmit()" x-text="supportPageButtonLabel()"></button>
+                <button x-show="supportPagePrompt" @click="skipSupportConnect()" class="support-skip-btn" x-text="t('support_skip')"></button>
               </div>
               <button class="support-disconnect-btn" x-show="supportConnected" @click="disconnectSupport()" x-text="supportDisconnectLabel()"></button>
             </div>
@@ -3304,6 +4857,183 @@ body {
           <button class="modal-btn primary" @click="saveSettings()" :disabled="settingsSaving" x-text="settingsSaving ? t('saving') : t('save')"></button>
         </div>
       </div>
+    </div>
+  </template>
+
+  <!-- Explorer Trigger Modal -->
+  <template x-if="explorerTriggerOpen">
+    <div class="modal-overlay" @click.self="explorerTriggerOpen = false">
+      <div class="modal">
+        <h3 x-text="t('explorer_trigger_title')"></h3>
+
+        <template x-if="explorerTriggerFeedback">
+          <div class="modal-feedback" :class="explorerTriggerFeedback.type" x-text="explorerTriggerFeedback.text"></div>
+        </template>
+
+        <div class="modal-section">
+          <div class="modal-field">
+            <label x-text="t('explorer_trigger_kind')"></label>
+            <select class="explorer-select" x-model="explorerTriggerForm.kind">
+              <option value="validate">validate</option>
+              <option value="tune">tune</option>
+              <option value="open_question">open_question</option>
+            </select>
+          </div>
+
+          <div class="modal-field">
+            <label x-text="t('explorer_trigger_model')"></label>
+            <template x-if="Array.isArray(models) && models.length > 0">
+              <select class="explorer-select" x-model="explorerTriggerForm.model">
+                <option value="" x-text="t('explorer_trigger_model_ph')"></option>
+                <template x-for="m in models" :key="m.name || m.id">
+                  <option :value="m.name || m.id" x-text="m.name || m.id"></option>
+                </template>
+              </select>
+            </template>
+            <template x-if="!Array.isArray(models) || models.length === 0">
+              <input type="text" class="explorer-select" x-model="explorerTriggerForm.model"
+                     :placeholder="t('explorer_trigger_model_ph')" />
+            </template>
+            <div class="modal-hint" x-text="t('explorer_trigger_model_hint')"></div>
+          </div>
+
+          <div class="modal-field">
+            <label x-text="t('explorer_trigger_goal')"></label>
+            <textarea x-model="explorerTriggerForm.goal"
+                      :placeholder="t('explorer_trigger_goal_ph')"
+                      rows="3"></textarea>
+            <div class="modal-hint" x-text="t('explorer_trigger_goal_hint')"></div>
+          </div>
+
+          <div class="modal-field">
+            <label x-text="t('explorer_trigger_approval')"></label>
+            <select class="explorer-select" x-model="explorerTriggerForm.approval_mode">
+              <option value="auto">auto</option>
+              <option value="needs_approval">needs_approval</option>
+            </select>
+          </div>
+
+          <div class="modal-hint" x-text="t('explorer_trigger_local_note')"></div>
+        </div>
+
+        <div class="modal-actions">
+          <button class="modal-btn" @click="explorerTriggerOpen = false" x-text="t('cancel')"></button>
+          <button class="modal-btn primary"
+                  @click="submitExplorerTrigger()"
+                  :disabled="explorerTriggering || !explorerTriggerForm.goal.trim() || !(explorerTriggerForm.model || '').trim()"
+                  x-text="explorerTriggering ? t('saving') : t('explorer_trigger_submit')"></button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- Explorer Run Detail Drawer (D3) -->
+  <template x-if="explorerDrawerRunId">
+    <div>
+      <div class="onboarding-overlay" @click="closeRunDrawer()"></div>
+      <aside class="explorer-drawer" role="dialog" aria-modal="true" :aria-label="t('explorer_drawer_title')">
+        <div class="onboarding-drawer-header">
+          <div>
+            <h3 class="onboarding-drawer-title" x-text="t('explorer_drawer_title')"></h3>
+            <p class="onboarding-drawer-subtitle" x-text="explorerDrawerRunId"></p>
+          </div>
+          <button class="onboarding-close-btn" @click="closeRunDrawer()" :title="t('cancel')">&times;</button>
+        </div>
+
+        <div class="onboarding-tabs">
+          <button type="button"
+                  :class="{ active: explorerDrawerTab === 'summary' }"
+                  @click="switchDrawerTab('summary')"
+                  x-text="t('explorer_drawer_tab_summary')"></button>
+          <button type="button"
+                  :class="{ active: explorerDrawerTab === 'plan' }"
+                  @click="switchDrawerTab('plan')"
+                  x-text="t('explorer_drawer_tab_plan')"></button>
+          <button type="button"
+                  :class="{ active: explorerDrawerTab === 'events' }"
+                  @click="switchDrawerTab('events')"
+                  x-text="t('explorer_drawer_tab_events')"></button>
+        </div>
+
+        <div class="onboarding-drawer-body">
+          <div class="onboarding-loading" x-show="explorerDrawerLoading" x-text="t('loading')"></div>
+
+          <template x-if="explorerDrawerRun">
+            <div class="explorer-drawer-meta">
+              <span class="explorer-chip" :class="explorerDrawerRun.status" x-text="explorerDrawerRun.status"></span>
+              <span class="explorer-runs-cell-mono" x-text="explorerDrawerRun.kind || ''"></span>
+              <span class="explorer-runs-cell-mono" x-text="runPlanTier(explorerDrawerRun)"></span>
+              <span class="explorer-runs-cell-mono"
+                    x-text="t('explorer_runs_col_started') + ': ' + runRelativeTime(explorerDrawerRun.started_at)"></span>
+              <span class="explorer-runs-cell-mono"
+                    x-text="t('explorer_runs_col_duration') + ': ' + runDuration(explorerDrawerRun)"></span>
+            </div>
+          </template>
+
+          <!-- Summary tab -->
+          <template x-if="explorerDrawerTab === 'summary'">
+            <div>
+              <template x-if="explorerDrawerDocs['summary.md'] && explorerDrawerDocs['summary.md'].exists">
+                <pre class="explorer-md" x-text="explorerDrawerDocs['summary.md'].content"></pre>
+              </template>
+              <template x-if="explorerDrawerDocs['summary.md'] && !explorerDrawerDocs['summary.md'].exists">
+                <div class="explorer-empty" x-text="t('explorer_summary_missing')"></div>
+              </template>
+            </div>
+          </template>
+
+          <!-- Plan tab -->
+          <template x-if="explorerDrawerTab === 'plan'">
+            <div>
+              <template x-if="explorerDrawerDocs['plan.md'] && explorerDrawerDocs['plan.md'].exists">
+                <pre class="explorer-md" x-text="explorerDrawerDocs['plan.md'].content"></pre>
+              </template>
+              <template x-if="explorerDrawerDocs['plan.md'] && !explorerDrawerDocs['plan.md'].exists">
+                <div class="explorer-empty" x-text="t('explorer_plan_missing')"></div>
+              </template>
+            </div>
+          </template>
+
+          <!-- Events tab -->
+          <template x-if="explorerDrawerTab === 'events'">
+            <div class="explorer-events">
+              <template x-if="!explorerDrawerLoading && explorerDrawerEvents.length === 0">
+                <div class="explorer-empty" x-text="t('explorer_events_empty')"></div>
+              </template>
+              <template x-for="ev in explorerDrawerEvents" :key="ev.id">
+                <div class="explorer-event">
+                  <div class="explorer-event-summary" @click="toggleDrawerEvent(ev.id)">
+                    <span class="explorer-runs-cell-mono" x-text="'#' + ev.step_index"></span>
+                    <span class="explorer-runs-cell-mono" x-text="ev.step_kind || ''"></span>
+                    <span class="explorer-runs-cell-mono" x-text="ev.tool_name || ''"></span>
+                    <span class="explorer-chip" :class="ev.status" x-text="ev.status"></span>
+                    <span class="explorer-runs-cell-mono" x-text="runRelativeTime(ev.created_at)"></span>
+                  </div>
+                  <template x-if="explorerDrawerEventExpanded === ev.id">
+                    <div class="explorer-event-body">
+                      <template x-if="ev.request_json">
+                        <div>
+                          <div class="explorer-event-label" x-text="t('explorer_event_request')"></div>
+                          <pre class="explorer-md" x-text="ev.request_json"></pre>
+                        </div>
+                      </template>
+                      <template x-if="ev.response_json">
+                        <div>
+                          <div class="explorer-event-label" x-text="t('explorer_event_response')"></div>
+                          <pre class="explorer-md" x-text="ev.response_json"></pre>
+                        </div>
+                      </template>
+                      <template x-if="!ev.request_json && !ev.response_json">
+                        <div class="explorer-empty" x-text="t('explorer_event_empty_payload')"></div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </aside>
     </div>
   </template>
 
@@ -3483,7 +5213,7 @@ var I18N = {
     support_enter_desc: 'Describe what you need help with...',
     support_connecting: 'Connecting to AIMA-Service...',
     support_enter_invite: 'Device registration requires an invite code or worker code. Please enter it below:',
-    support_enter_recovery: 'This device was previously registered. Please enter your saved recovery code:',
+    support_enter_recovery: 'This device was previously registered. A recovery code is needed to re-link it.\n\nWhere to find your recovery code:\n1. Check the email or message from when this device was first set up\n2. Ask the person who originally configured this device\n3. Visit the admin panel at aimaserver.com to reset the registration\n\nYou can also skip this step and connect later.',
     support_device_id: 'Device ID',
     support_active_task: 'Active Task',
     support_no_task: 'No active task',
@@ -3495,6 +5225,7 @@ var I18N = {
     support_amount_budget: 'Amount Budget',
     support_tasks_remaining: 'Tasks Remaining',
     support_budget_pending: 'Available after linking',
+    support_skip: 'Skip for now',
     support_share_heading: 'Share',
     support_share_ready: 'Share text ready',
     support_share_empty: 'Referral info appears after linking',
@@ -3504,6 +5235,58 @@ var I18N = {
     support_new_task: 'New Task',
     support_messages: 'Messages',
     support_open_workspace: 'Open AIMA-Service',
+    // Explorer view (v0.4 MVP)
+    explorer_view: 'Explorer',
+    explorer_tab_overview: 'Overview',
+    explorer_tab_runs: 'Runs',
+    explorer_current_run: 'Current Run',
+    explorer_no_active: 'No active exploration. Click Trigger to start one.',
+    explorer_tasks_progress: 'Tasks',
+    explorer_trigger_btn: 'Trigger',
+    explorer_cancel_btn: 'Cancel',
+    explorer_refresh_btn: 'Refresh',
+    explorer_trigger_title: 'Trigger Exploration Run',
+    explorer_trigger_kind: 'Kind',
+    explorer_trigger_model: 'Model',
+    explorer_trigger_model_ph: 'Pick or type a locally available model name (required)',
+    explorer_trigger_model_hint: 'The Explorer needs a model to target. Hardware and engine are auto-detected.',
+    explorer_trigger_goal: 'Goal',
+    explorer_trigger_goal_ph: 'e.g. On RTX 4060, find the engine+params combo with highest throughput for Qwen3-30B',
+    explorer_trigger_goal_hint: 'A one-line description of what you want to learn this run.',
+    explorer_trigger_approval: 'Approval Mode',
+    explorer_trigger_local_note: 'Uses local models and engines only. No auto-pull (auto_pull=false).',
+    explorer_trigger_submit: 'Start',
+    explorer_trigger_started: 'Exploration queued. Watching for progress...',
+    explorer_trigger_failed: 'Failed to start exploration.',
+    explorer_cancel_sent: 'Stop requested. Waiting for runner to converge...',
+    explorer_db_delta: 'DB Activity Since Entering View',
+    explorer_db_since: 'Anchor',
+    explorer_db_configurations: 'Configurations',
+    explorer_db_benchmark_results: 'Benchmark Results',
+    explorer_db_events: 'Exploration Events',
+    explorer_latest_summary: 'Latest Summary',
+    explorer_no_runs: 'No runs yet. The next trigger will show up here.',
+    explorer_summary_missing: 'summary.md not written yet — run may still be in progress.',
+    explorer_runs_title: 'Exploration Runs',
+    explorer_runs_filter_status_all: 'All statuses',
+    explorer_runs_filter_kind_all: 'All kinds',
+    explorer_runs_col_status: 'Status',
+    explorer_runs_col_kind: 'Kind',
+    explorer_runs_col_goal: 'Goal',
+    explorer_runs_col_tier: 'Tier',
+    explorer_runs_col_tasks: 'Tasks',
+    explorer_runs_col_started: 'Started',
+    explorer_runs_col_duration: 'Duration',
+    explorer_runs_detail: 'Detail',
+    explorer_drawer_title: 'Run Detail',
+    explorer_drawer_tab_summary: 'Summary',
+    explorer_drawer_tab_plan: 'Plan',
+    explorer_drawer_tab_events: 'Events',
+    explorer_plan_missing: 'plan.md not available yet for this run.',
+    explorer_events_empty: 'No events recorded for this run yet.',
+    explorer_event_request: 'Request',
+    explorer_event_response: 'Response',
+    explorer_event_empty_payload: '(no request / response payload recorded)',
     tab_general: 'General',
     tab_monitoring: 'Monitoring',
     tab_agent: 'AI Agent',
@@ -3533,6 +5316,88 @@ var I18N = {
     onboarding_tab_troubleshooting: 'Troubleshooting',
     onboarding_common_commands: 'Common Commands',
     loading: 'Loading...',
+    // Onboarding wizard
+    wiz_title: 'Welcome to AIMA',
+    wiz_subtitle: 'Let\'s get your AI inference environment ready',
+    wiz_detecting: 'Hardware Detected',
+    wiz_init: 'Runtime Setup',
+    wiz_scanning: 'Scanning Resources',
+    wiz_choosing: 'Choose Your Path',
+    wiz_recommend: 'Recommended Models',
+    wiz_local: 'Local Models',
+    wiz_deploying: 'Deploying',
+    wiz_complete_title: 'Ready to Go!',
+    wiz_gpu: 'GPU',
+    wiz_cpu: 'CPU',
+    wiz_ram: 'Memory',
+    wiz_os: 'OS / Arch',
+    wiz_vram: 'VRAM',
+    wiz_profile: 'Profile',
+    wiz_docker: 'Docker',
+    wiz_k3s: 'K3S',
+    wiz_ready: 'Ready',
+    wiz_not_found: 'Not Found',
+    wiz_needs_init: 'Runtime initialization required before deployment.',
+    wiz_init_linux: 'Run the following command with admin privileges:',
+    wiz_init_mac: 'Docker Desktop is required for container-based inference.',
+    wiz_init_mac_ready: 'Docker Desktop detected and ready.',
+    wiz_init_win: 'Docker Desktop is required for container-based inference.',
+    wiz_init_polling: 'Waiting for initialization to complete...',
+    wiz_init_timeout: 'Initialization is taking longer than expected. Please verify the command completed successfully.',
+    wiz_skip_native: 'Skip (Native runtime only)',
+    wiz_continue: 'Continue',
+    wiz_continue_setup: 'Continue to Setup',
+    wiz_continue_scan: 'Continue to Scan',
+    wiz_scanning_engines: 'Scanning engines...',
+    wiz_scanning_models: 'Scanning models...',
+    wiz_scan_engine_found: 'Engine found',
+    wiz_scan_model_found: 'Model found',
+    wiz_scan_complete: 'Scan complete',
+    wiz_scan_central: 'Central',
+    wiz_scan_central_connected: 'Connected',
+    wiz_scan_central_offline: 'Offline',
+    wiz_choose_recommended: 'View Recommended Models',
+    wiz_choose_recommended_desc: 'AI-curated models optimized for your hardware',
+    wiz_choose_local: 'Use Local Models',
+    wiz_choose_local_desc: 'Deploy from models already on this device',
+    wiz_no_local_models: 'No local models found',
+    wiz_back: 'Back',
+    wiz_run: 'Run',
+    wiz_download_deploy: 'Download & Deploy',
+    wiz_build_required: 'Build Required',
+    wiz_params: 'params',
+    wiz_cold_start: 'Cold start',
+    wiz_engine_label: 'Engine',
+    wiz_engine_installed: 'Engine installed',
+    wiz_engine_needs_dl: 'Engine needs download',
+    wiz_model_local: 'Model available locally',
+    wiz_model_needs_dl: 'Model needs download',
+    wiz_size_label: 'Size',
+    wiz_format_label: 'Format',
+    wiz_perf_tps: 'tok/s',
+    wiz_step_engine: 'Engine',
+    wiz_step_model: 'Model',
+    wiz_step_deploy: 'Deploy',
+    wiz_step_pending: 'Pending',
+    wiz_step_active: 'In progress',
+    wiz_step_done: 'Done',
+    wiz_step_error: 'Error',
+    wiz_cancel: 'Cancel',
+    wiz_model_ready: 'Model is ready!',
+    wiz_endpoint_label: 'Inference endpoint',
+    wiz_start_chatting: 'Start Chatting',
+    wiz_copied: 'Copied!',
+    wiz_copy: 'Copy',
+    wiz_loading: 'Checking system status...',
+    wiz_no_recommendations: 'No recommendations available for this hardware configuration.',
+    wiz_deploy_error: 'Deployment failed. Please check logs and try again.',
+    wiz_gpu_busy: 'GPU memory is occupied by other running services. Please stop existing deployments (e.g. via "docker stop") to free GPU memory, then try again.',
+    wiz_gpu_occupied: 'GPU is in use',
+    wiz_gpu_occupied_desc: 'The following services are currently using GPU resources. You can stop them to free GPU memory for new deployments, or continue with reduced capacity.',
+    wiz_stop_container: 'Stop',
+    wiz_stopping: 'Stopping...',
+    wiz_retry_deploy: 'Retry Deploy',
+    wiz_engine_blocked: 'This model cannot run on current hardware — the required engine is not available.',
   },
   zh: {
     system_online: '\u7CFB\u7EDF\u5728\u7EBF',
@@ -3626,7 +5491,7 @@ var I18N = {
     support_enter_desc: '\u63CF\u8FF0\u4F60\u9700\u8981\u7684\u5E2E\u52A9...',
     support_connecting: '\u6B63\u5728\u8FDE\u7EBF\u7075\u673A\u4E91...',
     support_enter_invite: '\u8BBE\u5907\u6CE8\u518C\u9700\u8981\u9080\u8BF7\u7801\u6216 Worker \u63A5\u5165\u7801\uFF0C\u8BF7\u5728\u4E0B\u65B9\u8F93\u5165\uFF1A',
-    support_enter_recovery: '\u6B64\u8BBE\u5907\u4E4B\u524D\u5DF2\u6CE8\u518C\uFF0C\u8BF7\u8F93\u5165\u5DF2\u4FDD\u5B58\u7684\u6062\u590D\u7801\uFF1A',
+    support_enter_recovery: '\u6B64\u8BBE\u5907\u4E4B\u524D\u5DF2\u6CE8\u518C\u8FC7\uFF0C\u9700\u8981\u6062\u590D\u7801\u624D\u80FD\u91CD\u65B0\u8FDE\u7EBF\u3002\n\n\u5982\u4F55\u627E\u5230\u6062\u590D\u7801\uFF1A\n1. \u67E5\u770B\u8BBE\u5907\u9996\u6B21\u8BBE\u7F6E\u65F6\u6536\u5230\u7684\u90AE\u4EF6\u6216\u6D88\u606F\n2. \u8BE2\u95EE\u6700\u521D\u914D\u7F6E\u6B64\u8BBE\u5907\u7684\u4EBA\n3. \u8BBF\u95EE\u7BA1\u7406\u540E\u53F0 aimaserver.com \u91CD\u7F6E\u8BBE\u5907\u6CE8\u518C\n\n\u4E5F\u53EF\u4EE5\u8DF3\u8FC7\u6B64\u6B65\uFF0C\u7A0D\u540E\u518D\u8FDE\u7EBF\u3002',
     support_device_id: '\u8BBE\u5907 ID',
     support_active_task: '\u5F53\u524D\u4EFB\u52A1',
     support_no_task: '\u65E0\u6D3B\u52A8\u4EFB\u52A1',
@@ -3638,6 +5503,7 @@ var I18N = {
     support_amount_budget: '\u91D1\u989D\u989D\u5EA6',
     support_tasks_remaining: '\u5269\u4F59\u989D\u5EA6',
     support_budget_pending: '\u8FDE\u7EBF\u540E\u663E\u793A',
+    support_skip: '\u6682\u65F6\u8DF3\u8FC7',
     support_share_heading: '\u9080\u8BF7\u5206\u4EAB',
     support_share_ready: '\u5206\u4EAB\u6587\u6848\u5DF2\u5C31\u7EEA',
     support_share_empty: '\u8FDE\u7EBF\u540E\u663E\u793A\u63A8\u8350\u4FE1\u606F',
@@ -3647,6 +5513,58 @@ var I18N = {
     support_new_task: '\u65B0\u4EFB\u52A1',
     support_messages: '\u6D88\u606F',
     support_open_workspace: '\u6253\u5F00\u7075\u673A\u4E91',
+    // Explorer view (v0.4 MVP) - Chinese
+    explorer_view: 'Explorer',
+    explorer_tab_overview: '总览',
+    explorer_tab_runs: '历史',
+    explorer_current_run: '当前执行',
+    explorer_no_active: '无正在进行的探索。点击「触发」启动一轮。',
+    explorer_tasks_progress: '任务',
+    explorer_trigger_btn: '触发',
+    explorer_cancel_btn: '停止',
+    explorer_refresh_btn: '刷新',
+    explorer_trigger_title: '触发探索任务',
+    explorer_trigger_kind: '类型',
+    explorer_trigger_model: '模型',
+    explorer_trigger_model_ph: '从本地可用模型里选一个，或手动输入模型名（必填）',
+    explorer_trigger_model_hint: 'Explorer 需要目标模型。硬件和引擎自动识别。',
+    explorer_trigger_goal: '目标',
+    explorer_trigger_goal_ph: '例：在 RTX 4060 上为 Qwen3-30B 找到 throughput 最高的 engine+params 组合',
+    explorer_trigger_goal_hint: '一句话描述本轮探索要弄清楚的问题。',
+    explorer_trigger_approval: '审批模式',
+    explorer_trigger_local_note: '仅使用本地已有的 model 和 engine，不会自动拉取（auto_pull=false）。',
+    explorer_trigger_submit: '启动',
+    explorer_trigger_started: '已入队，正在监听进度…',
+    explorer_trigger_failed: '触发失败。',
+    explorer_cancel_sent: '已发送停止请求，等待收敛…',
+    explorer_db_delta: '进入本视图后的 DB 增量',
+    explorer_db_since: '锚点',
+    explorer_db_configurations: '新增配置',
+    explorer_db_benchmark_results: '新增 Benchmark',
+    explorer_db_events: '新增 Events',
+    explorer_latest_summary: '最近一轮 Summary',
+    explorer_no_runs: '还没有历史记录。触发后会显示在这里。',
+    explorer_summary_missing: 'summary.md 还未写入 — 探索可能仍在进行。',
+    explorer_runs_title: '探索历史',
+    explorer_runs_filter_status_all: '全部状态',
+    explorer_runs_filter_kind_all: '全部类型',
+    explorer_runs_col_status: '状态',
+    explorer_runs_col_kind: '类型',
+    explorer_runs_col_goal: '目标',
+    explorer_runs_col_tier: '层级',
+    explorer_runs_col_tasks: '任务',
+    explorer_runs_col_started: '启动',
+    explorer_runs_col_duration: '耗时',
+    explorer_runs_detail: '详情',
+    explorer_drawer_title: '执行详情',
+    explorer_drawer_tab_summary: '总结',
+    explorer_drawer_tab_plan: '计划',
+    explorer_drawer_tab_events: '事件',
+    explorer_plan_missing: '当前执行的 plan.md 尚不可用。',
+    explorer_events_empty: '此执行还没有事件记录。',
+    explorer_event_request: '请求',
+    explorer_event_response: '响应',
+    explorer_event_empty_payload: '（未记录 request / response 负载）',
     tab_general: '\u5E38\u89C4',
     tab_monitoring: '\u76D1\u63A7',
     tab_agent: 'AI Agent',
@@ -3676,6 +5594,88 @@ var I18N = {
     onboarding_tab_troubleshooting: '\u9047\u5230\u95EE\u9898',
     onboarding_common_commands: '\u5E38\u7528\u547D\u4EE4',
     loading: '\u52A0\u8F7D\u4E2D...',
+    // Onboarding wizard
+    wiz_title: '\u6B22\u8FCE\u4F7F\u7528 AIMA',
+    wiz_subtitle: '\u8BA9\u6211\u4EEC\u51C6\u5907\u597D AI \u63A8\u7406\u73AF\u5883',
+    wiz_detecting: '\u786C\u4EF6\u68C0\u6D4B',
+    wiz_init: '\u8FD0\u884C\u65F6\u8BBE\u7F6E',
+    wiz_scanning: '\u626B\u63CF\u8D44\u6E90',
+    wiz_choosing: '\u9009\u62E9\u8DEF\u5F84',
+    wiz_recommend: '\u63A8\u8350\u6A21\u578B',
+    wiz_local: '\u672C\u5730\u6A21\u578B',
+    wiz_deploying: '\u90E8\u7F72\u4E2D',
+    wiz_complete_title: '\u4E00\u5207\u5C31\u7EEA\uFF01',
+    wiz_gpu: 'GPU',
+    wiz_cpu: 'CPU',
+    wiz_ram: '\u5185\u5B58',
+    wiz_os: '\u7CFB\u7EDF / \u67B6\u6784',
+    wiz_vram: '\u663E\u5B58',
+    wiz_profile: '\u786C\u4EF6\u914D\u7F6E',
+    wiz_docker: 'Docker',
+    wiz_k3s: 'K3S',
+    wiz_ready: '\u5DF2\u5C31\u7EEA',
+    wiz_not_found: '\u672A\u53D1\u73B0',
+    wiz_needs_init: '\u90E8\u7F72\u524D\u9700\u8981\u521D\u59CB\u5316\u8FD0\u884C\u65F6\u73AF\u5883\u3002',
+    wiz_init_linux: '\u8BF7\u4EE5\u7BA1\u7406\u5458\u6743\u9650\u8FD0\u884C\u4EE5\u4E0B\u547D\u4EE4\uFF1A',
+    wiz_init_mac: '\u5BB9\u5668\u63A8\u7406\u9700\u8981 Docker Desktop\u3002',
+    wiz_init_mac_ready: 'Docker Desktop \u5DF2\u68C0\u6D4B\u5E76\u5C31\u7EEA\u3002',
+    wiz_init_win: '\u5BB9\u5668\u63A8\u7406\u9700\u8981 Docker Desktop\u3002',
+    wiz_init_polling: '\u7B49\u5F85\u521D\u59CB\u5316\u5B8C\u6210...',
+    wiz_init_timeout: '\u521D\u59CB\u5316\u65F6\u95F4\u8F83\u957F\uFF0C\u8BF7\u786E\u8BA4\u547D\u4EE4\u5DF2\u6210\u529F\u6267\u884C\u3002',
+    wiz_skip_native: '\u8DF3\u8FC7\uFF08\u4EC5\u672C\u5730\u8FD0\u884C\u65F6\uFF09',
+    wiz_continue: '\u7EE7\u7EED',
+    wiz_continue_setup: '\u7EE7\u7EED\u8BBE\u7F6E',
+    wiz_continue_scan: '\u7EE7\u7EED\u626B\u63CF',
+    wiz_scanning_engines: '\u626B\u63CF\u5F15\u64CE\u4E2D...',
+    wiz_scanning_models: '\u626B\u63CF\u6A21\u578B\u4E2D...',
+    wiz_scan_engine_found: '\u53D1\u73B0\u5F15\u64CE',
+    wiz_scan_model_found: '\u53D1\u73B0\u6A21\u578B',
+    wiz_scan_complete: '\u626B\u63CF\u5B8C\u6210',
+    wiz_scan_central: '\u4E2D\u592E\u670D\u52A1',
+    wiz_scan_central_connected: '\u5DF2\u8FDE\u63A5',
+    wiz_scan_central_offline: '\u79BB\u7EBF',
+    wiz_choose_recommended: '\u67E5\u770B\u63A8\u8350\u6A21\u578B',
+    wiz_choose_recommended_desc: '\u4E3A\u4F60\u7684\u786C\u4EF6\u4F18\u5316\u7684 AI \u63A8\u8350\u6A21\u578B',
+    wiz_choose_local: '\u4F7F\u7528\u672C\u5730\u6A21\u578B',
+    wiz_choose_local_desc: '\u4ECE\u5DF2\u4E0B\u8F7D\u7684\u6A21\u578B\u4E2D\u90E8\u7F72',
+    wiz_no_local_models: '\u672A\u53D1\u73B0\u672C\u5730\u6A21\u578B',
+    wiz_back: '\u8FD4\u56DE',
+    wiz_run: '\u8FD0\u884C',
+    wiz_download_deploy: '\u4E0B\u8F7D\u5E76\u90E8\u7F72',
+    wiz_build_required: '\u9700\u8981\u6784\u5EFA',
+    wiz_params: '\u53C2\u6570',
+    wiz_cold_start: '\u51B7\u542F\u52A8',
+    wiz_engine_label: '\u5F15\u64CE',
+    wiz_engine_installed: '\u5F15\u64CE\u5DF2\u5B89\u88C5',
+    wiz_engine_needs_dl: '\u5F15\u64CE\u9700\u4E0B\u8F7D',
+    wiz_model_local: '\u6A21\u578B\u5DF2\u5728\u672C\u5730',
+    wiz_model_needs_dl: '\u6A21\u578B\u9700\u4E0B\u8F7D',
+    wiz_size_label: '\u5927\u5C0F',
+    wiz_format_label: '\u683C\u5F0F',
+    wiz_perf_tps: 'tok/s',
+    wiz_step_engine: '\u5F15\u64CE',
+    wiz_step_model: '\u6A21\u578B',
+    wiz_step_deploy: '\u90E8\u7F72',
+    wiz_step_pending: '\u7B49\u5F85\u4E2D',
+    wiz_step_active: '\u8FDB\u884C\u4E2D',
+    wiz_step_done: '\u5B8C\u6210',
+    wiz_step_error: '\u9519\u8BEF',
+    wiz_cancel: '\u53D6\u6D88',
+    wiz_model_ready: '\u6A21\u578B\u5DF2\u5C31\u7EEA\uFF01',
+    wiz_endpoint_label: '\u63A8\u7406\u7AEF\u70B9',
+    wiz_start_chatting: '\u5F00\u59CB\u5BF9\u8BDD',
+    wiz_copied: '\u5DF2\u590D\u5236\uFF01',
+    wiz_copy: '\u590D\u5236',
+    wiz_loading: '\u68C0\u67E5\u7CFB\u7EDF\u72B6\u6001...',
+    wiz_no_recommendations: '\u65E0\u6CD5\u4E3A\u5F53\u524D\u786C\u4EF6\u914D\u7F6E\u63D0\u4F9B\u63A8\u8350\u3002',
+    wiz_deploy_error: '\u90E8\u7F72\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u65E5\u5FD7\u5E76\u91CD\u8BD5\u3002',
+    wiz_gpu_busy: 'GPU \u663E\u5B58\u5DF2\u88AB\u5176\u4ED6\u8FD0\u884C\u4E2D\u7684\u670D\u52A1\u5360\u7528\u3002\u8BF7\u5148\u505C\u6B62\u5DF2\u6709\u7684\u90E8\u7F72\uFF08\u5982\u901A\u8FC7 docker stop\uFF09\u91CA\u653E GPU \u663E\u5B58\uFF0C\u7136\u540E\u518D\u8BD5\u3002',
+    wiz_gpu_occupied: 'GPU \u6B63\u5728\u88AB\u5360\u7528',
+    wiz_gpu_occupied_desc: '\u4EE5\u4E0B\u670D\u52A1\u6B63\u5728\u4F7F\u7528 GPU \u8D44\u6E90\u3002\u60A8\u53EF\u4EE5\u505C\u6B62\u5B83\u4EEC\u4EE5\u91CA\u653E GPU \u663E\u5B58\u7528\u4E8E\u65B0\u90E8\u7F72\uFF0C\u6216\u7EE7\u7EED\u4F7F\u7528\u5269\u4F59\u5BB9\u91CF\u3002',
+    wiz_stop_container: '\u505C\u6B62',
+    wiz_stopping: '\u505C\u6B62\u4E2D...',
+    wiz_retry_deploy: '\u91CD\u8BD5\u90E8\u7F72',
+    wiz_engine_blocked: '\u8BE5\u6A21\u578B\u65E0\u6CD5\u5728\u5F53\u524D\u786C\u4EF6\u4E0A\u8FD0\u884C\u2014\u2014\u6240\u9700\u5F15\u64CE\u4E0D\u53EF\u7528\u3002\u8BF7\u9009\u62E9\u5176\u4ED6\u6A21\u578B\u3002',
     cli_help_header: 'CLI \u6A21\u5F0F \u2014 \u53EF\u7528 MCP \u5DE5\u5177',
     cli_help_usage: '\u7528\u6CD5: /cli <\u5DE5\u5177\u540D> [\u53C2\u6570]\n  /cli hardware.detect\n  /cli model.list\n  /cli deploy.apply engine=vllm model=qwen3-8b\n  /cli system.config {"key":"llm.model"}',
     cli_unknown_tool: '\u672A\u77E5\u5DE5\u5177: ',
@@ -4210,8 +6210,32 @@ function aimaApp() {
     deployments: [],
     modelDeploying: {},
     fleet: [],
-    // View toggle (chat / support)
+    // View toggle (chat / support / explorer)
     currentView: 'chat',
+    // Explorer page state (v0.4 MVP)
+    explorerTab: 'overview',            // 'overview' | 'runs'
+    explorerStatus: null,               // explorer.status response
+    explorerDbDeltas: { configurations: 0, benchmark_results: 0, exploration_events: 0 },
+    explorerDbSince: '',                // ISO-8601 anchor, set on entering the view
+    explorerLatestRun: null,            // top row from explore.list_runs
+    explorerSummaryDoc: null,           // { doc, exists, content, mtime, size }
+    explorerTriggerOpen: false,
+    explorerTriggering: false,
+    explorerTriggerForm: { kind: 'validate', model: '', goal: '', approval_mode: 'auto' },
+    explorerTriggerFeedback: null,      // { type:'info'|'error', text }
+    explorerFeedback: null,             // inline feedback on Overview
+    _explorerTimer: null,
+    // D3: Runs tab + Run Detail drawer
+    explorerRuns: [],                   // explore.list_runs result
+    explorerRunsFilter: { status: '', kind: '' },
+    explorerRunsLoading: false,
+    explorerDrawerRunId: null,          // null = drawer closed
+    explorerDrawerTab: 'summary',       // 'summary' | 'plan' | 'events'
+    explorerDrawerRun: null,            // explore.get_run_detail result
+    explorerDrawerDocs: {},             // cache: { 'summary.md': {...}, 'plan.md': {...} }
+    explorerDrawerEvents: [],           // explore.get_run_events result (newest first)
+    explorerDrawerLoading: false,
+    explorerDrawerEventExpanded: null,  // event.id of expanded row, or null
     // Support page state
     supportConnected: false,
     supportPageConnecting: false,
@@ -4232,6 +6256,25 @@ function aimaApp() {
     onboardingLoadFailed: false,
     onboardingError: '',
     _onboardingReturnFocus: null,
+    // Onboarding wizard state
+    onboardingPhase: 'loading',
+    onboardingData: null,
+    onboardingScanResults: { engines: [], models: [], centralConnected: false },
+    onboardingScanLog: [],
+    onboardingScanDone: false,
+    onboardingRecommendations: [],
+    onboardingRecommendLoading: false,
+    onboardingDeployModel: null,
+    onboardingDeployEndpoint: '',
+    onboardingDeployProgress: null,
+    onboardingInitLog: [],
+    onboardingInitError: '',
+    onboardingInitRunning: false,
+    onboardingInitPolling: null,
+    onboardingInitTimeout: false,
+    _wizDeployAbort: null,
+    _wizInitAbort: null,
+    _wizScanAbort: null,
     openclaw: {
       connected: false,
       gatewayLive: false,
@@ -4293,6 +6336,7 @@ function aimaApp() {
       this.pollFleet();
       this.pollAgentInfo();
       this.loadSupportManifest();
+      this.initOnboarding();
 
       this._timers.push(setInterval(() => this.pollSystemStatus(), 5000));
       this._timers.push(setInterval(() => this.pollEngines(), 30000));
@@ -4311,6 +6355,8 @@ function aimaApp() {
       this._timers.forEach(t => clearInterval(t));
       this._timers = [];
       if (this._deployTimer) clearInterval(this._deployTimer);
+      this.stopExplorerPolling();
+      this.wizCleanup();
     },
 
     // ── API helpers ──
@@ -4595,6 +6641,622 @@ function aimaApp() {
       if (!this.showOnboardingDrawer) return;
       this.showOnboardingDrawer = false;
       this.restoreOnboardingFocus();
+    },
+
+    // ── Onboarding Wizard ──
+
+    wizActive() {
+      return this.onboardingPhase !== 'complete' && this.onboardingPhase !== '';
+    },
+
+    wizDotPhases() {
+      if (this.wizNeedsInit()) {
+        return ['detecting', 'init', 'scanning', 'choosing', 'deploying'];
+      }
+      return ['detecting', 'scanning', 'choosing', 'recommend', 'deploying'];
+    },
+    wizPhaseIndex(ph) {
+      var phases = ['loading', 'detecting', 'init', 'scanning', 'choosing', 'recommend', 'local', 'deploying', 'done', 'complete'];
+      var idx = phases.indexOf(ph);
+      return idx >= 0 ? idx : -1;
+    },
+    wizDotIndex(ph) {
+      return this.wizDotPhases().indexOf(ph);
+    },
+    wizPhaseToDot(ph) {
+      // Map sub-phases to their parent dot
+      if (ph === 'local') return this.wizNeedsInit() ? 'choosing' : 'recommend';
+      if (ph === 'recommend' && this.wizNeedsInit()) return 'choosing';
+      if (ph === 'done' || ph === 'complete') return 'deploying';
+      if (ph === 'loading') return 'detecting';
+      return ph;
+    },
+    wizDotActive(dotPh) {
+      return this.wizPhaseToDot(this.onboardingPhase) === dotPh;
+    },
+    wizDotDone(dotPh) {
+      var curIdx = this.wizDotIndex(this.wizPhaseToDot(this.onboardingPhase));
+      var dotIdx = this.wizDotIndex(dotPh);
+      return dotIdx >= 0 && curIdx > dotIdx;
+    },
+    wizGoToPhase(ph) {
+      // Navigate back to a completed phase
+      if (ph === 'detecting') {
+        this.onboardingPhase = 'detecting';
+        // Refresh GPU occupancy data when going back to detecting
+        this.wizRefreshGpuOccupancy();
+      }
+      else if (ph === 'init') { this.onboardingPhase = 'init'; }
+      else if (ph === 'scanning') { this.wizStartScan(); }
+      else if (ph === 'choosing') { this.onboardingPhase = 'choosing'; }
+      else if (ph === 'recommend') { this.onboardingPhase = 'choosing'; }
+    },
+
+    wizRefreshGpuOccupancy() {
+      var self = this;
+      var headers = {};
+      if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+      fetch('/ui/api/onboarding-status', { headers: headers }).then(function(resp) {
+        if (resp.ok) return resp.json();
+      }).then(function(data) {
+        if (data && self.onboardingData) {
+          self.onboardingData.gpu_occupancy = data.gpu_occupancy || [];
+        }
+      }).catch(function() {});
+    },
+
+    async initOnboarding() {
+      this.onboardingPhase = 'loading';
+      try {
+        var headers = {};
+        if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+        var resp = await fetch('/ui/api/onboarding-status', { headers: headers });
+        if (!resp.ok) throw new Error('status ' + resp.status);
+        this.onboardingData = await resp.json();
+        if (this.onboardingData.onboarding_completed) {
+          this.onboardingPhase = 'complete';
+          return;
+        }
+        this.onboardingPhase = 'detecting';
+      } catch (e) {
+        // Fail open: if the endpoint is unavailable, skip the wizard
+        this.onboardingPhase = 'complete';
+      }
+    },
+
+    // Hardware data helpers — backend returns:
+    // hardware.gpu: [{name, vram_mib, count, arch}], hardware.cpu: {model, cores},
+    // hardware.ram_mib, hardware.os, hardware.arch, hardware.profile_match
+    wizHwGpu() {
+      if (!this.onboardingData || !this.onboardingData.hardware) return '-';
+      var gpus = this.onboardingData.hardware.gpu;
+      if (!gpus || !gpus.length) return 'No discrete GPU';
+      var g = gpus[0];
+      var txt = g.name || 'GPU';
+      if (g.count && g.count > 1) txt = g.count + 'x ' + txt;
+      return txt;
+    },
+    wizHwVram() {
+      if (!this.onboardingData || !this.onboardingData.hardware) return '-';
+      var gpus = this.onboardingData.hardware.gpu;
+      if (!gpus || !gpus.length) return '-';
+      var mib = gpus[0].vram_mib || 0;
+      if (mib <= 0) return '-';
+      return (mib / 1024).toFixed(1) + ' GB';
+    },
+    wizHwCpu() {
+      if (!this.onboardingData || !this.onboardingData.hardware) return '-';
+      var cpu = this.onboardingData.hardware.cpu;
+      if (!cpu) return '-';
+      var txt = cpu.model || '';
+      if (cpu.cores) txt += ' (' + cpu.cores + ' cores)';
+      return txt || '-';
+    },
+    wizHwRam() {
+      if (!this.onboardingData || !this.onboardingData.hardware) return '-';
+      var mib = this.onboardingData.hardware.ram_mib || 0;
+      if (mib <= 0) return '-';
+      return (mib / 1024).toFixed(1) + ' GB';
+    },
+    wizHwOs() {
+      if (!this.onboardingData || !this.onboardingData.hardware) return '-';
+      var hw = this.onboardingData.hardware;
+      return (hw.os || '') + ' / ' + (hw.arch || '');
+    },
+    wizHwProfile() {
+      if (!this.onboardingData || !this.onboardingData.hardware) return '-';
+      return this.onboardingData.hardware.profile_match || '-';
+    },
+    wizStackReady(key) {
+      if (!this.onboardingData || !this.onboardingData.stack_status) return false;
+      return this.onboardingData.stack_status[key] === 'ready';
+    },
+    wizNeedsInit() {
+      if (!this.onboardingData || !this.onboardingData.stack_status) return false;
+      return !!this.onboardingData.stack_status.needs_init;
+    },
+    wizCanAutoInit() {
+      if (!this.onboardingData || !this.onboardingData.stack_status) return false;
+      return !!this.onboardingData.stack_status.can_auto_init;
+    },
+    wizInitTier() {
+      if (!this.onboardingData || !this.onboardingData.stack_status) return 'docker';
+      return this.onboardingData.stack_status.init_tier_recommendation || 'docker';
+    },
+    wizInitCommand() {
+      return this.wizInitTier() === 'k3s' ? 'sudo aima init --k3s' : 'sudo aima init';
+    },
+    wizInitBlockedReason() {
+      if (!this.onboardingData || !this.onboardingData.stack_status) return '';
+      return this.onboardingData.stack_status.init_blocked_reason || '';
+    },
+    wizPlatform() {
+      if (!this.onboardingData || !this.onboardingData.hardware) return 'linux';
+      var os = (this.onboardingData.hardware.os || '').toLowerCase();
+      if (os.indexOf('darwin') >= 0 || os.indexOf('macos') >= 0) return 'darwin';
+      if (os.indexOf('windows') >= 0) return 'windows';
+      return 'linux';
+    },
+
+    wizSkip() {
+      this.wizCleanup();
+      this.onboardingPhase = 'complete';
+    },
+
+    wizCleanup() {
+      if (this.onboardingInitPolling) {
+        clearInterval(this.onboardingInitPolling);
+        this.onboardingInitPolling = null;
+      }
+      if (this._wizInitAbort) {
+        this._wizInitAbort.abort();
+        this._wizInitAbort = null;
+      }
+      if (this._wizScanAbort) {
+        this._wizScanAbort.abort();
+        this._wizScanAbort = null;
+      }
+      if (this._wizDeployAbort) {
+        this._wizDeployAbort.abort();
+        this._wizDeployAbort = null;
+      }
+    },
+
+    wizEnterInit() {
+      this.onboardingPhase = 'init';
+      this.onboardingInitLog = [];
+      this.onboardingInitError = '';
+      if (this.wizCanAutoInit()) {
+        this.wizStartInit();
+        return;
+      }
+      this.wizStartInitPolling();
+    },
+
+    // INIT phase: start polling
+    wizStartInitPolling() {
+      var self = this;
+      var startTime = Date.now();
+      this.onboardingInitTimeout = false;
+      this.onboardingInitPolling = setInterval(async function() {
+        try {
+          var headers = {};
+          if (self.apiKey) headers['Authorization'] = 'Bearer ' + self.apiKey;
+          var resp = await fetch('/ui/api/onboarding-status', { headers: headers });
+          if (resp.ok) {
+            var data = await resp.json();
+            self.onboardingData = data;
+            if (data.stack_status && (data.stack_status.docker === 'ready' || data.stack_status.k3s === 'ready')) {
+              clearInterval(self.onboardingInitPolling);
+              self.onboardingInitPolling = null;
+              self.wizStartScan();
+              return;
+            }
+          }
+        } catch (e) { /* ignore poll errors */ }
+        // 5 minute timeout
+        if (Date.now() - startTime > 300000) {
+          self.onboardingInitTimeout = true;
+        }
+      }, 3000);
+    },
+
+    async wizStartInit() {
+      this.onboardingInitLog = [];
+      this.onboardingInitError = '';
+      this.onboardingInitRunning = true;
+      this.onboardingInitTimeout = false;
+      var self = this;
+      try {
+        var abort = new AbortController();
+        this._wizInitAbort = abort;
+        var headers = { 'Content-Type': 'application/json' };
+        if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+        var resp = await fetch('/ui/api/onboarding-init', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({ tier: this.wizInitTier(), allow_download: true }),
+          signal: abort.signal
+        });
+        if (!resp.ok) throw new Error('init ' + resp.status);
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        var currentEvent = '';
+        while (true) {
+          var chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (var li = 0; li < lines.length; li++) {
+            var line = lines[li];
+            if (line.indexOf('event: ') === 0) {
+              currentEvent = line.slice(7).trim();
+            } else if (line.indexOf('data: ') === 0 && currentEvent) {
+              try {
+                var eventData = JSON.parse(line.slice(6));
+                self.wizHandleInitEvent(currentEvent, eventData);
+              } catch (e) { /* ignore */ }
+              currentEvent = '';
+            }
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          this.onboardingInitError = (e && e.message) ? e.message : 'init failed';
+        }
+      } finally {
+        this.onboardingInitRunning = false;
+        this._wizInitAbort = null;
+      }
+    },
+
+    async wizHandleInitEvent(event, data) {
+      if (event === 'init_phase') {
+        this.onboardingInitLog.push({ type: 'phase', name: data.message || data.phase || 'init' });
+      } else if (event === 'init_preflight') {
+        var count = data.download_count || 0;
+        var tier = data.tier || this.wizInitTier();
+        this.onboardingInitLog.push({ type: 'preflight', name: count > 0 ? ('Preparing ' + tier + ' stack (' + count + ' downloads)') : ('Preparing ' + tier + ' stack') });
+      } else if (event === 'init_component') {
+        var label = data.name || 'component';
+        if (data.ready) label += ' ready';
+        else if (data.skipped) label += ' skipped';
+        else if (data.message) label += ': ' + data.message;
+        this.onboardingInitLog.push({ type: 'component', name: label });
+      } else if (event === 'init_complete') {
+        if (data.stack_status) {
+          if (!this.onboardingData) this.onboardingData = {};
+          this.onboardingData.stack_status = data.stack_status;
+        }
+        var headers = {};
+        if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+        try {
+          var resp = await fetch('/ui/api/onboarding-status', { headers: headers });
+          if (resp.ok) {
+            this.onboardingData = await resp.json();
+          }
+        } catch (e) { /* ignore */ }
+        if (this.onboardingData && this.onboardingData.stack_status &&
+            (this.onboardingData.stack_status.docker === 'ready' || this.onboardingData.stack_status.k3s === 'ready')) {
+          this.wizStartScan();
+        } else if (!this.onboardingInitError) {
+          this.onboardingInitError = 'init finished but stack is not ready yet';
+        }
+      } else if (event === 'error') {
+        this.onboardingInitError = data.message || 'init failed';
+      }
+    },
+
+    wizSkipInit() {
+      if (this._wizInitAbort) {
+        this._wizInitAbort.abort();
+        this._wizInitAbort = null;
+      }
+      if (this.onboardingInitPolling) {
+        clearInterval(this.onboardingInitPolling);
+        this.onboardingInitPolling = null;
+      }
+      this.onboardingInitRunning = false;
+      this.wizStartScan();
+    },
+
+    wizCancelInit() {
+      if (this._wizInitAbort) {
+        this._wizInitAbort.abort();
+        this._wizInitAbort = null;
+      }
+      this.onboardingInitRunning = false;
+      this.onboardingPhase = 'detecting';
+    },
+
+    wizStopContainer(proc, index) {
+      if (proc._stopping) return;
+      var self = this;
+      // Use direct property set for Alpine reactivity
+      self.onboardingData.gpu_occupancy[index]._stopping = true;
+      var headers = { 'Content-Type': 'application/json' };
+      if (self.apiKey) headers['Authorization'] = 'Bearer ' + self.apiKey;
+      fetch('/ui/api/onboarding-stop-container', {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({ name: proc.name })
+      }).then(function(resp) {
+        if (resp.ok) {
+          self.onboardingData.gpu_occupancy.splice(index, 1);
+        } else {
+          return resp.json().catch(function() { return {}; }).then(function(err) {
+            alert(err.error || 'Failed to stop container');
+            self.onboardingData.gpu_occupancy[index]._stopping = false;
+          });
+        }
+      }).catch(function(e) {
+        alert('Failed to stop: ' + e.message);
+        if (self.onboardingData && self.onboardingData.gpu_occupancy && self.onboardingData.gpu_occupancy[index]) {
+          self.onboardingData.gpu_occupancy[index]._stopping = false;
+        }
+      });
+    },
+
+    wizRetryDeploy() {
+      // Re-run the same deploy with the current model
+      if (this._lastDeployRequest) {
+        this.wizDeploy(this._lastDeployRequest);
+      } else {
+        this.onboardingPhase = 'choosing';
+      }
+    },
+
+    // SCANNING phase: SSE connection
+    async wizStartScan() {
+      this.onboardingPhase = 'scanning';
+      this.onboardingScanLog = [];
+      this.onboardingScanDone = false;
+      this.onboardingScanResults = { engines: [], models: [], centralConnected: false };
+      var self = this;
+      try {
+        var abort = new AbortController();
+        this._wizScanAbort = abort;
+        var headers = { 'Content-Type': 'application/json' };
+        if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+        var resp = await fetch('/ui/api/onboarding-scan', {
+          method: 'POST',
+          headers: headers,
+          body: '{}',
+          signal: abort.signal
+        });
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        var currentEvent = '';
+        while (true) {
+          var chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (var li = 0; li < lines.length; li++) {
+            var line = lines[li];
+            if (line.indexOf('event: ') === 0) {
+              currentEvent = line.slice(7).trim();
+            } else if (line.indexOf('data: ') === 0 && currentEvent) {
+              try {
+                var eventData = JSON.parse(line.slice(6));
+                self.wizHandleScanEvent(currentEvent, eventData);
+              } catch (e) { /* ignore parse errors */ }
+              currentEvent = '';
+            }
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          // On error, still advance to choosing (graceful degradation)
+        }
+      }
+      this._wizScanAbort = null;
+      // Mark scan as done (user clicks continue to advance)
+      if (this.onboardingPhase === 'scanning') {
+        this.onboardingScanDone = true;
+      }
+    },
+
+    wizHandleScanEvent(event, data) {
+      if (event === 'engine_found') {
+        this.onboardingScanResults.engines.push(data);
+        // Backend sends scanEngineResult with field "type" (e.g. "vllm"), not "name"
+        this.onboardingScanLog.push({ type: 'engine', name: data.type || data.name || 'engine' });
+      } else if (event === 'model_found') {
+        this.onboardingScanResults.models.push(data);
+        this.onboardingScanLog.push({ type: 'model', name: data.name || data.model || 'model' });
+      } else if (event === 'central_synced') {
+        // Backend sends "central_synced" (not "central_status")
+        this.onboardingScanResults.centralConnected = !!(data.connected);
+        this.onboardingScanLog.push({ type: 'central', name: data.connected ? this.t('wiz_scan_central_connected') : this.t('wiz_scan_central_offline') });
+      } else if (event === 'scan_complete') {
+        // Backend sends integer counts {engines: N, models: N}, not arrays.
+        // Don't overwrite the arrays we built incrementally from engine_found/model_found events.
+        if (data.central_connected !== undefined) this.onboardingScanResults.centralConnected = data.central_connected;
+        this.onboardingScanLog.push({ type: 'done', name: this.t('wiz_scan_complete') });
+        this.onboardingScanDone = true;
+      }
+    },
+
+    // RECOMMEND phase
+    async wizGoRecommend() {
+      this.onboardingPhase = 'recommend';
+      this.onboardingRecommendLoading = true;
+      this.onboardingRecommendations = [];
+      try {
+        var headers = { 'Content-Type': 'application/json' };
+        if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+        var resp = await fetch('/ui/api/onboarding-recommend', {
+          method: 'POST',
+          headers: headers,
+          body: '{}'
+        });
+        if (resp.ok) {
+          var data = await resp.json();
+          this.onboardingRecommendations = data.recommendations || data || [];
+          if (!Array.isArray(this.onboardingRecommendations)) this.onboardingRecommendations = [];
+        }
+      } catch (e) { /* ignore */ }
+      this.onboardingRecommendLoading = false;
+    },
+
+    // DEPLOY phase (from recommend or local)
+    async wizDeploy(rec) {
+      this._lastDeployRequest = rec;
+      this.onboardingPhase = 'deploying';
+      this.onboardingDeployModel = rec.model_name || rec.model || rec.name || '';
+      this.onboardingDeployEndpoint = '';
+      this.onboardingDeployProgress = {
+        steps: [
+          { label: this.t('wiz_step_engine'), status: 'pending', detail: '', progress: -1 },
+          { label: this.t('wiz_step_model'), status: 'pending', detail: '', progress: -1 },
+          { label: this.t('wiz_step_deploy'), status: 'pending', detail: '', progress: -1 }
+        ],
+        error: ''
+      };
+      var self = this;
+      try {
+        var abort = new AbortController();
+        this._wizDeployAbort = abort;
+        var headers = { 'Content-Type': 'application/json' };
+        if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+        var engineStr = (rec.engine && typeof rec.engine === 'object') ? (rec.engine.type || '') : (rec.engine || '');
+        var body = { model: rec.model || rec.model_name || rec.name || '', engine: engineStr };
+        var resp = await fetch('/ui/api/onboarding-deploy', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(body),
+          signal: abort.signal
+        });
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        var currentEvent = '';
+        while (true) {
+          var chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (var li = 0; li < lines.length; li++) {
+            var line = lines[li];
+            if (line.indexOf('event: ') === 0) {
+              currentEvent = line.slice(7).trim();
+            } else if (line.indexOf('data: ') === 0 && currentEvent) {
+              try {
+                var eventData = JSON.parse(line.slice(6));
+                self.wizHandleDeployEvent(currentEvent, eventData);
+              } catch (e) { /* ignore */ }
+              currentEvent = '';
+            }
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          this.onboardingDeployProgress.error = this.t('wiz_deploy_error');
+        }
+      }
+      this._wizDeployAbort = null;
+    },
+
+    wizDeployLocal(m) {
+      this.wizDeploy({ model: m.name || m.model, engine: m.engine || '', model_local: true, engine_installed: true });
+    },
+
+    wizHandleDeployEvent(event, data) {
+      var steps = this.onboardingDeployProgress.steps;
+      if (event === 'step') {
+        // Backend sends unified "step" events: {step: 1-3, name, status, message, progress, ...}
+        var idx = (data.step || 1) - 1; // step is 1-indexed, array is 0-indexed
+        if (idx < 0 || idx >= steps.length) return;
+        var s = data.status || '';
+        if (s === 'resolved' || s === 'complete' || s === 'skipped' || s === 'ready' || s === 'reusing') {
+          steps[idx].status = 'done';
+          steps[idx].progress = 100;
+        } else if (s === 'downloading' || s === 'resolving' || s === 'starting' || s === 'waiting') {
+          steps[idx].status = 'active';
+        } else if (s === 'warning') {
+          steps[idx].status = 'active';
+        }
+        if (data.message) steps[idx].detail = data.message;
+        if (data.endpoint) steps[idx].detail = data.endpoint;
+        if (typeof data.progress === 'number') {
+          steps[idx].progress = Math.round(data.progress * 100);
+        }
+        // If step has "ready" status in deploy phase, it means service is ready
+        if (s === 'ready' && data.endpoint) {
+          this.onboardingDeployEndpoint = data.endpoint;
+        }
+      } else if (event === 'deploy_complete') {
+        if (data.status && data.status !== 'ready') {
+          this.onboardingDeployProgress.error = data.message || this.t('wiz_deploy_error');
+          steps[2].status = 'error';
+          return;
+        }
+        steps[2].status = 'done';
+        steps[2].progress = 100;
+        if (data.endpoint) this.onboardingDeployEndpoint = data.endpoint;
+        this.onboardingPhase = 'done';
+      } else if (event === 'error') {
+        var msg = data.message || this.t('wiz_deploy_error');
+        // Make GPU memory errors actionable
+        if (msg.toLowerCase().includes('gpu memory insufficient') || msg.toLowerCase().includes('gpu memory')) {
+          msg = this.t('wiz_gpu_busy');
+        }
+        // Make engine blocked / incompatible errors clearer
+        if (msg.toLowerCase().includes('is blocked') || msg.toLowerCase().includes('no compatible engine')) {
+          msg = this.t('wiz_engine_blocked') + ' (' + msg + ')';
+        }
+        this.onboardingDeployProgress.error = msg;
+        // Mark current active step as error
+        for (var i = 0; i < steps.length; i++) {
+          if (steps[i].status === 'active') { steps[i].status = 'error'; break; }
+        }
+      }
+    },
+
+    wizCancelDeploy() {
+      if (this._wizDeployAbort) {
+        this._wizDeployAbort.abort();
+        this._wizDeployAbort = null;
+      }
+      this.onboardingPhase = 'choosing';
+    },
+
+    wizFinish() {
+      this.wizCleanup();
+      this.onboardingPhase = 'complete';
+      // Refresh deployments
+      this.pollDeployments();
+      this.$nextTick(function() {
+        if (this.$refs && this.$refs.chatInput) this.$refs.chatInput.focus();
+      }.bind(this));
+    },
+
+    async wizCopyText(text, event) {
+      try {
+        await navigator.clipboard.writeText(text);
+        var btn = event && event.target;
+        if (btn) {
+          var orig = btn.textContent;
+          btn.textContent = this.t('wiz_copied');
+          setTimeout(function() { btn.textContent = orig; }, 1500);
+        }
+      } catch (e) {
+        // Fallback for non-secure contexts
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
     },
 
     // Helper to get a single config value (returns string or null)
@@ -5111,7 +7773,10 @@ function aimaApp() {
     },
 
     supportRecoveryPromptText() {
-      return this.supportManifestText(this.supportManifestOnboarding('recovery_prompt'), this.t('support_enter_recovery'));
+      const manifestText = this.supportManifestText(this.supportManifestOnboarding('recovery_prompt'), '');
+      const localText = this.t('support_enter_recovery');
+      if (manifestText) return manifestText + '\n\n' + localText;
+      return localText;
     },
 
     supportDisconnectLabel() {
@@ -5741,7 +8406,7 @@ function aimaApp() {
             duration: duration
           });
           const promptText = needsRecovery
-            ? 'This device was previously registered. Please enter your saved recovery code:\n此设备之前已经注册过，请输入已保存的恢复码：'
+            ? 'This device was previously registered. A recovery code is needed to re-link it.\n\nWhere to find it:\n1. Check the email/message from when this device was first set up\n2. Ask the person who originally configured this device\n3. Visit aimaserver.com to reset the registration\n\n此设备之前已注册过，需要恢复码才能重新连线。\n\n如何找到恢复码：\n1. 查看设备首次设置时收到的邮件或消息\n2. 询问最初配置此设备的人\n3. 访问 aimaserver.com 管理后台重置设备注册'
             : 'Device registration requires an invite code or worker code. Please enter it below:\n设备注册需要邀请码或 Worker 接入码，请在下方输入：';
           this.messages.push({ role: 'ai', text: promptText });
           this.scrollChat();
@@ -5850,6 +8515,306 @@ function aimaApp() {
         this.messages.push({ role: 'ai', text: 'Support connected as device ' + (data.device_id || 'unknown') });
       }
       this.scrollChat();
+    },
+
+    // ── Explorer view methods (v0.4 MVP) ──
+
+    toggleExplorerView() {
+      if (this.currentView === 'explorer') {
+        this.closeExplorerView();
+        return;
+      }
+      this.openExplorerView();
+    },
+
+    openExplorerView() {
+      this.currentView = 'explorer';
+      this.explorerTab = 'overview';
+      // Anchor DB delta counters to the moment the user enters this view.
+      // Without an anchor, COUNT(*) returns absolute totals and the "delta"
+      // framing in the UI becomes a lie.
+      this.explorerDbSince = new Date().toISOString();
+      this.explorerRefresh();
+      this.stopExplorerPolling();
+      this._explorerTimer = setInterval(() => this.explorerRefresh(), 3000);
+    },
+
+    closeExplorerView() {
+      this.currentView = 'chat';
+      this.stopExplorerPolling();
+    },
+
+    stopExplorerPolling() {
+      if (this._explorerTimer) {
+        clearInterval(this._explorerTimer);
+        this._explorerTimer = null;
+      }
+    },
+
+    async explorerRefresh() {
+      // Fan out the three read-only probes in parallel. callTool is already
+      // tolerant of transient errors (returns { _err }), so one failing
+      // endpoint cannot tear down the whole refresh.
+      const [statusRes, deltasRes, runsRes] = await Promise.all([
+        this.callTool('explorer', { action: 'status' }),
+        this.callTool('explorer', { action: 'db_deltas', since: this.explorerDbSince }),
+        this.callTool('explore',  { action: 'list_runs', limit: 1 }),
+      ]);
+
+      if (statusRes && !statusRes._err) this.explorerStatus = statusRes;
+      if (deltasRes && !deltasRes._err) this.explorerDbDeltas = deltasRes;
+
+      if (runsRes && !runsRes._err && Array.isArray(runsRes) && runsRes.length > 0) {
+        const run = runsRes[0];
+        const prevId = this.explorerLatestRun ? this.explorerLatestRun.id : null;
+        this.explorerLatestRun = run;
+        // Lazy-load summary.md only when the latest run changes or we haven't
+        // fetched once. Avoids hammering the workspace file on every 3s tick.
+        if (run.id !== prevId || !this.explorerSummaryDoc) {
+          const doc = await this.callTool('explore', { action: 'get_workspace_doc', doc: 'summary.md' });
+          if (doc && !doc._err) this.explorerSummaryDoc = doc;
+        }
+      }
+    },
+
+    openExplorerTrigger() {
+      this.explorerTriggerFeedback = null;
+      this.explorerTriggerOpen = true;
+    },
+
+    async submitExplorerTrigger() {
+      const goal = this.explorerTriggerForm.goal.trim();
+      const model = (this.explorerTriggerForm.model || '').trim();
+      if (!goal || !model) return;
+      this.explorerTriggering = true;
+      this.explorerTriggerFeedback = null;
+
+      // Backend requires target.model; optional target.hardware/engine are
+      // filled in by the planner from hal detect + default engine lookup.
+      const params = {
+        action: 'start',
+        kind: this.explorerTriggerForm.kind,
+        goal: goal,
+        target: { model },
+        requested_by: 'ui',
+        approval_mode: this.explorerTriggerForm.approval_mode,
+      };
+      const data = await this.callTool('explore', params);
+
+      this.explorerTriggering = false;
+      if (!data || data._err) {
+        this.explorerTriggerFeedback = { type: 'error', text: (data && data._err) || this.t('explorer_trigger_failed') };
+        return;
+      }
+      this.explorerTriggerOpen = false;
+      this.explorerTriggerForm.goal = '';
+      this.explorerTriggerForm.model = '';
+      this.explorerFeedback = { type: 'info', text: this.t('explorer_trigger_started') };
+      // Pull fresh status right away so the Overview chip flips to running.
+      await this.explorerRefresh();
+    },
+
+    async explorerCancel() {
+      const plan = this.explorerStatus && this.explorerStatus.active_plan;
+      const runId = (plan && plan.ID) || '';
+      if (!runId) return;
+      const data = await this.callTool('explore', { action: 'stop', id: runId });
+      if (!data || data._err) {
+        this.explorerFeedback = { type: 'error', text: (data && data._err) || 'stop failed' };
+        return;
+      }
+      this.explorerFeedback = { type: 'info', text: this.t('explorer_cancel_sent') };
+      await this.explorerRefresh();
+    },
+
+    // ── Explorer view helpers (read-only projections of explorerStatus) ──
+
+    explorerPhaseTone() {
+      const phase = (this.explorerStatus && this.explorerStatus.phase) || '';
+      if (phase === 'running' || phase === 'executing') return 'running';
+      if (phase === 'planning') return 'planning';
+      if (phase === 'blocked')  return 'blocked';
+      if (phase === 'completed') return 'completed';
+      if (phase === 'failed')   return 'failed';
+      return 'idle';
+    },
+
+    explorerCurrentGoal() {
+      const p = this.explorerStatus && this.explorerStatus.active_plan;
+      if (p && p.Reasoning) return p.Reasoning;
+      if (this.explorerLatestRun && this.explorerLatestRun.goal) return this.explorerLatestRun.goal;
+      return this.t('explorer_no_active');
+    },
+
+    explorerCurrentMeta() {
+      const s = this.explorerStatus;
+      if (!s) return '';
+      const parts = [];
+      if (s.tier != null) parts.push('tier ' + s.tier);
+      if (s.mode) parts.push(s.mode);
+      if (s.rounds_used != null && s.max_rounds)
+        parts.push('rounds ' + s.rounds_used + '/' + s.max_rounds);
+      return parts.join(' · ');
+    },
+
+    explorerLastMetrics() {
+      return this.explorerStatus && this.explorerStatus.last_plan_metrics;
+    },
+
+    explorerTaskTotal() {
+      const m = this.explorerLastMetrics();
+      return (m && m.total_tasks) || 0;
+    },
+
+    explorerTaskCompleted() {
+      const m = this.explorerLastMetrics();
+      return (m && m.completed) || 0;
+    },
+
+    explorerTaskPct() {
+      const total = this.explorerTaskTotal();
+      if (!total) return 0;
+      return Math.min(100, Math.round((this.explorerTaskCompleted() / total) * 100));
+    },
+
+    // ── Explorer D3: Runs tab + Run Detail drawer ──
+
+    async refreshExplorerRuns() {
+      this.explorerRunsLoading = true;
+      const params = { action: 'list_runs', limit: 50 };
+      if (this.explorerRunsFilter.status) params.status = this.explorerRunsFilter.status;
+      if (this.explorerRunsFilter.kind)   params.kind   = this.explorerRunsFilter.kind;
+      const res = await this.callTool('explore', params);
+      this.explorerRunsLoading = false;
+      // Backend returns [] for empty lists but may return null for nil slice —
+      // normalize to [] so the template doesn't need to reason about shape.
+      if (res && !res._err) {
+        this.explorerRuns = Array.isArray(res) ? res : [];
+      }
+    },
+
+    openRunsTab() {
+      this.explorerTab = 'runs';
+      if (this.explorerRuns.length === 0) this.refreshExplorerRuns();
+    },
+
+    async openRunDrawer(runId) {
+      if (!runId) return;
+      this.explorerDrawerRunId = runId;
+      this.explorerDrawerTab = 'summary';
+      this.explorerDrawerRun = null;
+      this.explorerDrawerDocs = {};
+      this.explorerDrawerEvents = [];
+      this.explorerDrawerEventExpanded = null;
+      this.explorerDrawerLoading = true;
+      const detail = await this.callTool('explore', { action: 'get_run_detail', id: runId });
+      if (detail && !detail._err) this.explorerDrawerRun = detail;
+      // Default tab is Summary — warm its content alongside detail so the
+      // drawer opens in one logical paint instead of showing an empty pane
+      // that fills a tick later.
+      await this.loadDrawerDoc('summary.md');
+      this.explorerDrawerLoading = false;
+    },
+
+    closeRunDrawer() {
+      this.explorerDrawerRunId = null;
+    },
+
+    async switchDrawerTab(tab) {
+      this.explorerDrawerTab = tab;
+      if (tab === 'summary' && !this.explorerDrawerDocs['summary.md']) {
+        await this.loadDrawerDoc('summary.md');
+      } else if (tab === 'plan' && !this.explorerDrawerDocs['plan.md']) {
+        await this.loadDrawerDoc('plan.md');
+      } else if (tab === 'events' && this.explorerDrawerEvents.length === 0) {
+        await this.loadDrawerEvents();
+      }
+    },
+
+    async loadDrawerDoc(doc) {
+      const res = await this.callTool('explore', { action: 'get_workspace_doc', doc });
+      if (res && !res._err) this.explorerDrawerDocs[doc] = res;
+    },
+
+    async loadDrawerEvents() {
+      const runId = this.explorerDrawerRunId;
+      if (!runId) return;
+      const res = await this.callTool('explore', { action: 'get_run_events', id: runId });
+      if (res && !res._err && Array.isArray(res)) {
+        // Backend stores events chronologically; humans read this kind of
+        // log newest-first, so reverse once here rather than in the template.
+        this.explorerDrawerEvents = res.slice().reverse();
+      }
+    },
+
+    toggleDrawerEvent(id) {
+      this.explorerDrawerEventExpanded =
+        (this.explorerDrawerEventExpanded === id) ? null : id;
+    },
+
+    // ── D3 display helpers (pure projections over run/event rows) ──
+
+    runPlanTier(run) {
+      try {
+        if (!run || !run.plan_json) return '—';
+        const p = JSON.parse(run.plan_json);
+        const tier = p && (p.Tier ?? p.tier);
+        return (tier == null) ? '—' : ('Tier ' + tier);
+      } catch (e) {
+        return '—';
+      }
+    },
+
+    runTaskChips(run) {
+      // ExplorationRun's plan_json is the canonical task list. Metrics on
+      // ExplorerStatus are live but unscoped to a specific run row — for
+      // the list view we derive per-row counts from the frozen plan_json.
+      try {
+        if (!run || !run.plan_json) return '—';
+        const p = JSON.parse(run.plan_json);
+        const tasks = (p && (p.Tasks || p.tasks)) || [];
+        if (!tasks.length) return '—';
+        let ok = 0, fail = 0, skip = 0;
+        for (const t of tasks) {
+          const s = (t.Status || t.status || '').toLowerCase();
+          if (s === 'completed' || s === 'success') ok++;
+          else if (s === 'failed' || s === 'error') fail++;
+          else if (s === 'skipped' || s === 'blocked') skip++;
+        }
+        return '✓ ' + ok + ' / ✗ ' + fail + ' / ⊘ ' + skip;
+      } catch (e) {
+        return '—';
+      }
+    },
+
+    runRelativeTime(iso) {
+      // Go's zero time serializes to "0001-01-01T00:00:00Z" when omitempty
+      // can't fire (non-pointer field). Treat those as absent.
+      if (!iso || iso.startsWith('0001-01-01')) return '—';
+      const t = new Date(iso).getTime();
+      if (isNaN(t)) return '—';
+      const diff = Math.max(0, Date.now() - t);
+      const s = Math.floor(diff / 1000);
+      if (s < 60)   return s + 's ago';
+      const m = Math.floor(s / 60);
+      if (m < 60)   return m + 'm ago';
+      const h = Math.floor(m / 60);
+      if (h < 24)   return h + 'h ago';
+      return Math.floor(h / 24) + 'd ago';
+    },
+
+    runDuration(run) {
+      if (!run || !run.started_at || run.started_at.startsWith('0001-01-01')) return '—';
+      const start = new Date(run.started_at).getTime();
+      if (isNaN(start)) return '—';
+      const hasEnd = run.completed_at && !run.completed_at.startsWith('0001-01-01');
+      const end = hasEnd ? new Date(run.completed_at).getTime() : Date.now();
+      const s = Math.max(0, Math.floor((end - start) / 1000));
+      if (s < 60)   return s + 's';
+      if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      return h + 'h ' + m + 'm';
     },
 
     // ── Support Page methods (independent from chat /askforhelp) ──
@@ -5973,6 +8938,15 @@ function aimaApp() {
       this.supportState.activeTask = null;
       this.supportState.messages = [];
       await this.pollSystemStatus();
+    },
+
+    skipSupportConnect() {
+      this.supportPagePrompt = null;
+      this.supportPageCode = '';
+      this.supportPageConnecting = false;
+      this.supportPageError = '';
+      this.appendSupportPageMessage(this.t('support_skip'), 'info');
+      this.currentView = 'chat';
     },
 
     submitSupportInput() {
@@ -6454,6 +9428,14 @@ function aimaApp() {
     // Global keyboard shortcut
     handleGlobalKey(e) {
       const key = String(e.key || '').toLowerCase();
+      // Block keyboard shortcuts while wizard is active
+      if (this.wizActive()) {
+        if (key === 'escape') {
+          e.preventDefault();
+          this.wizSkip();
+        }
+        return;
+      }
       if (this.showOnboardingDrawer) {
         if (key === 'escape') {
           e.preventDefault();

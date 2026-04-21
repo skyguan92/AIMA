@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +75,22 @@ func isBlockedAgentTool(name string, arguments json.RawMessage) (bool, string) {
 	if name == "explore" {
 		if action, ok := jsonFieldString(arguments, "action"); ok && action == "start" {
 			return true, "explore start is blocked for Agent-initiated calls"
+		}
+	}
+
+	// onboarding is a merged action tool: status/scan/recommend are read-only
+	// and safe; init installs docker/k3s (infrastructure mutation) and deploy
+	// applies a deployment. Block both destructive actions for the Agent —
+	// operators should run them via CLI / UI wizard, and agents that truly
+	// need to deploy can call the confirmable deploy.apply tool instead.
+	if name == "onboarding" {
+		if action, ok := jsonFieldString(arguments, "action"); ok {
+			switch action {
+			case "init":
+				return true, "onboarding init is infrastructure mutation (installs docker/k3s)"
+			case "deploy":
+				return true, "onboarding deploy is destructive; use deploy.apply (confirmable) instead"
+			}
 		}
 	}
 
@@ -546,7 +563,7 @@ type catalogAdapter struct{ cat *knowledge.Catalog }
 
 func (a catalogAdapter) ModelType(name string) string {
 	for _, m := range a.cat.ModelAssets {
-		if m.Metadata.Name == name {
+		if strings.EqualFold(m.Metadata.Name, name) {
 			return m.Metadata.Type
 		}
 	}
@@ -554,27 +571,12 @@ func (a catalogAdapter) ModelType(name string) string {
 }
 
 func (a catalogAdapter) ModelContextWindow(name string) int {
-	for _, m := range a.cat.ModelAssets {
-		if m.Metadata.Name != name {
-			continue
-		}
-		for _, v := range m.Variants {
-			if ml, ok := v.DefaultConfig["max_model_len"]; ok {
-				switch n := ml.(type) {
-				case int:
-					return n
-				case float64:
-					return int(n)
-				}
-			}
-		}
-	}
-	return 0
+	return a.cat.ModelMaxContextLen(name)
 }
 
 func (a catalogAdapter) ModelFamily(name string) string {
 	for _, m := range a.cat.ModelAssets {
-		if m.Metadata.Name == name {
+		if strings.EqualFold(m.Metadata.Name, name) {
 			return m.Metadata.Family
 		}
 	}
@@ -583,7 +585,7 @@ func (a catalogAdapter) ModelFamily(name string) string {
 
 func (a catalogAdapter) ModelChatProvider(name string) bool {
 	for _, m := range a.cat.ModelAssets {
-		if m.Metadata.Name == name {
+		if strings.EqualFold(m.Metadata.Name, name) {
 			if m.OpenClaw != nil && m.OpenClaw.ChatProvider != nil {
 				return *m.OpenClaw.ChatProvider
 			}
@@ -595,7 +597,7 @@ func (a catalogAdapter) ModelChatProvider(name string) bool {
 
 func (a catalogAdapter) OpenClawRequestPatches(name string) []openclaw.RequestPatch {
 	for _, m := range a.cat.ModelAssets {
-		if m.Metadata.Name != name || m.OpenClaw == nil {
+		if !strings.EqualFold(m.Metadata.Name, name) || m.OpenClaw == nil {
 			continue
 		}
 		out := make([]openclaw.RequestPatch, 0, len(m.OpenClaw.RequestPatches))

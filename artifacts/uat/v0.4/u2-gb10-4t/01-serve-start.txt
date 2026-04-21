@@ -1,0 +1,11 @@
+3589875
+---
+2026/04/20 11:40:24 INFO catalog overlay merged dir=/home/qujing/aima-uat/u2/data/catalog overlay_assets=6 new_assets=6
+2026/04/20 11:40:24 INFO runtime selected runtime=docker docker_available=true k3s_available=false
+2026/04/20 11:40:24 INFO explorer started tier=1
+2026/04/20 11:40:24 INFO starting MCP server (HTTP) addr=127.0.0.1:9186
+2026/04/20 11:40:24 INFO starting proxy server addr=127.0.0.1:6286
+2026/04/20 11:40:24 INFO proxy server starting addr=127.0.0.1:6286
+2026/04/20 11:40:24 INFO openclaw sync complete llm=0 vlm=0 asr=0 tts=false image_gen=0 config=/home/qujing/.openclaw/openclaw.json
+2026/04/20 11:40:24 WARN device registration blocked on user input — run `aima device register` after providing the credential kind=recovery_code detail="valid recovery_code required to refresh existing device credentials"
+2026/04/20 11:40:24 INFO startup engine scan completed

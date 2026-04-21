@@ -111,7 +111,12 @@ func buildAgentDeps(ac *appContext, deps *mcp.ToolDeps,
 		if config.MaxConfigs == 0 {
 			config.MaxConfigs = 20
 		}
-		session, err := tuner.Start(ctx, config)
+		// Detach from the MCP request context so the tune goroutine survives
+		// after the HTTP response is written. Without this, net/http cancels
+		// the request context as soon as TuningStart returns, propagating
+		// through Tuner.run and failing progress=0/N before any config runs.
+		// Stop() remains the way to cancel a running session.
+		session, err := tuner.Start(context.WithoutCancel(ctx), config)
 		if err != nil {
 			return nil, err
 		}
@@ -177,6 +182,52 @@ func buildAgentDeps(ac *appContext, deps *mcp.ToolDeps,
 			return nil, err
 		}
 		return json.Marshal(result)
+	}
+	deps.ExploreListRuns = func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+		var p struct {
+			Status string `json:"status"`
+			Kind   string `json:"kind"`
+			Limit  int    `json:"limit"`
+		}
+		if len(params) > 0 {
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, fmt.Errorf("parse list_runs params: %w", err)
+			}
+		}
+		if p.Limit <= 0 {
+			p.Limit = 50
+		}
+		if p.Limit > 500 {
+			p.Limit = 500 // Cap runaway requests; UI pages locally.
+		}
+		runs, err := db.ListExplorationRuns(ctx, p.Status, p.Limit)
+		if err != nil {
+			return nil, err
+		}
+		if p.Kind != "" {
+			filtered := runs[:0]
+			for _, r := range runs {
+				if r.Kind == p.Kind {
+					filtered = append(filtered, r)
+				}
+			}
+			runs = filtered
+		}
+		return json.Marshal(runs)
+	}
+	deps.ExploreRunDetail = func(ctx context.Context, runID string) (json.RawMessage, error) {
+		run, err := db.GetExplorationRun(ctx, runID)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(run)
+	}
+	deps.ExploreRunEvents = func(ctx context.Context, runID string) (json.RawMessage, error) {
+		events, err := db.ListExplorationEvents(ctx, runID)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(events)
 	}
 	deps.OpenQuestions = func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
 		var p struct {
@@ -264,4 +315,3 @@ func buildAgentDeps(ac *appContext, deps *mcp.ToolDeps,
 		}
 	}
 }
-

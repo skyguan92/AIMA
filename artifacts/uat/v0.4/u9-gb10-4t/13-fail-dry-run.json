@@ -1,0 +1,59 @@
+{
+  "amplifier_score": 2.5,
+  "config": {
+    "dtype": "bfloat16",
+    "enable_auto_tool_choice": true,
+    "enforce_eager": true,
+    "gpu_memory_utilization": 0.25,
+    "max_model_len": 65536,
+    "port": 8000,
+    "served_model_name": "{{.ModelName}}",
+    "tool_call_parser": "qwen3_xml",
+    "trust_remote_code": true
+  },
+  "engine": "vllm-nightly-blackwell-u9-fail",
+  "engine_image": "vllm/vllm-openai:qwen3_5-cu130",
+  "fit_report": {
+    "adjustments": {},
+    "fit": true,
+    "reason": "",
+    "warnings": [
+      "unified memory system has swap enabled (16383 MiB); high gmu may cause swap thrashing instead of clean OOM-kill"
+    ]
+  },
+  "model": "qwen3.5-9b",
+  "performance_reference": {
+    "source": "unknown"
+  },
+  "ports": [
+    {
+      "config_key": "port",
+      "flag": "--port",
+      "name": "http",
+      "port": 8000,
+      "primary": true
+    }
+  ],
+  "provenance": {
+    "dtype": "L0",
+    "enable_auto_tool_choice": "L0",
+    "enforce_eager": "L0",
+    "gpu_memory_utilization": "L0",
+    "max_model_len": "L0",
+    "port": "L0",
+    "served_model_name": "L0",
+    "tool_call_parser": "L0",
+    "trust_remote_code": "L0"
+  },
+  "resource_estimate": {
+    "cpu_cores": 4,
+    "ram_mib": 2048,
+    "vram_mib": 18000
+  },
+  "runtime": "docker",
+  "slot": "primary",
+  "startup_time_s": 60,
+  "warnings": [
+    "unified memory system has swap enabled (16383 MiB); high gmu may cause swap thrashing instead of clean OOM-kill"
+  ]
+}

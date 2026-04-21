@@ -180,6 +180,38 @@ func buildEngineDeps(ac *appContext, deps *mcp.ToolDeps,
 					})
 					return nil
 				}
+				// Knowledge-driven reuse: if any compatible tag of the same image
+				// is already present in Docker, alias it to the pinned tag instead
+				// of re-pulling multi-GB of bytes. Compat list lives in engine YAML
+				// (INV-1: no Go branch per engine type).
+				for _, compatTag := range ea.Image.CompatibleTags {
+					if compatTag == "" || compatTag == ea.Image.Tag {
+						continue
+					}
+					compatRef := ea.Image.Name + ":" + compatTag
+					if !engine.ImageExistsInDocker(ctx, compatRef, runner) {
+						continue
+					}
+					if err := engine.TagDockerImage(ctx, compatRef, fullRef, runner); err != nil {
+						slog.Warn("compatible tag alias failed; falling through to pull", "src", compatRef, "dst", fullRef, "error", err)
+						break
+					}
+					slog.Info("aliased compatible engine image", "src", compatRef, "dst", fullRef)
+					if rt.Name() == "k3s" && os.Getuid() == 0 {
+						if err := engine.ImportDockerToContainerd(ctx, fullRef, runner); err != nil {
+							return fmt.Errorf("import aliased engine image %s into containerd: %w", fullRef, err)
+						}
+					}
+					_, _ = scanEnginesCore(ctx, "container", false)
+					reportProgress(engine.ProgressEvent{
+						Phase:      "already_available",
+						Downloaded: -1,
+						Total:      -1,
+						Speed:      -1,
+						Message:    fmt.Sprintf("reused compatible image %s (aliased to %s)", compatRef, fullRef),
+					})
+					return nil
+				}
 				if err := engine.Pull(ctx, engine.PullOptions{
 					Image:      ea.Image.Name,
 					Tag:        ea.Image.Tag,

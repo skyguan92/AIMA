@@ -1,0 +1,18 @@
+{
+  "cmd": [
+    "./build/aima-darwin-arm64",
+    "knowledge",
+    "advise",
+    "qwen3-8b",
+    "--engine",
+    "vllm",
+    "--intent",
+    "low-latency"
+  ],
+  "started_at_unix": 1776675979.29337,
+  "ended_at_unix": 1776676109.485579,
+  "elapsed_seconds": 130.192,
+  "returncode": 0,
+  "stdout": "{\n  \"advisory\": {\n    \"confidence\": \"high\",\n    \"content\": {\n      \"summary\": \"mock delayed central advise response\"\n    },\n    \"created_at\": \"2026-04-20T09:08:29.480075+00:00\",\n    \"id\": \"adv-u8-mock\",\n    \"reasoning\": \"delayed 130 seconds to validate edge timeout \\u003e 120s\",\n    \"status\": \"pending\",\n    \"summary\": \"mock delayed central advise response\",\n    \"target_engine\": \"vllm\",\n    \"target_hardware\": \"mock-hw\",\n    \"target_model\": \"qwen3-8b\",\n    \"type\": \"config_recommend\"\n  },\n  \"protocol_version\": \"v2-edge\",\n  \"recommendation\": {\n    \"config\": {\n      \"gpu_memory_utilization\": 0.8,\n      \"max_model_len\": 8192\n    },\n    \"engine\": \"vllm\"\n  },\n  \"request\": {\n    \"engine\": \"vllm\",\n    \"hardware\": \"\",\n    \"hardware_profile\": \"\",\n    \"intent\": \"low-latency\",\n    \"model\": \"qwen3-8b\"\n  }\n}\n",
+  "stderr": "2026/04/20 17:06:19 INFO runtime selected runtime=native docker_available=false k3s_available=false\n2026/04/20 17:06:19 INFO explorer started tier=1\n"
+}

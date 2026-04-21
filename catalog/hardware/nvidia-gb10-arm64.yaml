@@ -6,6 +6,7 @@ hardware:
   gpu:
     arch: Blackwell
     vram_mib: 15360
+    bandwidth_gbps: 273
     compute_id: "10.0"
     compute_units: 2048
     resource_name: "nvidia.com/gpu"

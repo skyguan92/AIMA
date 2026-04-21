@@ -2,9 +2,13 @@ package knowledge
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
+	"regexp"
 	"strings"
 )
+
+var modelLookupSeparatorRE = regexp.MustCompile(`[-_\s.]+`)
 
 // HardwareInfo describes the detected hardware for config resolution.
 // Zero-valued fields mean "unknown" and are skipped during validation,
@@ -23,6 +27,7 @@ type HardwareInfo struct {
 	RuntimeType     string // "k3s" or "native"
 	SwapTotalMiB    int    // Total swap space (0 = unknown or none)
 	TDPWatts        int    // hardware TDP from profile (0 = unknown)
+	GPUBandwidthGbps int   // Per-GPU memory bandwidth in GB/s from profile (0 = unknown)
 	// Dynamic fields from runtime metrics (0 = not collected, graceful degradation)
 	GPUMemUsedMiB int // Currently used GPU memory
 	GPUMemFreeMiB int // Currently free GPU memory
@@ -41,7 +46,8 @@ type PartitionSlot struct {
 
 // ResolvedConfig is the merged output of the L0-L2 config resolution process.
 type ResolvedConfig struct {
-	Engine                string
+	Engine                string // caller-supplied engine type or alias (preserves CLI/DB key semantics)
+	EngineAssetName       string // concrete asset metadata.name selected — use for runtime labels so findEngineAsset can resolve the asset
 	EngineImage           string
 	ModelPath             string
 	ModelName             string
@@ -112,6 +118,7 @@ type ResourceEstimate struct {
 // Resolve finds the best config by merging L0 (engine defaults) -> model variant defaults -> L1 (user overrides).
 // L2 (knowledge notes from DB) is not applied here; it is merged by the caller when available.
 func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOverrides map[string]any, opts ...ResolveOption) (*ResolvedConfig, error) {
+	modelName = c.resolveCatalogModelName(modelName)
 	var ropts resolveOpts
 	for _, o := range opts {
 		o(&ropts)
@@ -137,7 +144,7 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 		engineType = inferred
 	}
 
-	engine, err := c.findEngine(engineType, selectionHW)
+	engine, err := c.findEngine(engineType, selectionHW, &ropts)
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +152,10 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 	model, variant, err := c.findModelVariant(modelName, engineType, engine, selectionHW)
 	if err != nil {
 		return nil, err
+	}
+	if variant != nil && strings.TrimSpace(variant.Compatibility.UnsupportedReason) != "" {
+		return nil, fmt.Errorf("model %q with engine %q is marked unsupported: %s",
+			model.Metadata.Name, engineType, strings.TrimSpace(variant.Compatibility.UnsupportedReason))
 	}
 
 	// Format compatibility: reject early if model format is not supported by engine.
@@ -202,8 +213,13 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 		provenance[k] = "L1"
 	}
 
+	engineAssetName := ""
+	if engine != nil {
+		engineAssetName = engine.Metadata.Name
+	}
 	resolved := &ResolvedConfig{
 		Engine:             engineType,
+		EngineAssetName:    engineAssetName,
 		ModelName:          model.Metadata.Name,
 		ModelFormat:        variant.Format,
 		Slot:               slot.Name,
@@ -286,26 +302,39 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 	return resolved, nil
 }
 
-func (c *Catalog) findEngine(engineType string, hw HardwareInfo) (*EngineAsset, error) {
-	compatible := func(ea *EngineAsset) bool {
-		if hw.RuntimeType != "native" {
-			return true
-		}
-		if ea.Source == nil {
-			return false
-		}
-		return ea.Source.Supports(hw.Platform)
-	}
-
+func (c *Catalog) findEngine(engineType string, hw HardwareInfo, ropts *resolveOpts) (*EngineAsset, error) {
 	// Prefer exact metadata.name match, then metadata.type.
 	// Within each class, prefer exact gpu_arch match over wildcard.
+	// Blocked engines are skipped unless the caller provides a local-image
+	// checker and the engine's image is cached locally (typical cause:
+	// upstream registry removed a tag that an edge device pulled earlier).
 	var nameWildcard, typeWildcard *EngineAsset
+	var blockedReason string
 	for i := range c.EngineAssets {
 		ea := &c.EngineAssets[i]
-		if !compatible(ea) {
+		nameMatch := strings.EqualFold(ea.Metadata.Name, engineType)
+		typeMatch := strings.EqualFold(ea.Metadata.Type, engineType)
+		if !nameMatch && !typeMatch {
 			continue
 		}
-		if strings.EqualFold(ea.Metadata.Name, engineType) {
+		// Skip blocked engines but remember the reason for error reporting,
+		// UNLESS a local-image checker unblocks the engine for this device.
+		if strings.EqualFold(ea.Metadata.Status, "blocked") {
+			if !engineUnblockedByLocalImage(ea, ropts) {
+				if blockedReason == "" {
+					blockedReason = ea.Metadata.StatusReason
+					if blockedReason == "" {
+						blockedReason = "engine " + ea.Metadata.Name + " is blocked"
+					}
+				}
+				continue
+			}
+		}
+		// Skip native-only incompatibility
+		if hw.RuntimeType == "native" && (ea.Source == nil || !ea.Source.Supports(hw.Platform)) {
+			continue
+		}
+		if nameMatch {
 			if ea.Hardware.GPUArch == hw.GPUArch {
 				return ea, nil
 			}
@@ -313,7 +342,7 @@ func (c *Catalog) findEngine(engineType string, hw HardwareInfo) (*EngineAsset, 
 				nameWildcard = ea
 			}
 		}
-		if strings.EqualFold(ea.Metadata.Type, engineType) {
+		if typeMatch {
 			if ea.Hardware.GPUArch == hw.GPUArch {
 				return ea, nil
 			}
@@ -327,6 +356,9 @@ func (c *Catalog) findEngine(engineType string, hw HardwareInfo) (*EngineAsset, 
 	}
 	if typeWildcard != nil {
 		return typeWildcard, nil
+	}
+	if blockedReason != "" {
+		return nil, fmt.Errorf("engine %q for gpu_arch %q is blocked: %s", engineType, hw.GPUArch, blockedReason)
 	}
 	return nil, fmt.Errorf("no engine asset for type %q gpu_arch %q", engineType, hw.GPUArch)
 }
@@ -344,12 +376,39 @@ type engineCandidate struct {
 // Returns nil map if no golden config exists (graceful degradation).
 type GoldenConfigFunc func(hardware, engine, model string) map[string]any
 
+// engineUnblockedByLocalImage decides whether a blocked engine should be
+// reconsidered because its image is already present in the local runtime. Used
+// by findEngine to recover gracefully when an upstream registry removes a tag
+// that an edge device has cached. When the checker returns true, we WARN to
+// keep the decision visible in serve.log and fall through to normal matching.
+func engineUnblockedByLocalImage(ea *EngineAsset, ropts *resolveOpts) bool {
+	if ropts == nil || ropts.LocalImageChecker == nil {
+		return false
+	}
+	if ea.Image.Name == "" {
+		return false
+	}
+	ref := ea.Image.Name
+	if ea.Image.Tag != "" {
+		ref += ":" + ea.Image.Tag
+	}
+	if !ropts.LocalImageChecker(ref) {
+		return false
+	}
+	slog.Warn("engine marked blocked but image cached locally — using it anyway",
+		"engine", ea.Metadata.Name,
+		"image", ref,
+		"status_reason", ea.Metadata.StatusReason)
+	return true
+}
+
 // ResolveOption configures optional constraints for engine selection.
 type ResolveOption func(*resolveOpts)
 
 type resolveOpts struct {
-	MaxColdStartS int
-	GoldenConfig  GoldenConfigFunc
+	MaxColdStartS     int
+	GoldenConfig      GoldenConfigFunc
+	LocalImageChecker func(imageRef string) bool
 }
 
 // WithMaxColdStart filters engines whose cold start exceeds the given seconds.
@@ -362,10 +421,20 @@ func WithGoldenConfig(fn GoldenConfigFunc) ResolveOption {
 	return func(o *resolveOpts) { o.GoldenConfig = fn }
 }
 
+// WithLocalImageChecker lets engines with status=blocked pass through when
+// their container image is present in the local runtime cache. Typical trigger:
+// upstream registry removed a tag that an edge device has already pulled.
+// When the checker returns true for a blocked engine, findEngine emits a WARN
+// and continues matching as if it were not blocked.
+func WithLocalImageChecker(fn func(imageRef string) bool) ResolveOption {
+	return func(o *resolveOpts) { o.LocalImageChecker = fn }
+}
+
 // InferEngineType picks the best engine for a model on the given hardware.
 // Priority: collect all candidates that can run (format + VRAM fit or offload),
 // then rank by amplifier.performance_multiplier (descending), cold_start as tiebreaker.
 func (c *Catalog) InferEngineType(modelName string, hw HardwareInfo, opts ...ResolveOption) (string, error) {
+	modelName = c.resolveCatalogModelName(modelName)
 	var ropts resolveOpts
 	for _, o := range opts {
 		o(&ropts)
@@ -375,8 +444,12 @@ func (c *Catalog) InferEngineType(modelName string, hw HardwareInfo, opts ...Res
 			continue
 		}
 		var candidates []engineCandidate
+		var lastBlockedErr string // Track blocked engine errors for useful reporting
 
 		for _, v := range ma.Variants {
+			if strings.TrimSpace(v.Compatibility.UnsupportedReason) != "" {
+				continue
+			}
 			if v.Hardware.GPUArch != hw.GPUArch && v.Hardware.GPUArch != "*" {
 				continue
 			}
@@ -384,9 +457,28 @@ func (c *Catalog) InferEngineType(modelName string, hw HardwareInfo, opts ...Res
 			if v.Hardware.GPUCountMin > 0 && hw.GPUCount > 0 && hw.GPUCount < v.Hardware.GPUCountMin {
 				continue
 			}
-			engine, err := c.findEngine(v.Engine, hw)
+			engine, err := c.findEngine(v.Engine, hw, &ropts)
 			if err != nil {
+				if strings.Contains(err.Error(), "blocked") {
+					lastBlockedErr = err.Error()
+				}
 				continue
+			}
+
+			// Format compatibility: skip engines that don't support the variant's format.
+			// Without this, InferEngineType may select llamacpp for a safetensors model,
+			// which Resolve() then rejects at the format check — a confusing late failure.
+			if v.Format != "" && len(engine.Metadata.SupportedFormats) > 0 {
+				formatOK := false
+				for _, sf := range engine.Metadata.SupportedFormats {
+					if strings.EqualFold(sf, v.Format) {
+						formatOK = true
+						break
+					}
+				}
+				if !formatOK {
+					continue
+				}
 			}
 
 			fitsRawVRAM := hw.GPUVRAMMiB == 0 || v.Hardware.VRAMMinMiB == 0 || v.Hardware.VRAMMinMiB <= hw.GPUVRAMMiB
@@ -433,6 +525,9 @@ func (c *Catalog) InferEngineType(modelName string, hw HardwareInfo, opts ...Res
 		}
 
 		if len(candidates) == 0 {
+			if lastBlockedErr != "" {
+				return "", fmt.Errorf("no compatible engine for model %q: %s", modelName, lastBlockedErr)
+			}
 			return "", fmt.Errorf("no compatible engine for model %q on gpu_arch %q (vram %d MiB)", modelName, hw.GPUArch, hw.GPUVRAMMiB)
 		}
 
@@ -487,6 +582,7 @@ func effectiveVRAM(hw HardwareInfo, vramMultiplier float64) int {
 // in call sites. Returns (ma, nil, engineType, err) when the model exists but no variant
 // matches, allowing the caller to fall back to global sources.
 func (c *Catalog) ResolveVariantForPull(modelName string, hw HardwareInfo) (*ModelAsset, *ModelVariant, string, error) {
+	modelName = c.resolveCatalogModelName(modelName)
 	engineType, err := c.InferEngineType(modelName, hw)
 	if err != nil {
 		// Model found but no compatible engine — return model asset for global source fallback.
@@ -497,7 +593,9 @@ func (c *Catalog) ResolveVariantForPull(modelName string, hw HardwareInfo) (*Mod
 		}
 		return nil, nil, "", err
 	}
-	engine, ferr := c.findEngine(engineType, hw)
+	// Pull path doesn't benefit from local-image unblocking; passing nil keeps
+	// blocked semantics strict for downloads.
+	engine, ferr := c.findEngine(engineType, hw, nil)
 	if ferr != nil {
 		return nil, nil, engineType, ferr
 	}
@@ -522,21 +620,29 @@ func (c *Catalog) FindEngineByName(name string, hw HardwareInfo) *EngineAsset {
 	}
 
 	// Pass 2: metadata.type with hardware preference
-	var typeMatch *EngineAsset
+	// Priority: exact gpu_arch match → wildcard (*) → first type match.
+	// This aligns with findEngine() to avoid overlay/resolve divergence.
+	var typeWildcard, typeFirst *EngineAsset
 	for i := range c.EngineAssets {
 		ea := &c.EngineAssets[i]
 		if strings.ToLower(ea.Metadata.Type) != nameLower {
 			continue
 		}
-		if typeMatch == nil {
-			typeMatch = ea
+		if typeFirst == nil {
+			typeFirst = ea
 		}
 		if strings.EqualFold(ea.Hardware.GPUArch, hw.GPUArch) {
 			return ea
 		}
+		if ea.Hardware.GPUArch == "*" && typeWildcard == nil {
+			typeWildcard = ea
+		}
 	}
-	if typeMatch != nil {
-		return typeMatch
+	if typeWildcard != nil {
+		return typeWildcard
+	}
+	if typeFirst != nil {
+		return typeFirst
 	}
 
 	// Pass 3: image name substring
@@ -621,6 +727,15 @@ func (c *Catalog) findRuntimeClassName(hw HardwareInfo) string {
 func (c *Catalog) FindHardwareTDP(hw HardwareInfo) int {
 	if hp := c.findHardwareProfileFor(hw); hp != nil {
 		return hp.Constraints.TDPWatts
+	}
+	return 0
+}
+
+// FindGPUBandwidth returns the per-GPU memory bandwidth (GB/s) from the matching
+// hardware profile. Returns 0 if no matching profile or bandwidth is not set.
+func (c *Catalog) FindGPUBandwidth(hw HardwareInfo) int {
+	if hp := c.findHardwareProfileFor(hw); hp != nil {
+		return hp.Hardware.GPU.BandwidthGbps
 	}
 	return 0
 }
@@ -818,17 +933,73 @@ const FallbackEngine = "llamacpp"
 
 // FormatToEngine returns the engine type for a given model file format,
 // derived from the catalog's engine assets (supported_formats field).
+// Prefers general-purpose engines (supporting llm/vlm) over specialized ones
+// (e.g. ASR-only) so that safetensors → vllm instead of mooer.
 // Returns "" if no engine declares support for the format.
 func (c *Catalog) FormatToEngine(format string) string {
 	lower := strings.ToLower(format)
+	var firstMatch string
 	for _, ea := range c.EngineAssets {
 		for _, f := range ea.Metadata.SupportedFormats {
 			if strings.EqualFold(f, lower) {
-				return ea.Metadata.Type
+				if engineSupportsModelType(ea.Metadata.SupportedModelTypes, "llm") {
+					return ea.Metadata.Type
+				}
+				if firstMatch == "" {
+					firstMatch = ea.Metadata.Type
+				}
+				break
 			}
 		}
 	}
-	return ""
+	return firstMatch
+}
+
+// engineSupportsModelType checks if an engine's supported_model_types list
+// contains the given type (case-insensitive).
+func engineSupportsModelType(supported []string, modelType string) bool {
+	for _, s := range supported {
+		if strings.EqualFold(s, modelType) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeModelLookupKey lowercases, collapses separators, and trims a model
+// name into a canonical lookup form. It does NOT strip any domain-specific
+// prefixes (quantization tags, uploader handles, etc.) — those should be
+// expressed as explicit Aliases on the catalog ModelAsset so adding coverage
+// stays a YAML-only change (honors INV-1/2).
+func normalizeModelLookupKey(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = modelLookupSeparatorRE.ReplaceAllString(name, "-")
+	for strings.Contains(name, "--") {
+		name = strings.ReplaceAll(name, "--", "-")
+	}
+	return strings.Trim(name, "-")
+}
+
+func (c *Catalog) resolveCatalogModelName(modelName string) string {
+	trimmed := strings.TrimSpace(modelName)
+	if trimmed == "" {
+		return trimmed
+	}
+	normalized := normalizeModelLookupKey(trimmed)
+	if normalized == "" {
+		return trimmed
+	}
+	for _, ma := range c.ModelAssets {
+		if normalizeModelLookupKey(ma.Metadata.Name) == normalized {
+			return ma.Metadata.Name
+		}
+		for _, alias := range ma.Metadata.Aliases {
+			if normalizeModelLookupKey(alias) == normalized {
+				return ma.Metadata.Name
+			}
+		}
+	}
+	return trimmed
 }
 
 // DefaultEngine returns the fallback engine type from the catalog.
@@ -1000,13 +1171,13 @@ func (c *Catalog) BuildSyntheticModelAsset(meta ScanMetadata, hw HardwareInfo, r
 	if meta.Type == "" {
 		meta.Type = "llm"
 	}
-	inferredEngineType := c.FormatToEngine(meta.Format)
+	inferredEngineType := substituteDisallowedMooer(meta, c.FormatToEngine(meta.Format))
 	if inferredEngineType == "" {
-		inferredEngineType = c.DefaultEngine()
+		inferredEngineType = substituteDisallowedMooer(meta, c.DefaultEngine())
 	}
 
 	estimatedVRAM := estimateVRAMMiB(meta)
-	defaultEngine := c.DefaultEngine()
+	defaultEngine := substituteDisallowedMooer(meta, c.DefaultEngine())
 
 	var variants []ModelVariant
 	var targetedHW *ModelVariantHardware
@@ -1078,6 +1249,7 @@ func (c *Catalog) BuildSyntheticModelAsset(meta ScanMetadata, hw HardwareInfo, r
 	}
 
 	for _, re := range requestedEngines {
+		re = substituteDisallowedMooer(meta, re)
 		if re == "" || re == inferredEngineType || re == defaultEngine {
 			continue
 		}
@@ -1128,44 +1300,66 @@ func (c *Catalog) BuildSyntheticModelAsset(meta ScanMetadata, hw HardwareInfo, r
 	}
 }
 
-// buildSyntheticConfig generates engine-appropriate config for a synthetic
-// model variant. Instead of hardcoding vLLM param names, it checks the
-// engine's default_args to determine the correct parameter names.
-// Standard concepts: memory utilization → gpu_memory_utilization or mem_fraction_static;
-// context length → max_model_len or context_length; TP → tensor_parallel_size or tp_size.
+func syntheticDisallowMooer(meta ScanMetadata) bool {
+	if !strings.EqualFold(meta.Format, "safetensors") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(meta.Type)) {
+	case "llm", "embedding":
+		return true
+	default:
+		return false
+	}
+}
+
+// substituteDisallowedMooer returns "vllm" when the proposed engine is mooer
+// (ASR-only) but the scan metadata describes a non-ASR safetensors model.
+// Otherwise returns the proposal unchanged. This collapses the previously
+// duplicated "guard against mooer" inline checks in BuildSyntheticModelAsset.
+func substituteDisallowedMooer(meta ScanMetadata, proposed string) string {
+	if syntheticDisallowMooer(meta) && strings.EqualFold(proposed, "mooer") {
+		return "vllm"
+	}
+	return proposed
+}
+
+// buildSyntheticConfig emits config keys for a synthetic model variant.
+// Memory fraction is strictly YAML-driven: passing an unknown flag like
+// --gpu-memory-utilization to engines that don't accept it aborts startup.
+// Context length and tensor parallelism keep a vLLM-shaped fallback for
+// engines whose default_args only cover the knobs they override.
 func (c *Catalog) buildSyntheticConfig(engineType string, hw HardwareInfo, gmu float64, maxLen, tp int) map[string]any {
 	cfg := make(map[string]any)
 
-	// Look up the engine's default_args to determine supported param names.
 	engineArgs := c.engineDefaultArgs(engineType, hw)
 
-	// Memory utilization: prefer engine's native param name.
+	pickDeclared := func(aliases []string) string {
+		for _, k := range aliases {
+			if _, ok := engineArgs[k]; ok {
+				return k
+			}
+		}
+		return ""
+	}
+
 	if gmu > 0 {
-		if _, ok := engineArgs["mem_fraction_static"]; ok {
-			cfg["mem_fraction_static"] = gmu
-		} else {
-			cfg["gpu_memory_utilization"] = gmu
+		if key := pickDeclared([]string{"gpu_memory_utilization", "mem_fraction_static"}); key != "" {
+			cfg[key] = gmu
 		}
 	}
-
-	// Context / sequence length: prefer engine's native param name.
 	if maxLen > 0 {
-		if _, ok := engineArgs["context_length"]; ok {
-			cfg["context_length"] = maxLen
-		} else if _, hasMFL := engineArgs["max_model_len"]; hasMFL {
+		if key := pickDeclared([]string{"context_length", "max_model_len", "ctx_size", "max_context_tokens"}); key != "" {
+			cfg[key] = maxLen
+		} else if _, hasMFS := engineArgs["mem_fraction_static"]; !hasMFS {
+			// Engines that declare mem_fraction_static (SGLang family) have
+			// no explicit context-length knob. Fall back to max_model_len
+			// only for the vLLM-shaped path.
 			cfg["max_model_len"] = maxLen
-		} else if _, hasMFS := engineArgs["mem_fraction_static"]; hasMFS {
-			// sglang-kt family: no explicit context length param, engine manages it.
-			// Don't inject max_model_len which sglang-kt doesn't recognize.
-		} else {
-			cfg["max_model_len"] = maxLen // safe default for vLLM-like engines
 		}
 	}
-
-	// Tensor parallelism: prefer engine's native param name.
 	if tp > 1 {
-		if _, ok := engineArgs["tp_size"]; ok {
-			cfg["tp_size"] = tp
+		if key := pickDeclared([]string{"tp_size", "tensor_parallel_size"}); key != "" {
+			cfg[key] = tp
 		} else {
 			cfg["tensor_parallel_size"] = tp
 		}
@@ -1182,6 +1376,44 @@ func (c *Catalog) engineDefaultArgs(engineType string, hw HardwareInfo) map[stri
 		return nil
 	}
 	return engine.Startup.DefaultArgs
+}
+
+// ModelMaxContextLen returns the largest context window (max_model_len,
+// context_length, ctx_size, max_context_tokens) across all variants of the
+// named model. Returns 0 if the model is not found or no key is set.
+// Safe for concurrent use.
+func (c *Catalog) ModelMaxContextLen(name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.ModelAssets {
+		if !strings.EqualFold(c.ModelAssets[i].Metadata.Name, name) {
+			continue
+		}
+		var best int
+		for _, v := range c.ModelAssets[i].Variants {
+			for _, key := range []string{"max_model_len", "context_length", "ctx_size", "max_context_tokens"} {
+				if val, ok := v.DefaultConfig[key]; ok {
+					if n := anyToInt(val); n > best {
+						best = n
+					}
+				}
+			}
+		}
+		return best
+	}
+	return 0
+}
+
+func anyToInt(v any) int {
+	switch x := v.(type) {
+	case float64:
+		return int(x)
+	case int:
+		return x
+	case int64:
+		return int(x)
+	}
+	return 0
 }
 
 // RegisterModel appends a ModelAsset to the catalog if no asset with the
@@ -1205,6 +1437,19 @@ func (c *Catalog) HasSyntheticModel(name string) bool {
 	for i := range c.ModelAssets {
 		if strings.EqualFold(c.ModelAssets[i].Metadata.Name, name) {
 			return c.ModelAssets[i].synthetic
+		}
+	}
+	return false
+}
+
+// HasCatalogModel reports whether the catalog contains a non-synthetic model
+// asset with the given name.
+func (c *Catalog) HasCatalogModel(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.ModelAssets {
+		if strings.EqualFold(c.ModelAssets[i].Metadata.Name, name) {
+			return !c.ModelAssets[i].synthetic
 		}
 	}
 	return false

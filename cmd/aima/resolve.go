@@ -10,6 +10,7 @@ import (
 	goruntime "runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/jguan/aima/internal/engine"
 	"github.com/jguan/aima/internal/hal"
@@ -18,6 +19,12 @@ import (
 
 	state "github.com/jguan/aima/internal"
 )
+
+// autoDetectWarned remembers which model names have already emitted the
+// "falling back to auto-detected config" warning, so we don't spam repeated
+// warns on hot paths (e.g. explorer planning resolves the same model many
+// times per cycle). The debug line still fires every time.
+var autoDetectWarned sync.Map
 
 // resolvedDeployment holds the shared result of resolve + CheckFit,
 // used by both DeployApply and DeployDryRun.
@@ -94,6 +101,15 @@ func resolveDeployment(ctx context.Context, cat *knowledge.Catalog, db *state.DB
 	// L2c: inject golden config into resolve chain (applied between L0 and L1 inside Resolve)
 	resolveOpts = append(resolveOpts, knowledge.WithGoldenConfig(func(hardware, engine, model string) map[string]any {
 		return queryGoldenOverrides(ctx, kStore, hardware, engine, model)
+	}))
+
+	// Allow engines marked `status: blocked` (typically because upstream
+	// removed the image tag from public registries) to pass through when the
+	// image is already cached locally. Edge devices that pulled an engine
+	// image before its upstream removal should keep using it until the
+	// catalog status is refreshed from a working source.
+	resolveOpts = append(resolveOpts, knowledge.WithLocalImageChecker(func(ref string) bool {
+		return engine.ImageExistsInDocker(ctx, ref, &execRunner{})
 	}))
 
 	resolved, canonicalName, err := resolveWithFallback(ctx, resolveCat, db, hwInfo, modelName, engineType, overrides, dataDir, resolveOpts...)
@@ -174,6 +190,7 @@ func buildHardwareInfo(ctx context.Context, cat *knowledge.Catalog, rtName strin
 			hwInfo.HardwareProfile = hp.Metadata.Name
 		}
 		hwInfo.TDPWatts = cat.FindHardwareTDP(hwInfo)
+		hwInfo.GPUBandwidthGbps = cat.FindGPUBandwidth(hwInfo)
 	}
 	return hwInfo
 }
@@ -183,10 +200,11 @@ func buildHardwareInfo(ctx context.Context, cat *knowledge.Catalog, rtName strin
 func resolveWithFallback(ctx context.Context, cat *knowledge.Catalog, db *state.DB, hw knowledge.HardwareInfo, modelName, engineType string, overrides map[string]any, dataDir string, opts ...knowledge.ResolveOption) (*knowledge.ResolvedConfig, string, error) {
 	resolved, err := cat.Resolve(hw, modelName, engineType, overrides, opts...)
 	if err == nil {
-		// Catalog hit — but ModelPath may be empty if no override was given.
-		// Look up DB for the actual registered path from scan/import.
-		if resolved.ModelPath == "" {
-			if dbModel, dbErr := db.FindModelByName(ctx, modelName); dbErr == nil && dbModel.Path != "" {
+		// Catalog hit — prefer the actual scanned path when the catalog default
+		// is empty or no longer matches the files present on this device.
+		if dbModel, dbErr := db.FindModelByName(ctx, modelName); dbErr == nil && dbModel.Path != "" {
+			pathReady := resolved.ModelPath != "" && model.PathLooksCompatible(resolved.ModelPath, resolved.ModelFormat, resolvedQuantizationHint(resolved))
+			if !pathReady {
 				if model.PathLooksCompatible(dbModel.Path, dbModel.Format, resolvedQuantizationHint(resolved)) {
 					resolved.ModelPath = dbModel.Path
 				} else {
@@ -205,7 +223,7 @@ func resolveWithFallback(ctx context.Context, cat *knowledge.Catalog, db *state.
 	// Also trigger synthetic rebuild when the model exists in catalog but has
 	// no variant for the requested engine — Explorer needs this to discover
 	// working configs for engine+model combos not yet cataloged.
-	if !rebuildSynthetic && strings.Contains(err.Error(), "no variant of model") {
+	if !rebuildSynthetic && strings.Contains(err.Error(), "no variant of model") && !cat.HasCatalogModel(modelName) {
 		rebuildSynthetic = true
 	}
 	if !rebuildSynthetic && cat.HasSyntheticModel(modelName) {
@@ -224,8 +242,18 @@ func resolveWithFallback(ctx context.Context, cat *knowledge.Catalog, db *state.
 		return nil, "", fmt.Errorf("model %q found on disk but has no format info; cannot auto-detect engine", dbModel.Name)
 	}
 
-	slog.Info("model not in catalog, using auto-detected config",
+	// Bug-2: per-resolve call goes to Debug to avoid spam — this path runs
+	// many times per explorer cycle for the same model.
+	slog.Debug("model not in catalog, using auto-detected config",
 		"model", dbModel.Name, "format", dbModel.Format, "path", dbModel.Path)
+	// DC-4: first time we auto-detect a given model, surface a Warn so
+	// operators notice the silent fallback. Missing catalog entries hide
+	// real tuning opportunities (YAML-driven engine hints, validated
+	// configs), so we want this visible once per process per model.
+	if _, seen := autoDetectWarned.LoadOrStore(dbModel.Name, true); !seen {
+		slog.Warn("model not in catalog — auto-detect fallback in use; consider adding a model YAML",
+			"model", dbModel.Name, "format", dbModel.Format)
+	}
 
 	synth := cat.BuildSyntheticModelAsset(knowledge.ScanMetadata{
 		Name:         dbModel.Name,
@@ -286,8 +314,13 @@ func resolveCatalogWithLocalEngineOverlay(ctx context.Context, cat *knowledge.Ca
 		return base
 	}
 
-	merged := knowledge.MergeCatalog(base, overlay)
-	slog.Info("resolve: merged local engine overlay", "overlay_assets", len(overlay.EngineAssets))
+	merged, warnings := knowledge.MergeCatalog(base, overlay)
+	for _, w := range warnings {
+		slog.Warn("resolve: local engine overlay merge warning", "warning", w)
+	}
+	// Bug-2: demoted to Debug — this fires on every resolve() call and
+	// during explorer planning can emit 50+ identical lines in < 2 s.
+	slog.Debug("resolve: merged local engine overlay", "overlay_assets", len(overlay.EngineAssets))
 	return merged
 }
 

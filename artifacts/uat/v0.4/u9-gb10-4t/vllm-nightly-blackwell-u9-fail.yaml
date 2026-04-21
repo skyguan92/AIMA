@@ -1,0 +1,28 @@
+kind: engine_asset
+_profile: vllm
+metadata:
+  name: vllm-nightly-blackwell-u9-fail
+  type: vllm-nightly
+  version: "nightly"
+hardware:
+  gpu_arch: Blackwell
+  vram_min_mib: 4096
+image:
+  name: vllm/vllm-openai
+  tag: "qwen3_5-cu130"
+  platforms: [linux/arm64, linux/amd64]
+startup:
+  env:
+    VLLM_ATTENTION_BACKEND: TRITON_ATTN
+  health_check:
+    path: /definitely-not-here
+    timeout_s: 20
+  warmup:
+    enabled: true
+    prompt: "ping"
+    max_tokens: 1
+    timeout_s: 60
+runtime:
+  default: "container"
+  platform_recommendations:
+    linux/arm64: "container"

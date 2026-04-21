@@ -1,0 +1,53 @@
+{
+  "protocol_version": "v2-edge",
+  "request": {
+    "goal": "balanced",
+    "hardware": "nvidia-gb10-arm64",
+    "models": [
+      "qwen3-8b",
+      "glm-4.7-flash"
+    ]
+  },
+  "scenario": {
+    "confidence": "high",
+    "deployments": [
+      {
+        "config": {
+          "gpu_memory_utilization": 0.6
+        },
+        "engine": "vllm",
+        "model": "qwen3-8b",
+        "resource_share": "60%",
+        "slot": "slot-0"
+      },
+      {
+        "config": {
+          "gpu_memory_utilization": 0.3
+        },
+        "engine": "vllm",
+        "model": "glm-4.7-flash",
+        "resource_share": "40%",
+        "slot": "slot-1"
+      }
+    ],
+    "description": "Mock scenario response for contract verification.",
+    "name": "mock-balanced-scenario",
+    "reasoning": "Mock planner response for contract verification.",
+    "total_vram_mib": 24576
+  },
+  "stored": {
+    "created_at": "2026-04-20T10:50:20Z",
+    "description": "Mock scenario response for contract verification.",
+    "hardware_profile": "nvidia-gb10-arm64",
+    "id": "scn_beb371343292ab32",
+    "models": [
+      "qwen3-8b",
+      "glm-4.7-flash"
+    ],
+    "name": "mock-balanced-scenario",
+    "scenario": "confidence: high\ndeployments:\n    - config:\n        gpu_memory_utilization: 0.6\n      engine: vllm\n      model: qwen3-8b\n      resource_share: 60%\n      slot: slot-0\n    - config:\n        gpu_memory_utilization: 0.3\n      engine: vllm\n      model: glm-4.7-flash\n      resource_share: 40%\n      slot: slot-1\ndescription: Mock scenario response for contract verification.\ngoal: balanced\nhardware: nvidia-gb10-arm64\nname: mock-balanced-scenario\nreasoning: Mock planner response for contract verification.\ntotal_vram: 24576\n",
+    "source": "generated",
+    "updated_at": "2026-04-20T10:50:20Z",
+    "version": 1
+  }
+}

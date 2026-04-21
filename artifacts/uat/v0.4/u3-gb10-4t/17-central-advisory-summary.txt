@@ -1,0 +1,65 @@
+             id = adv_53b89149afc94c0b
+           type = gap_alert
+         status = delivered
+target_hardware = nvidia-gb10-arm64
+   target_model = gemma-4-26b-a4b-it
+  target_engine = vllm-gemma4-blackwell
+     created_at = 2026-04-20T12:15:50Z
+   delivered_at = 2026-04-20T12:17:27Z
+   validated_at = 
+       feedback = 
+
+             id = adv_aa4bccb8902c8f3f
+           type = config_recommend
+         status = rejected
+target_hardware = 
+   target_model = 
+  target_engine = 
+     created_at = 2026-04-20T12:15:50Z
+   delivered_at = 
+   validated_at = 2026-04-20T12:19:30Z
+       feedback = filtered during U3 isolated test setup
+
+             id = adv_3dfba9e4bbe5c10c
+           type = config_recommend
+         status = rejected
+target_hardware = nvidia-gb10-arm64
+   target_model = gemma-4-26b-a4b-it
+  target_engine = 
+     created_at = 2026-04-20T12:18:37Z
+   delivered_at = 
+   validated_at = 2026-04-20T12:19:30Z
+       feedback = filtered during U3 isolated test setup
+
+             id = adv_9da8567745544974
+           type = config_recommend
+         status = rejected
+target_hardware = nvidia-gb10-arm64
+   target_model = gemma-4-26b-a4b-it
+  target_engine = 
+     created_at = 2026-04-20T12:19:13Z
+   delivered_at = 2026-04-20T12:19:34Z
+   validated_at = 2026-04-20T12:20:10Z
+       feedback = filtered during U3 isolated test setup
+
+             id = adv_u3_manual_validate
+           type = config_recommend
+         status = rejected
+target_hardware = nvidia-gb10-arm64
+   target_model = gemma-4-26b-a4b-it
+  target_engine = vllm-gemma4-blackwell
+     created_at = 2026-04-20T12:19:30Z
+   delivered_at = 2026-04-20T12:19:34Z
+   validated_at = 2026-04-20T12:19:40Z
+       feedback = not in ready combos
+
+             id = adv_u3_glm_validate
+           type = config_recommend
+         status = delivered
+target_hardware = nvidia-gb10-arm64
+   target_model = GLM-4.1V-9B-Thinking
+  target_engine = vllm-nightly
+     created_at = 2026-04-20T12:20:10Z
+   delivered_at = 2026-04-20T12:20:34Z
+   validated_at = 
+       feedback = 

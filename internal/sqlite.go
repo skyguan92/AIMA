@@ -90,6 +90,18 @@ type AuditEntry struct {
 }
 
 // Configuration represents a tested Hardware×Engine×Model×Config combination.
+//
+// Source field vocabulary (DC-6 documentation):
+//   - "local":     explicitly-saved deploy-time configuration; Config is the engine
+//     argv / engine_params actually applied to the container.
+//   - "benchmark": anchor row auto-created per benchmark cell; Config holds the
+//     cell parameters {concurrency, input_tokens, max_tokens}, NOT
+//     engine args. These rows exist so benchmark_results.config_id
+//     has a row to reference.
+//   - "central":   configuration pulled from the Central Knowledge Server.
+//
+// When querying for real deploy configurations, filter on source IN ('local','central').
+// When reconstructing a benchmark cell's parameters, filter on source='benchmark'.
 type Configuration struct {
 	ID          string    `json:"id"`
 	HardwareID  string    `json:"hardware_id"`
@@ -101,7 +113,7 @@ type Configuration struct {
 	DerivedFrom string    `json:"derived_from"`
 	Status      string    `json:"status"`
 	Tags        []string  `json:"tags"`
-	Source      string    `json:"source"`
+	Source      string    `json:"source"` // see struct doc above
 	DeviceID    string    `json:"device_id"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -111,6 +123,7 @@ type Configuration struct {
 type BenchmarkResult struct {
 	ID              string    `json:"id"`
 	ConfigID        string    `json:"config_id"`
+	AdvisoryID      string    `json:"advisory_id,omitempty"`
 	Concurrency     int       `json:"concurrency"`
 	InputLenBucket  string    `json:"input_len_bucket"`
 	OutputLenBucket string    `json:"output_len_bucket"`
@@ -135,6 +148,43 @@ type BenchmarkResult struct {
 	TestedAt        time.Time `json:"tested_at"`
 	AgentModel      string    `json:"agent_model"`
 	Notes           string    `json:"notes"`
+
+	// TTS/ASR shared
+	RTFP50  *float64 `json:"rtf_p50,omitempty"`
+	RTFP95  *float64 `json:"rtf_p95,omitempty"`
+	RTFMean *float64 `json:"rtf_mean,omitempty"`
+
+	// TTS
+	TTFAP50ms         *float64 `json:"ttfa_p50_ms,omitempty"`
+	TTFAP95ms         *float64 `json:"ttfa_p95_ms,omitempty"`
+	AudioThroughput   *float64 `json:"audio_throughput,omitempty"`
+	AvgInputChars     *int     `json:"avg_input_chars,omitempty"`
+	AvgAudioDurationS *float64 `json:"avg_audio_duration_s,omitempty"`
+
+	// ASR
+	ASRThroughput  *float64 `json:"asr_throughput,omitempty"`
+	AvgInputAudioS *float64 `json:"avg_input_audio_s,omitempty"`
+	AvgOutputChars *int     `json:"avg_output_chars,omitempty"`
+
+	// T2I
+	LatencyP50ms *float64 `json:"latency_p50_ms,omitempty"`
+	LatencyP95ms *float64 `json:"latency_p95_ms,omitempty"`
+	LatencyP99ms *float64 `json:"latency_p99_ms,omitempty"`
+	ImagesPerSec *float64 `json:"images_per_sec,omitempty"`
+	AvgSteps     *int     `json:"avg_steps,omitempty"`
+	ImageWidth   *int     `json:"image_width,omitempty"`
+	ImageHeight  *int     `json:"image_height,omitempty"`
+
+	// T2V
+	VideoLatencyP50s  *float64 `json:"video_latency_p50_s,omitempty"`
+	VideoLatencyP95s  *float64 `json:"video_latency_p95_s,omitempty"`
+	VideosPerHour     *float64 `json:"videos_per_hour,omitempty"`
+	AvgVideoDurationS *float64 `json:"avg_video_duration_s,omitempty"`
+	AvgFrames         *int     `json:"avg_frames,omitempty"`
+	VideoFPS          *int     `json:"video_fps,omitempty"`
+	VideoWidth        *int     `json:"video_width,omitempty"`
+	VideoHeight       *int     `json:"video_height,omitempty"`
+	VideoSteps        *int     `json:"video_steps,omitempty"`
 }
 
 type ExplorationRun struct {
@@ -332,6 +382,14 @@ func (d *DB) migrate(ctx context.Context) error {
 	// v13: benchmark_results.cpu_usage_pct for heterogeneous-engine knowledge
 	if err := d.migrateV13(ctx); err != nil {
 		return fmt.Errorf("migrate v13: %w", err)
+	}
+	// v14: multi-modal benchmark columns (TTS/ASR/T2I/T2V)
+	if err := d.migrateV14(ctx); err != nil {
+		return fmt.Errorf("migrate v14: %w", err)
+	}
+	// v15: benchmark_results.advisory_id links validation benches to central advisory
+	if err := d.migrateV15(ctx); err != nil {
+		return fmt.Errorf("migrate v15: %w", err)
 	}
 	if _, err := d.db.ExecContext(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
@@ -1066,6 +1124,100 @@ func (d *DB) migrateV13(ctx context.Context) error {
 	return nil
 }
 
+func (d *DB) migrateV14(ctx context.Context) error {
+	var version int
+	_ = d.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	if version >= 14 {
+		return nil
+	}
+
+	columns := []struct {
+		name string
+		typ  string
+	}{
+		// TTS/ASR shared
+		{"rtf_p50", "REAL"},
+		{"rtf_p95", "REAL"},
+		{"rtf_mean", "REAL"},
+		// TTS specific
+		{"ttfa_p50_ms", "REAL"},
+		{"ttfa_p95_ms", "REAL"},
+		{"audio_throughput", "REAL"},
+		{"avg_input_chars", "INTEGER"},
+		{"avg_audio_duration_s", "REAL"},
+		// ASR specific
+		{"asr_throughput", "REAL"},
+		{"avg_input_audio_s", "REAL"},
+		{"avg_output_chars", "INTEGER"},
+		// T2I specific
+		{"latency_p50_ms", "REAL"},
+		{"latency_p95_ms", "REAL"},
+		{"latency_p99_ms", "REAL"},
+		{"images_per_sec", "REAL"},
+		{"avg_steps", "INTEGER"},
+		{"image_width", "INTEGER"},
+		{"image_height", "INTEGER"},
+		// T2V specific
+		{"video_latency_p50_s", "REAL"},
+		{"video_latency_p95_s", "REAL"},
+		{"videos_per_hour", "REAL"},
+		{"avg_video_duration_s", "REAL"},
+		{"avg_frames", "INTEGER"},
+		{"video_fps", "INTEGER"},
+		{"video_width", "INTEGER"},
+		{"video_height", "INTEGER"},
+		{"video_steps", "INTEGER"},
+	}
+
+	for _, col := range columns {
+		var count int
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('benchmark_results') WHERE name=?`, col.name).Scan(&count); err != nil {
+			return fmt.Errorf("check benchmark_results.%s column: %w", col.name, err)
+		}
+		if count == 0 {
+			stmt := fmt.Sprintf(`ALTER TABLE benchmark_results ADD COLUMN %s %s`, col.name, col.typ)
+			if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("add benchmark_results.%s: %w", col.name, err)
+			}
+		}
+	}
+
+	if _, err := d.db.ExecContext(ctx, "PRAGMA user_version = 14"); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
+}
+
+// migrateV15 adds benchmark_results.advisory_id so Explorer can tag benches
+// generated from an advisory validation run and close the central feedback loop.
+func (d *DB) migrateV15(ctx context.Context) error {
+	var version int
+	_ = d.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	if version >= 15 {
+		return nil
+	}
+	var count int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('benchmark_results') WHERE name='advisory_id'`).Scan(&count); err != nil {
+		return fmt.Errorf("check benchmark_results.advisory_id column: %w", err)
+	}
+	if count == 0 {
+		if _, err := d.db.ExecContext(ctx,
+			`ALTER TABLE benchmark_results ADD COLUMN advisory_id TEXT`); err != nil {
+			return fmt.Errorf("add benchmark_results.advisory_id: %w", err)
+		}
+	}
+	if _, err := d.db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_br_advisory ON benchmark_results(advisory_id)`); err != nil {
+		return fmt.Errorf("create idx_br_advisory: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, "PRAGMA user_version = 15"); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
+}
+
 func (d *DB) InsertExplorationPlan(ctx context.Context, plan *ExplorationPlanRow) error {
 	_, err := d.db.ExecContext(ctx,
 		`INSERT INTO exploration_plans (id, tier, trigger, status, plan_json, progress, total, created_at)
@@ -1253,6 +1405,29 @@ func (d *DB) ListValidations(ctx context.Context, hardware, engine, model string
 		})
 	}
 	return results, rows.Err()
+}
+
+// UpsertTuningSession persists a tuning session row. Called on session start
+// (status=running) and at each progress tick / completion. best_config and
+// results are stored as JSON text. completed_at is set when completedAt != nil.
+func (d *DB) UpsertTuningSession(ctx context.Context, id, model, engine, status string, progress, total int, bestConfigJSON, resultsJSON string, bestScore float64, completedAt *time.Time) error {
+	var completed sql.NullString
+	if completedAt != nil {
+		completed = sql.NullString{String: completedAt.UTC().Format(time.RFC3339), Valid: true}
+	}
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO tuning_sessions (id, model, engine, status, progress, total, best_config, best_score, results, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+            status=excluded.status,
+            progress=excluded.progress,
+            total=excluded.total,
+            best_config=excluded.best_config,
+            best_score=excluded.best_score,
+            results=excluded.results,
+            completed_at=excluded.completed_at`,
+		id, model, engine, status, progress, total, bestConfigJSON, bestScore, resultsJSON, completed)
+	return err
 }
 
 // RollbackSnapshot stores pre-deletion state for agent safety recovery.
@@ -2082,31 +2257,34 @@ func (d *DB) FindConfigByHash(ctx context.Context, hash string) (*Configuration,
 }
 
 // FindGoldenBenchmark returns the golden configuration and its best benchmark result
-// for the given hardware/engine/model triple. Uses a single JOIN query to avoid
+// for the given hardware/engine/model/modality tuple. Uses a single JOIN query to avoid
 // MaxOpenConns(1) deadlocks. Returns (nil, nil, nil) if no golden config exists.
-func (d *DB) FindGoldenBenchmark(ctx context.Context, hardware, engine, model string) (*Configuration, *BenchmarkResult, error) {
+func (d *DB) FindGoldenBenchmark(ctx context.Context, hardware, engine, model, modality string) (*Configuration, *BenchmarkResult, error) {
+	if strings.TrimSpace(modality) == "" {
+		modality = "text"
+	}
 	row := d.db.QueryRowContext(ctx,
 		`SELECT c.id, c.hardware_id, c.engine_id, c.model_id, COALESCE(c.partition_slot,''),
 		        c.config, c.config_hash, c.derived_from, c.status,
 		        COALESCE(c.tags,'[]'), COALESCE(c.source,'local'), COALESCE(c.device_id,''),
 		        c.created_at, c.updated_at,
-		        b.id, b.throughput_tps
+		        b.id, b.throughput_tps, b.ttft_ms_p95, b.power_draw_watts
 		 FROM configurations c
-		 LEFT JOIN benchmark_results b ON b.config_id = c.id
+		 LEFT JOIN benchmark_results b ON b.config_id = c.id AND b.modality = ?
 		 WHERE c.status = 'golden'
 		   AND c.hardware_id = ? AND c.engine_id = ? AND c.model_id = ?
 		 ORDER BY b.throughput_tps DESC
 		 LIMIT 1`,
-		hardware, engine, model)
+		modality, hardware, engine, model)
 
 	cfg := &Configuration{}
 	var tagsStr, derivedFrom, benchID sql.NullString
-	var throughput sql.NullFloat64
+	var throughput, ttft95, power sql.NullFloat64
 	err := row.Scan(
 		&cfg.ID, &cfg.HardwareID, &cfg.EngineID, &cfg.ModelID, &cfg.Slot,
 		&cfg.Config, &cfg.ConfigHash, &derivedFrom, &cfg.Status,
 		&tagsStr, &cfg.Source, &cfg.DeviceID, &cfg.CreatedAt, &cfg.UpdatedAt,
-		&benchID, &throughput)
+		&benchID, &throughput, &ttft95, &power)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, nil
 	}
@@ -2120,26 +2298,102 @@ func (d *DB) FindGoldenBenchmark(ctx context.Context, hardware, engine, model st
 
 	var bench *BenchmarkResult
 	if benchID.Valid {
-		bench = &BenchmarkResult{ID: benchID.String, ConfigID: cfg.ID, ThroughputTPS: throughput.Float64}
+		bench = &BenchmarkResult{
+			ID:             benchID.String,
+			ConfigID:       cfg.ID,
+			Modality:       modality,
+			ThroughputTPS:  throughput.Float64,
+			TTFTP95ms:      ttft95.Float64,
+			PowerDrawWatts: power.Float64,
+		}
 	}
 	return cfg, bench, nil
 }
 
 func (d *DB) InsertBenchmarkResult(ctx context.Context, b *BenchmarkResult) error {
-	_, err := d.db.ExecContext(ctx,
-		`INSERT INTO benchmark_results (id, config_id, concurrency, input_len_bucket, output_len_bucket, modality,
-		    ttft_ms_p50, ttft_ms_p95, ttft_ms_p99, tpot_ms_p50, tpot_ms_p95,
-		    throughput_tps, qps, vram_usage_mib, ram_usage_mib, power_draw_watts, gpu_utilization_pct, cpu_usage_pct,
-		    error_rate, oom_occurred, stability, duration_s, sample_count, agent_model, notes)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.ID, b.ConfigID, b.Concurrency, b.InputLenBucket, b.OutputLenBucket, b.Modality,
-		b.TTFTP50ms, b.TTFTP95ms, b.TTFTP99ms, b.TPOTP50ms, b.TPOTP95ms,
-		b.ThroughputTPS, b.QPS, b.VRAMUsageMiB, b.RAMUsageMiB, b.PowerDrawWatts, b.GPUUtilPct, b.CPUUsagePct,
-		b.ErrorRate, b.OOMOccurred, b.Stability, b.DurationS, b.SampleCount, b.AgentModel, b.Notes)
+	_, err := d.db.ExecContext(ctx, insertBenchmarkResultSQL, insertBenchmarkResultArgs(b)...)
 	if err != nil {
 		return fmt.Errorf("insert benchmark %s: %w", b.ID, err)
 	}
 	return nil
+}
+
+// UpdateBenchmarkAdvisoryID stamps an advisory_id onto an existing benchmark row.
+// Used by Explorer's advisory-validation path to link validation benches back to
+// the central advisory that triggered them, so Central can close the feedback loop.
+func (d *DB) UpdateBenchmarkAdvisoryID(ctx context.Context, benchmarkID, advisoryID string) error {
+	if benchmarkID == "" || advisoryID == "" {
+		return nil
+	}
+	_, err := d.db.ExecContext(ctx,
+		`UPDATE benchmark_results SET advisory_id = ? WHERE id = ?`,
+		advisoryID, benchmarkID)
+	if err != nil {
+		return fmt.Errorf("stamp advisory_id on benchmark %s: %w", benchmarkID, err)
+	}
+	return nil
+}
+
+// InsertConfigurationAndBenchmarkResult writes a configuration (if new) and its
+// benchmark result in a single transaction. This preserves the v0.4 §10.1
+// invariant that every benchmark_results.config_id references an existing
+// configurations row — partial writes leave dangling foreign keys.
+// If existingConfig is non-nil, only the benchmark row is inserted (the config
+// was already present from a prior cell in the same matrix).
+func (d *DB) InsertConfigurationAndBenchmarkResult(ctx context.Context, existingConfig, newConfig *Configuration, b *BenchmarkResult) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if existingConfig == nil {
+		if newConfig == nil {
+			return fmt.Errorf("configuration required for benchmark result")
+		}
+		tagsJSON, _ := json.Marshal(newConfig.Tags)
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO configurations (id, hardware_id, engine_id, model_id, partition_slot, config, config_hash, derived_from, status, tags, source, device_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			newConfig.ID, newConfig.HardwareID, newConfig.EngineID, newConfig.ModelID, newConfig.Slot,
+			newConfig.Config, newConfig.ConfigHash, nullStr(newConfig.DerivedFrom), newConfig.Status,
+			string(tagsJSON), newConfig.Source, newConfig.DeviceID); err != nil {
+			return fmt.Errorf("insert configuration %s: %w", newConfig.ID, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, insertBenchmarkResultSQL, insertBenchmarkResultArgs(b)...); err != nil {
+		return fmt.Errorf("insert benchmark %s: %w", b.ID, err)
+	}
+	return tx.Commit()
+}
+
+const insertBenchmarkResultSQL = `INSERT INTO benchmark_results (id, config_id, advisory_id, concurrency, input_len_bucket, output_len_bucket, modality,
+    ttft_ms_p50, ttft_ms_p95, ttft_ms_p99, tpot_ms_p50, tpot_ms_p95,
+    throughput_tps, qps, vram_usage_mib, ram_usage_mib, power_draw_watts, gpu_utilization_pct, cpu_usage_pct,
+    error_rate, oom_occurred, stability, duration_s, sample_count, agent_model, notes,
+    rtf_p50, rtf_p95, rtf_mean,
+    ttfa_p50_ms, ttfa_p95_ms, audio_throughput, avg_input_chars, avg_audio_duration_s,
+    asr_throughput, avg_input_audio_s, avg_output_chars,
+    latency_p50_ms, latency_p95_ms, latency_p99_ms, images_per_sec, avg_steps, image_width, image_height,
+    video_latency_p50_s, video_latency_p95_s, videos_per_hour, avg_video_duration_s,
+    avg_frames, video_fps, video_width, video_height, video_steps)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+         ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+func insertBenchmarkResultArgs(b *BenchmarkResult) []any {
+	return []any{
+		b.ID, b.ConfigID, nullStr(b.AdvisoryID), b.Concurrency, b.InputLenBucket, b.OutputLenBucket, b.Modality,
+		b.TTFTP50ms, b.TTFTP95ms, b.TTFTP99ms, b.TPOTP50ms, b.TPOTP95ms,
+		b.ThroughputTPS, b.QPS, b.VRAMUsageMiB, b.RAMUsageMiB, b.PowerDrawWatts, b.GPUUtilPct, b.CPUUsagePct,
+		b.ErrorRate, b.OOMOccurred, b.Stability, b.DurationS, b.SampleCount, b.AgentModel, b.Notes,
+		b.RTFP50, b.RTFP95, b.RTFMean,
+		b.TTFAP50ms, b.TTFAP95ms, b.AudioThroughput, b.AvgInputChars, b.AvgAudioDurationS,
+		b.ASRThroughput, b.AvgInputAudioS, b.AvgOutputChars,
+		b.LatencyP50ms, b.LatencyP95ms, b.LatencyP99ms, b.ImagesPerSec, b.AvgSteps, b.ImageWidth, b.ImageHeight,
+		b.VideoLatencyP50s, b.VideoLatencyP95s, b.VideosPerHour, b.AvgVideoDurationS,
+		b.AvgFrames, b.VideoFPS, b.VideoWidth, b.VideoHeight, b.VideoSteps,
+	}
 }
 
 // Config
@@ -2278,7 +2532,7 @@ func (d *DB) ListConfigurations(ctx context.Context, hardware, model, engine str
 
 // ListBenchmarkResults returns benchmark results, optionally filtered by config IDs.
 func (d *DB) ListBenchmarkResults(ctx context.Context, configIDs []string, limit int) ([]*BenchmarkResult, error) {
-	query := `SELECT id, config_id, concurrency, COALESCE(input_len_bucket,''),
+	query := `SELECT id, config_id, COALESCE(advisory_id,''), concurrency, COALESCE(input_len_bucket,''),
 	                 COALESCE(output_len_bucket,''), COALESCE(modality,'text'),
 	                 ttft_ms_p50, ttft_ms_p95, COALESCE(ttft_ms_p99,0),
 	                 COALESCE(tpot_ms_p50,0), COALESCE(tpot_ms_p95,0),
@@ -2287,7 +2541,13 @@ func (d *DB) ListBenchmarkResults(ctx context.Context, configIDs []string, limit
 	                 COALESCE(power_draw_watts,0), COALESCE(gpu_utilization_pct,0), COALESCE(cpu_usage_pct,0),
 	                 COALESCE(error_rate,0), COALESCE(oom_occurred,0),
 	                 COALESCE(stability,''), COALESCE(duration_s,0), COALESCE(sample_count,0),
-	                 tested_at, COALESCE(agent_model,''), COALESCE(notes,'')
+	                 tested_at, COALESCE(agent_model,''), COALESCE(notes,''),
+	                 rtf_p50, rtf_p95, rtf_mean,
+	                 ttfa_p50_ms, ttfa_p95_ms, audio_throughput, avg_input_chars, avg_audio_duration_s,
+	                 asr_throughput, avg_input_audio_s, avg_output_chars,
+	                 latency_p50_ms, latency_p95_ms, latency_p99_ms, images_per_sec, avg_steps, image_width, image_height,
+	                 video_latency_p50_s, video_latency_p95_s, videos_per_hour, avg_video_duration_s,
+	                 avg_frames, video_fps, video_width, video_height, video_steps
 	          FROM benchmark_results WHERE 1=1`
 	var args []any
 	if len(configIDs) > 0 {
@@ -2313,14 +2573,126 @@ func (d *DB) ListBenchmarkResults(ctx context.Context, configIDs []string, limit
 	results := make([]*BenchmarkResult, 0)
 	for rows.Next() {
 		b := &BenchmarkResult{}
-		if err := rows.Scan(&b.ID, &b.ConfigID, &b.Concurrency, &b.InputLenBucket,
+		var (
+			rtfP50, rtfP95, rtfMean                      sql.NullFloat64
+			ttfaP50ms, ttfaP95ms, audioThroughput        sql.NullFloat64
+			avgInputChars                                sql.NullInt64
+			avgAudioDurationS                            sql.NullFloat64
+			asrThroughput, avgInputAudioS                sql.NullFloat64
+			avgOutputChars                               sql.NullInt64
+			latencyP50ms, latencyP95ms, latencyP99ms     sql.NullFloat64
+			imagesPerSec                                 sql.NullFloat64
+			avgSteps, imageWidth, imageHeight            sql.NullInt64
+			videoLatencyP50s, videoLatencyP95s           sql.NullFloat64
+			videosPerHour, avgVideoDurationS             sql.NullFloat64
+			avgFrames, videoFPS, videoWidth, videoHeight sql.NullInt64
+			videoSteps                                   sql.NullInt64
+		)
+		if err := rows.Scan(&b.ID, &b.ConfigID, &b.AdvisoryID, &b.Concurrency, &b.InputLenBucket,
 			&b.OutputLenBucket, &b.Modality,
 			&b.TTFTP50ms, &b.TTFTP95ms, &b.TTFTP99ms, &b.TPOTP50ms, &b.TPOTP95ms,
 			&b.ThroughputTPS, &b.QPS,
 			&b.VRAMUsageMiB, &b.RAMUsageMiB, &b.PowerDrawWatts, &b.GPUUtilPct, &b.CPUUsagePct,
 			&b.ErrorRate, &b.OOMOccurred, &b.Stability, &b.DurationS, &b.SampleCount,
-			&b.TestedAt, &b.AgentModel, &b.Notes); err != nil {
+			&b.TestedAt, &b.AgentModel, &b.Notes,
+			&rtfP50, &rtfP95, &rtfMean,
+			&ttfaP50ms, &ttfaP95ms, &audioThroughput, &avgInputChars, &avgAudioDurationS,
+			&asrThroughput, &avgInputAudioS, &avgOutputChars,
+			&latencyP50ms, &latencyP95ms, &latencyP99ms, &imagesPerSec, &avgSteps, &imageWidth, &imageHeight,
+			&videoLatencyP50s, &videoLatencyP95s, &videosPerHour, &avgVideoDurationS,
+			&avgFrames, &videoFPS, &videoWidth, &videoHeight, &videoSteps); err != nil {
 			return nil, fmt.Errorf("scan benchmark row: %w", err)
+		}
+		if rtfP50.Valid {
+			b.RTFP50 = &rtfP50.Float64
+		}
+		if rtfP95.Valid {
+			b.RTFP95 = &rtfP95.Float64
+		}
+		if rtfMean.Valid {
+			b.RTFMean = &rtfMean.Float64
+		}
+		if ttfaP50ms.Valid {
+			b.TTFAP50ms = &ttfaP50ms.Float64
+		}
+		if ttfaP95ms.Valid {
+			b.TTFAP95ms = &ttfaP95ms.Float64
+		}
+		if audioThroughput.Valid {
+			b.AudioThroughput = &audioThroughput.Float64
+		}
+		if avgInputChars.Valid {
+			v := int(avgInputChars.Int64)
+			b.AvgInputChars = &v
+		}
+		if avgAudioDurationS.Valid {
+			b.AvgAudioDurationS = &avgAudioDurationS.Float64
+		}
+		if asrThroughput.Valid {
+			b.ASRThroughput = &asrThroughput.Float64
+		}
+		if avgInputAudioS.Valid {
+			b.AvgInputAudioS = &avgInputAudioS.Float64
+		}
+		if avgOutputChars.Valid {
+			v := int(avgOutputChars.Int64)
+			b.AvgOutputChars = &v
+		}
+		if latencyP50ms.Valid {
+			b.LatencyP50ms = &latencyP50ms.Float64
+		}
+		if latencyP95ms.Valid {
+			b.LatencyP95ms = &latencyP95ms.Float64
+		}
+		if latencyP99ms.Valid {
+			b.LatencyP99ms = &latencyP99ms.Float64
+		}
+		if imagesPerSec.Valid {
+			b.ImagesPerSec = &imagesPerSec.Float64
+		}
+		if avgSteps.Valid {
+			v := int(avgSteps.Int64)
+			b.AvgSteps = &v
+		}
+		if imageWidth.Valid {
+			v := int(imageWidth.Int64)
+			b.ImageWidth = &v
+		}
+		if imageHeight.Valid {
+			v := int(imageHeight.Int64)
+			b.ImageHeight = &v
+		}
+		if videoLatencyP50s.Valid {
+			b.VideoLatencyP50s = &videoLatencyP50s.Float64
+		}
+		if videoLatencyP95s.Valid {
+			b.VideoLatencyP95s = &videoLatencyP95s.Float64
+		}
+		if videosPerHour.Valid {
+			b.VideosPerHour = &videosPerHour.Float64
+		}
+		if avgVideoDurationS.Valid {
+			b.AvgVideoDurationS = &avgVideoDurationS.Float64
+		}
+		if avgFrames.Valid {
+			v := int(avgFrames.Int64)
+			b.AvgFrames = &v
+		}
+		if videoFPS.Valid {
+			v := int(videoFPS.Int64)
+			b.VideoFPS = &v
+		}
+		if videoWidth.Valid {
+			v := int(videoWidth.Int64)
+			b.VideoWidth = &v
+		}
+		if videoHeight.Valid {
+			v := int(videoHeight.Int64)
+			b.VideoHeight = &v
+		}
+		if videoSteps.Valid {
+			v := int(videoSteps.Int64)
+			b.VideoSteps = &v
 		}
 		results = append(results, b)
 	}
@@ -2617,6 +2989,38 @@ func (d *DB) CountActiveExplorationRuns(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// ExplorationDbDeltas returns row counts for the three exploration-visible
+// tables (configurations, benchmark_results, exploration_events). When since
+// is non-zero the counts reflect rows created at or after that instant; when
+// zero they are absolute totals. UI polls this to surface SOP §2.4's
+// "DB delta doesn't lie" signal during a live run.
+func (d *DB) ExplorationDbDeltas(ctx context.Context, since time.Time) (map[string]int64, error) {
+	out := make(map[string]int64, 3)
+	queries := []struct {
+		key   string
+		sql   string
+		tsCol string
+	}{
+		{"configurations", "SELECT COUNT(*) FROM configurations", "created_at"},
+		{"benchmark_results", "SELECT COUNT(*) FROM benchmark_results", "tested_at"},
+		{"exploration_events", "SELECT COUNT(*) FROM exploration_events", "created_at"},
+	}
+	for _, q := range queries {
+		var n int64
+		stmt := q.sql
+		var args []any
+		if !since.IsZero() {
+			stmt += " WHERE " + q.tsCol + " >= ?"
+			args = append(args, since.UTC())
+		}
+		if err := d.db.QueryRowContext(ctx, stmt, args...).Scan(&n); err != nil {
+			return nil, fmt.Errorf("count %s delta: %w", q.key, err)
+		}
+		out[q.key] = n
+	}
+	return out, nil
+}
+
 // HasCompletedExploration checks if a model+engine combo has any completed exploration run.
 func (d *DB) HasCompletedExploration(ctx context.Context, modelID, engineID string) (bool, error) {
 	var exists int
@@ -2630,6 +3034,46 @@ func (d *DB) HasCompletedExploration(ctx context.Context, modelID, engineID stri
 		return false, err
 	}
 	return true, nil
+}
+
+// structuralFailurePatterns lists error substrings that indicate permanent,
+// non-retriable failures. Centralized here so the classifier and SQL query
+// stay in sync. Add new patterns here when a new class of structural failure
+// is discovered (no rebuild of the SQL query is needed — it's generated on init).
+var structuralFailurePatterns = []string{
+	"architectures",
+	"not implemented",
+	"unsupported model",
+	"requires transformers",
+	"no module named",
+	"modality mismatch",
+	"format mismatch",
+	"does not support model type",
+}
+
+// structuralFailureSQL is the pre-built WHERE clause fragment for structural
+// failure detection, generated once from structuralFailurePatterns.
+var structuralFailureSQL = func() string {
+	clauses := make([]string, len(structuralFailurePatterns))
+	for i, p := range structuralFailurePatterns {
+		clauses[i] = fmt.Sprintf("LOWER(error) LIKE '%%%s%%'", p)
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")"
+}()
+
+// HasStructuralExplorationFailure checks if a model+engine combo has a permanent
+// structural failure (e.g., unsupported architecture) that won't resolve on retry.
+func (d *DB) HasStructuralExplorationFailure(ctx context.Context, modelID, engineID string) (bool, error) {
+	var count int
+	err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM exploration_runs
+		 WHERE model_id = ? AND engine_id = ? AND status = 'failed'
+		 AND `+structuralFailureSQL,
+		modelID, engineID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // CountFailedExplorations counts how many times a model+engine combo has failed.

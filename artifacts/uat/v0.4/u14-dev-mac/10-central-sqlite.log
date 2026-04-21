@@ -1,0 +1,3 @@
+2026/04/20 18:48:56 INFO advisor enabled llm_endpoint=http://127.0.0.1:18082 model=mock-model
+2026/04/20 18:48:56 INFO analyzer disabled env=CENTRAL_ANALYZER_ENABLED
+2026/04/20 18:48:56 INFO central server starting addr=127.0.0.1:18083

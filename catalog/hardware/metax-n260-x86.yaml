@@ -6,6 +6,7 @@ hardware:
   gpu:
     arch: MACA
     vram_mib: 65536
+    bandwidth_gbps: 400
     compute_id: "N260"
     compute_units: 0
     resource_name: ""

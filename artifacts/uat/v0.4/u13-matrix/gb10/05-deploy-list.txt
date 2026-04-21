@@ -1,0 +1,17 @@
+[
+  {
+    "address": "127.0.0.1:8011",
+    "engine": "voxcpm2-nanovllm",
+    "model": "voxcpm2",
+    "name": "voxcpm2-voxcpm2-nanovllm",
+    "parameter_count": "2B",
+    "phase": "running",
+    "ready": true,
+    "runtime": "docker",
+    "served_model": "voxcpm2",
+    "slot": "primary",
+    "start_time": "2026-04-16T19:54:02Z",
+    "started_at_unix": 1776369242,
+    "status": "running"
+  }
+]

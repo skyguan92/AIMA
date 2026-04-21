@@ -3,8 +3,10 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jguan/aima/internal/engine"
@@ -94,6 +96,44 @@ type WarmupConfig struct {
 	Prompt    string
 	MaxTokens int
 	TimeoutS  int
+}
+
+const servedModelLabel = "aima.dev/served-model"
+
+type warmupReadyCache struct {
+	mu    sync.RWMutex
+	ready map[string]bool
+}
+
+func newWarmupReadyCache() *warmupReadyCache {
+	return &warmupReadyCache{ready: make(map[string]bool)}
+}
+
+func (c *warmupReadyCache) Has(name string) bool {
+	if c == nil || strings.TrimSpace(name) == "" {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.ready[name]
+}
+
+func (c *warmupReadyCache) Mark(name string) {
+	if c == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ready[name] = true
+}
+
+func (c *warmupReadyCache) Forget(name string) {
+	if c == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.ready, name)
 }
 
 // isPortFlag reports whether a command element is a port-related flag
@@ -209,4 +249,85 @@ func parseDeploymentStartTime(value string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+func applyWarmupReadiness(ctx context.Context, ds *DeploymentStatus, asset *knowledge.EngineAsset, cache *warmupReadyCache) {
+	if ds == nil || !ds.Ready || ds.Address == "" || asset == nil || !asset.Startup.Warmup.Enabled {
+		return
+	}
+	if cache != nil && cache.Has(ds.Name) {
+		return
+	}
+	model := deploymentServedModel(ds)
+	if model == "" {
+		model = ds.Name
+	}
+	if warmupInferenceReady(ctx, ds.Address, model, asset.Startup.Warmup) {
+		if cache != nil {
+			cache.Mark(ds.Name)
+		}
+		return
+	}
+	ds.Ready = false
+	ds.StartupPhase = "warmup"
+	if ds.StartupProgress < 95 {
+		ds.StartupProgress = 95
+	}
+	ds.StartupMessage = formatPhaseName("warmup")
+}
+
+func deploymentServedModel(ds *DeploymentStatus) string {
+	if ds == nil {
+		return ""
+	}
+	if ds.Labels != nil {
+		if served := strings.TrimSpace(ds.Labels[servedModelLabel]); served != "" && !looksLikeUnresolvedTemplate(served) {
+			return served
+		}
+		if model := strings.TrimSpace(ds.Labels["aima.dev/model"]); model != "" {
+			return model
+		}
+	}
+	return strings.TrimSpace(ds.Model)
+}
+
+func looksLikeUnresolvedTemplate(value string) bool {
+	return strings.Contains(value, "{{") || strings.Contains(value, "}}")
+}
+
+func warmupInferenceReady(ctx context.Context, address, model string, cfg knowledge.WarmupConfig) bool {
+	if !cfg.Enabled {
+		return true
+	}
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return false
+	}
+	if !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") {
+		address = "http://" + address
+	}
+	prompt := strings.TrimSpace(cfg.Prompt)
+	if prompt == "" {
+		prompt = "Hello"
+	}
+	maxTokens := cfg.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 1
+	}
+	timeout := time.Duration(cfg.TimeoutS) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}],"max_tokens":%d}`, model, prompt, maxTokens)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(address, "/")+"/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }

@@ -91,6 +91,216 @@ func TestResolveWithFallbackRefreshesSyntheticModel(t *testing.T) {
 	}
 }
 
+func TestResolveWithFallbackDoesNotRebuildUnsupportedCatalogVariant(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.InsertModel(ctx, &state.Model{
+		ID:         "model-unsupported",
+		Name:       "unsupported-model",
+		Type:       "llm",
+		Path:       "/models/unsupported-model",
+		Format:     "safetensors",
+		SizeBytes:  16 * 1024 * 1024 * 1024,
+		Status:     "registered",
+		ModelClass: "dense",
+	}); err != nil {
+		t.Fatalf("InsertModel: %v", err)
+	}
+
+	cat := &knowledge.Catalog{
+		EngineAssets: []knowledge.EngineAsset{
+			{
+				Metadata: knowledge.EngineMetadata{
+					Name:             "vllm-nightly-blackwell",
+					Type:             "vllm-nightly",
+					SupportedFormats: []string{"safetensors"},
+				},
+				Image:    knowledge.EngineImage{Name: "vllm/vllm-openai", Tag: "qwen3_5-cu130", Platforms: []string{"linux/arm64"}},
+				Hardware: knowledge.EngineHardware{GPUArch: "Blackwell"},
+				Runtime:  knowledge.EngineRuntime{Default: "container"},
+			},
+		},
+		ModelAssets: []knowledge.ModelAsset{
+			{
+				Metadata: knowledge.ModelMetadata{Name: "unsupported-model", Type: "llm"},
+				Variants: []knowledge.ModelVariant{
+					{
+						Name:   "unsupported-model-blocked",
+						Engine: "vllm-nightly",
+						Format: "safetensors",
+						Hardware: knowledge.ModelVariantHardware{
+							GPUArch: "Blackwell",
+						},
+						Compatibility: knowledge.ModelCompatibility{
+							UnsupportedReason: "runtime image is specialized and not validated for this model",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, _, err = resolveWithFallback(ctx, cat, db, knowledge.HardwareInfo{
+		GPUArch:    "Blackwell",
+		GPUVRAMMiB: 65536,
+		Platform:   "linux/arm64",
+	}, "unsupported-model", "vllm-nightly", nil, "")
+	if err == nil {
+		t.Fatal("expected error for unsupported catalog variant")
+	}
+	if !strings.Contains(err.Error(), "marked unsupported") {
+		t.Fatalf("error = %v, want unsupported reason", err)
+	}
+	if cat.HasSyntheticModel("unsupported-model") {
+		t.Fatal("unsupported catalog model should not be replaced by a synthetic fallback")
+	}
+}
+
+func TestResolveWithFallbackDoesNotSynthesizeWhenCatalogModelLacksRequestedEngine(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.InsertModel(ctx, &state.Model{
+		ID:         "model-catalog-only",
+		Name:       "catalog-only-model",
+		Type:       "llm",
+		Path:       "/models/catalog-only-model",
+		Format:     "safetensors",
+		SizeBytes:  16 * 1024 * 1024 * 1024,
+		Status:     "registered",
+		ModelClass: "dense",
+	}); err != nil {
+		t.Fatalf("InsertModel: %v", err)
+	}
+
+	cat := &knowledge.Catalog{
+		EngineAssets: []knowledge.EngineAsset{
+			{
+				Metadata: knowledge.EngineMetadata{
+					Name:             "vllm-nightly-blackwell",
+					Type:             "vllm-nightly",
+					SupportedFormats: []string{"safetensors"},
+				},
+				Image:    knowledge.EngineImage{Name: "vllm/vllm-openai", Tag: "qwen3_5-cu130", Platforms: []string{"linux/arm64"}},
+				Hardware: knowledge.EngineHardware{GPUArch: "Blackwell"},
+				Runtime:  knowledge.EngineRuntime{Default: "container"},
+			},
+			{
+				Metadata: knowledge.EngineMetadata{
+					Name:             "vllm-blackwell",
+					Type:             "vllm",
+					SupportedFormats: []string{"safetensors"},
+				},
+				Image:    knowledge.EngineImage{Name: "vllm/vllm-openai", Tag: "v0.19.0-aarch64-cu130", Platforms: []string{"linux/arm64"}},
+				Hardware: knowledge.EngineHardware{GPUArch: "Blackwell"},
+				Runtime:  knowledge.EngineRuntime{Default: "container"},
+			},
+		},
+		ModelAssets: []knowledge.ModelAsset{
+			{
+				Metadata: knowledge.ModelMetadata{Name: "catalog-only-model", Type: "llm"},
+				Variants: []knowledge.ModelVariant{
+					{
+						Name:   "catalog-only-model-nightly",
+						Engine: "vllm-nightly",
+						Format: "safetensors",
+						Hardware: knowledge.ModelVariantHardware{
+							GPUArch: "Blackwell",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, _, err = resolveWithFallback(ctx, cat, db, knowledge.HardwareInfo{
+		GPUArch:    "Blackwell",
+		GPUVRAMMiB: 65536,
+		Platform:   "linux/arm64",
+	}, "catalog-only-model", "vllm", nil, "")
+	if err == nil {
+		t.Fatal("expected error for missing catalog variant")
+	}
+	if !strings.Contains(err.Error(), "no variant of model") {
+		t.Fatalf("error = %v, want missing variant error", err)
+	}
+	if cat.HasSyntheticModel("catalog-only-model") {
+		t.Fatal("catalog-backed model should not gain synthetic variants for a missing requested engine")
+	}
+}
+
+func TestResolveWithFallbackPrefersCompatibleScannedModelPath(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	modelPath := filepath.Join(t.TempDir(), "demo-model.gguf")
+	if err := os.WriteFile(modelPath, []byte("gguf"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := db.InsertModel(ctx, &state.Model{
+		ID:        "model-demo-gguf",
+		Name:      "demo-model",
+		Type:      "llm",
+		Path:      modelPath,
+		Format:    "gguf",
+		SizeBytes: 4 * 1024 * 1024,
+		Status:    "registered",
+	}); err != nil {
+		t.Fatalf("InsertModel: %v", err)
+	}
+
+	cat := &knowledge.Catalog{
+		EngineAssets: []knowledge.EngineAsset{{
+			Metadata: knowledge.EngineMetadata{
+				Name:             "llamacpp-universal",
+				Type:             "llamacpp",
+				SupportedFormats: []string{"gguf"},
+			},
+			Hardware: knowledge.EngineHardware{GPUArch: "Ada"},
+			Runtime:  knowledge.EngineRuntime{Default: "native"},
+			Source: &knowledge.EngineSource{
+				Binary:    "llamacpp",
+				Platforms: []string{"linux/amd64"},
+			},
+		}},
+		ModelAssets: []knowledge.ModelAsset{{
+			Metadata: knowledge.ModelMetadata{Name: "demo-model", Type: "llm"},
+			Storage:  knowledge.ModelStorage{DefaultPathPattern: "/missing/demo-model"},
+			Variants: []knowledge.ModelVariant{{
+				Name:     "demo-model-llamacpp",
+				Engine:   "llamacpp",
+				Format:   "gguf",
+				Hardware: knowledge.ModelVariantHardware{GPUArch: "Ada"},
+			}},
+		}},
+	}
+
+	resolved, _, err := resolveWithFallback(ctx, cat, db, knowledge.HardwareInfo{
+		GPUArch:     "Ada",
+		Platform:    "linux/amd64",
+		RuntimeType: "native",
+	}, "demo-model", "llamacpp", nil, "")
+	if err != nil {
+		t.Fatalf("resolveWithFallback: %v", err)
+	}
+	if resolved.ModelPath != modelPath {
+		t.Fatalf("ModelPath = %q, want scanned path %q", resolved.ModelPath, modelPath)
+	}
+}
+
 func TestEnsureResolvedEngineProbePathPrependsLocalBinary(t *testing.T) {
 	tmpDir := t.TempDir()
 	binaryPath := filepath.Join(tmpDir, "sglang-kt")

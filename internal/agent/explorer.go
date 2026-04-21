@@ -3,10 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,31 +22,44 @@ import (
 type ExplorerConfig struct {
 	Schedule        ScheduleConfig
 	Enabled         bool
-	Mode            string        // "continuous" | "once" | "budget"
-	MaxRounds       int           // budget mode: max plans to execute (0=unlimited)
-	MaxPlanDuration time.Duration // per-plan time budget (default 30min)
-	MaxTokensPerDay int           // daily LLM token cap (0=unlimited)
-	MaxCycles       int           // PDCA max iterations per round (default 3)
-	MaxTasks        int           // max tasks per plan (default 5)
-	WorkspaceDir    string        // workspace root (default ~/.aima/explorer/)
+	Mode            string // "continuous" | "once" | "budget"
+	MaxRounds       int    // budget mode: max plans to execute (0=unlimited)
+	MaxTokensPerDay int    // daily LLM token cap (0=unlimited)
+	MaxCycles       int    // PDCA max iterations per round (default 3)
+	MaxTasks        int    // max tasks per plan (default 5)
+	WorkspaceDir    string // workspace root (default ~/.aima/explorer/)
 }
 
 // ExplorerStatus reports the Explorer's current state.
+//
+// DC-8: the frontier counters below are snapshots captured at the last plan
+// cycle. They describe different things and should not be compared with
+// counts emitted from logs or plan.md without noting the source:
+//   - LastPlanKnowledgeGaps: knowledge-level gaps (model×engine with zero benchmarks)
+//   - LastPlanReadyCombos:   model×engine pairs the planner deemed eligible for new tasks this cycle
+//   - LastPlanBlockedCombos: pairs filtered out by resolver/runtime checks
+//
+// The authoritative per-phase view is available-combos.md inside the workspace.
 type ExplorerStatus struct {
-	Running         bool           `json:"running"`
-	Enabled         bool           `json:"enabled"`
-	Tier            int            `json:"tier"`
-	ActivePlan      *ExplorerPlan  `json:"active_plan,omitempty"`
-	Schedule        ScheduleConfig `json:"schedule"`
-	LastRun         time.Time      `json:"last_run,omitempty"`
-	Mode            string         `json:"mode"`
-	RoundsUsed      int            `json:"rounds_used"`
-	MaxRounds       int            `json:"max_rounds"`
-	TokensUsedToday int            `json:"tokens_used_today"`
-	MaxTokensPerDay int            `json:"max_tokens_per_day"`
-	MaxCycles       int            `json:"max_cycles"`
-	MaxTasks        int            `json:"max_tasks"`
-	LastPlanMetrics *PlanMetrics   `json:"last_plan_metrics,omitempty"`
+	Running               bool           `json:"running"`
+	Enabled               bool           `json:"enabled"`
+	Phase                 string         `json:"phase"`
+	Tier                  int            `json:"tier"`
+	ActivePlan            *ExplorerPlan  `json:"active_plan,omitempty"`
+	Schedule              ScheduleConfig `json:"schedule"`
+	LastRun               time.Time      `json:"last_run,omitempty"`
+	Mode                  string         `json:"mode"`
+	RoundsUsed            int            `json:"rounds_used"`
+	MaxRounds             int            `json:"max_rounds"`
+	TokensUsedToday       int            `json:"tokens_used_today"`
+	MaxTokensPerDay       int            `json:"max_tokens_per_day"`
+	MaxCycles             int            `json:"max_cycles"`
+	MaxTasks              int            `json:"max_tasks"`
+	LastPlanMetrics       *PlanMetrics   `json:"last_plan_metrics,omitempty"`
+	BlockedByDeploys      []DeployStatus `json:"blocked_by_deploys,omitempty"`
+	LastPlanKnowledgeGaps int            `json:"last_plan_knowledge_gaps,omitempty"`
+	LastPlanReadyCombos   int            `json:"last_plan_ready_combos,omitempty"`
+	LastPlanBlockedCombos int            `json:"last_plan_blocked_combos,omitempty"`
 }
 
 // PlanMetrics captures per-plan execution statistics.
@@ -62,6 +78,9 @@ type PlanMetrics struct {
 // maxExplorationFailures is the threshold after which a model+engine combo
 // is considered permanently broken and excluded from future plans.
 const maxExplorationFailures = 2
+const recentExplorationHistoryLimit = 30
+
+var errorExcerptRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*Error:\s*[^\n]+`)
 
 // Explorer orchestrates autonomous knowledge discovery on edge devices.
 type Explorer struct {
@@ -89,6 +108,14 @@ type Explorer struct {
 	syncPush func(ctx context.Context) error
 	saveNote func(ctx context.Context, title, content, hardware, model, engine string) error
 
+	// Pre-cycle cleanup: stop all existing deployments to free GPU memory.
+	cleanupDeploys func(ctx context.Context) (int, error)
+
+	// Per-task cleanup: tears down a single deployment by name. Called at the
+	// end of each task in executePlan to prevent one task's deploy from
+	// starving the next task's deploy of GPU memory (Bug-8).
+	cleanupModelDeploy func(ctx context.Context, name string) error
+
 	// Advisory feedback callback, wired via WithAdvisoryFeedback.
 	advisoryFeedback func(ctx context.Context, advisoryID, status, reason string) error
 
@@ -101,6 +128,7 @@ type Explorer struct {
 	mu            sync.RWMutex
 	running       bool
 	tier          int
+	phase         string
 	activePlan    *ExplorerPlan
 	cachedGPUArch string // cached from gatherHardware for overlay YAML (O13)
 	lastRun       time.Time
@@ -113,6 +141,14 @@ type Explorer struct {
 
 	// T5: Plan metrics
 	lastPlanMetrics *PlanMetrics
+
+	// Pre-cycle block: set when active deployments detected, cleared by CleanupDeploys.
+	blockedByDeploys []DeployStatus
+
+	// DC-8: last plan cycle frontier counters, exposed via Status().
+	lastPlanKnowledgeGaps int
+	lastPlanReadyCombos   int
+	lastPlanBlockedCombos int
 }
 
 // ExplorerOption configures the Explorer.
@@ -168,6 +204,18 @@ func WithGatherComboFacts(fn func(ctx context.Context, hardware HardwareInfo, mo
 	return func(e *Explorer) { e.gatherComboFacts = fn }
 }
 
+// WithCleanupDeploys sets the function to stop all existing deployments before
+// an exploration cycle. Returns the number of deployments cleaned up.
+func WithCleanupDeploys(fn func(ctx context.Context) (int, error)) ExplorerOption {
+	return func(e *Explorer) { e.cleanupDeploys = fn }
+}
+
+// WithCleanupModelDeploy sets the per-task teardown hook invoked after each
+// task in executePlan. Prevents GPU starvation of subsequent tasks (Bug-8).
+func WithCleanupModelDeploy(fn func(ctx context.Context, name string) error) ExplorerOption {
+	return func(e *Explorer) { e.cleanupModelDeploy = fn }
+}
+
 // WithAdvisoryFeedback sets the callback for sending advisory feedback to central.
 func WithAdvisoryFeedback(fn func(ctx context.Context, advisoryID, status, reason string) error) ExplorerOption {
 	return func(e *Explorer) { e.advisoryFeedback = fn }
@@ -201,6 +249,7 @@ func NewExplorer(config ExplorerConfig, agent *Agent, explMgr *ExplorationManage
 		explMgr: explMgr,
 		db:      db,
 		bus:     bus,
+		phase:   "idle",
 	}
 	for _, o := range opts {
 		o(e)
@@ -222,6 +271,19 @@ func (e *Explorer) persistConfigKey(ctx context.Context, key, value string) {
 	}
 	if err := e.db.SetConfig(ctx, "explorer."+key, value); err != nil {
 		slog.Warn("explorer: persist config failed", "key", key, "error", err)
+	}
+}
+
+func (e *Explorer) writeClosedPlanDocument(status string, metrics *PlanMetrics) {
+	if e.workspace == nil {
+		return
+	}
+	if err := e.workspace.Init(); err != nil {
+		slog.Warn("explorer: init workspace for closed plan failed", "error", err)
+		return
+	}
+	if err := e.workspace.WriteClosedPlanDocument(status, metrics); err != nil {
+		slog.Warn("explorer: write closed plan failed", "status", status, "error", err)
 	}
 }
 
@@ -247,6 +309,7 @@ func (e *Explorer) setupPlannerLocked() {
 		opts := []ExplorerAgentPlannerOption{
 			WithAgentMaxCycles(e.config.MaxCycles),
 			WithAgentMaxTasks(e.config.MaxTasks),
+			WithAgentPhaseObserver(e.setPhase),
 		}
 		if e.queryFn != nil {
 			opts = append(opts, WithAgentQueryFunc(e.queryFn))
@@ -286,11 +349,13 @@ func (e *Explorer) Start(ctx context.Context) {
 	}
 	ctx, e.cancel = context.WithCancel(ctx)
 	e.running = true
+	e.phase = "idle"
 	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
 		e.running = false
 		e.activePlan = nil
+		e.phase = "stopped"
 		e.mu.Unlock()
 	}()
 
@@ -344,28 +409,106 @@ func (e *Explorer) Stop() {
 		e.cancel()
 	}
 	e.running = false
+	e.phase = "stopped"
 }
 
 // Status returns the Explorer's current state.
 func (e *Explorer) Status() ExplorerStatus {
+	e.refreshTier(context.Background())
+	if _, err := e.refreshBlockedDeploys(context.Background()); err != nil {
+		slog.Debug("explorer: status blocked deploy refresh failed", "error", err)
+	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return ExplorerStatus{
-		Running:         e.running,
-		Enabled:         e.config.Enabled,
-		Tier:            e.tier,
-		ActivePlan:      e.activePlan,
-		Schedule:        e.config.Schedule,
-		LastRun:         e.lastRun,
-		Mode:            e.config.Mode,
-		RoundsUsed:      e.roundsUsed,
-		MaxRounds:       e.config.MaxRounds,
-		TokensUsedToday: e.tokensUsedToday,
-		MaxTokensPerDay: e.config.MaxTokensPerDay,
-		MaxCycles:       e.config.MaxCycles,
-		MaxTasks:        e.config.MaxTasks,
-		LastPlanMetrics: e.lastPlanMetrics,
+		Running:               e.running,
+		Enabled:               e.config.Enabled,
+		Phase:                 e.phase,
+		Tier:                  e.tier,
+		ActivePlan:            e.activePlan,
+		Schedule:              e.config.Schedule,
+		LastRun:               e.lastRun,
+		Mode:                  e.config.Mode,
+		RoundsUsed:            e.roundsUsed,
+		MaxRounds:             e.config.MaxRounds,
+		TokensUsedToday:       e.tokensUsedToday,
+		MaxTokensPerDay:       e.config.MaxTokensPerDay,
+		MaxCycles:             e.config.MaxCycles,
+		MaxTasks:              e.config.MaxTasks,
+		LastPlanMetrics:       e.lastPlanMetrics,
+		BlockedByDeploys:      e.blockedByDeploys,
+		LastPlanKnowledgeGaps: e.lastPlanKnowledgeGaps,
+		LastPlanReadyCombos:   e.lastPlanReadyCombos,
+		LastPlanBlockedCombos: e.lastPlanBlockedCombos,
 	}
+}
+
+func (e *Explorer) setPhase(phase string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.phase = phase
+}
+
+func (e *Explorer) refreshBlockedDeploys(ctx context.Context) ([]DeployStatus, error) {
+	if e.gatherDeploys == nil {
+		e.mu.Lock()
+		e.blockedByDeploys = nil
+		e.mu.Unlock()
+		return nil, nil
+	}
+	deploys, err := e.gatherDeploys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	if len(deploys) == 0 {
+		e.blockedByDeploys = nil
+	} else {
+		e.blockedByDeploys = append([]DeployStatus(nil), deploys...)
+	}
+	e.mu.Unlock()
+	return deploys, nil
+}
+
+// CleanupDeploys stops all active deployments to free GPU memory.
+// Called explicitly by the user via explorer action=cleanup.
+// Returns the number of deployments cleaned up.
+func (e *Explorer) CleanupDeploys(ctx context.Context) (int, error) {
+	if e.cleanupDeploys == nil {
+		return 0, fmt.Errorf("cleanup not available")
+	}
+	cleaned, err := e.cleanupDeploys(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if cleaned > 0 {
+		time.Sleep(gpuReleaseGrace)
+	}
+	e.mu.Lock()
+	e.blockedByDeploys = nil
+	e.mu.Unlock()
+	slog.Info("explorer: user-confirmed cleanup completed", "stopped", cleaned)
+	return cleaned, nil
+}
+
+func (e *Explorer) claimPlanRound(ctx context.Context, mode string, maxRounds int) (int, bool) {
+	e.mu.Lock()
+	if mode == "once" && e.roundsUsed >= 1 {
+		roundsUsed := e.roundsUsed
+		e.mu.Unlock()
+		return roundsUsed, false
+	}
+	if mode == "budget" && maxRounds > 0 && e.roundsUsed >= maxRounds {
+		roundsUsed := e.roundsUsed
+		e.mu.Unlock()
+		return roundsUsed, false
+	}
+	e.roundsUsed++
+	roundsUsed := e.roundsUsed
+	e.mu.Unlock()
+
+	e.persistConfigKey(ctx, "rounds_used", strconv.Itoa(roundsUsed))
+	return roundsUsed, true
 }
 
 func (e *Explorer) isEnabled() bool {
@@ -404,6 +547,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 
 	if !e.isEnabled() {
 		slog.Debug("explorer disabled, skipping event", "type", ev.Type)
+		e.rejectAdvisoryEvent(ctx, ev, "explorer is disabled on this device")
 		return
 	}
 
@@ -429,17 +573,26 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	if mode == "once" && roundsUsed >= 1 {
 		e.mu.Lock()
 		e.config.Enabled = false
+		e.phase = "once_complete"
 		e.mu.Unlock()
 		e.persistConfigKey(ctx, "enabled", "false")
 		slog.Info("explorer: once mode completed, auto-disabling")
+		e.rejectAdvisoryEvent(ctx, ev, "explorer once mode already completed on this device")
 		return
 	}
 	if mode == "budget" && maxRounds > 0 && roundsUsed >= maxRounds {
+		e.setPhase("budget_exhausted")
+		if _, err := e.refreshBlockedDeploys(ctx); err != nil {
+			slog.Debug("explorer: refresh blocked deploys failed after budget exhaustion", "error", err)
+		}
 		slog.Info("explorer: budget exhausted", "rounds_used", roundsUsed, "max_rounds", maxRounds)
+		e.rejectAdvisoryEvent(ctx, ev, "explorer budget exhausted on this device")
 		return
 	}
 	if maxTokens > 0 && tokensUsed >= maxTokens {
+		e.setPhase("token_budget_exhausted")
 		slog.Info("explorer: daily token budget exhausted", "used", tokensUsed, "max", maxTokens)
+		e.rejectAdvisoryEvent(ctx, ev, "explorer daily token budget exhausted on this device")
 		return
 	}
 
@@ -461,15 +614,44 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		return
 	}
 
+	// Pre-cycle check: block if active deployments consume GPU memory.
+	// Single-model exploration needs a clean slate for accurate VRAM readings.
+	// The user must explicitly call explorer action=cleanup to proceed.
+	// Only gated when cleanupDeploys is wired — otherwise no action available.
+	if e.cleanupDeploys != nil && e.gatherDeploys != nil {
+		deploys, gErr := e.refreshBlockedDeploys(ctx)
+		if gErr == nil && len(deploys) > 0 {
+			names := make([]string, 0, len(deploys))
+			for _, d := range deploys {
+				names = append(names, d.Model+"("+d.Engine+")")
+			}
+			e.setPhase("blocked_by_deploys")
+			slog.Warn("explorer: cycle blocked — active deployments occupy GPU memory",
+				"count", len(deploys), "deployments", strings.Join(names, ", "))
+			return
+		}
+	}
+
 	// Build plan input from current state
+	e.setPhase("planning")
 	slog.Info("explorer: building plan input")
 	input, err := e.buildPlanInput(ctx, &ev)
 	if err != nil {
+		e.setPhase("idle")
 		slog.Warn("explorer: build plan input failed", "error", err)
 		return
 	}
+	readyCombos, blockedCombos, _ := comboFactCounts(*input)
+	e.mu.Lock()
+	e.lastPlanKnowledgeGaps = len(input.Gaps)
+	e.lastPlanReadyCombos = readyCombos
+	e.lastPlanBlockedCombos = blockedCombos
+	e.mu.Unlock()
 	slog.Info("explorer: plan input ready",
-		"gaps", len(input.Gaps), "deploys", len(input.ActiveDeploys),
+		"knowledge_gaps", len(input.Gaps),
+		"ready_combos", readyCombos,
+		"blocked_combos", blockedCombos,
+		"deploys", len(input.ActiveDeploys),
 		"models", len(input.LocalModels), "engines", len(input.LocalEngines),
 		"history", len(input.History), "hw", input.Hardware.Profile)
 
@@ -479,6 +661,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	plan, planTokens, err := planner.Plan(ctx, *input)
 	degraded := false
 	if err != nil {
+		e.setPhase("idle")
 		if tier >= 2 {
 			slog.Warn("explorer: tier 2 planner failed", "error", err)
 		} else {
@@ -510,6 +693,7 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	}
 
 	// T3: DB-based dedup (replaces history-slice dedup in planners)
+	proposedTasks := len(plan.Tasks)
 	if e.db != nil {
 		var dedupFiltered []PlanTask
 		for _, t := range plan.Tasks {
@@ -518,8 +702,13 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 				continue
 			}
 			completed, _ := e.db.HasCompletedExploration(ctx, t.Model, t.Engine)
-			if completed {
+			if completed && !hasPendingWorkFor(input.PendingWork, t.Model, t.Engine) {
 				slog.Info("explorer: dedup skipped (completed)", "model", t.Model, "engine", t.Engine)
+				continue
+			}
+			structural, _ := e.db.HasStructuralExplorationFailure(ctx, t.Model, t.Engine)
+			if structural {
+				slog.Info("explorer: dedup skipped (structural failure)", "model", t.Model, "engine", t.Engine)
 				continue
 			}
 			failCount, _ := e.db.CountFailedExplorations(ctx, t.Model, t.Engine)
@@ -532,20 +721,44 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 		plan.Tasks = dedupFiltered
 	}
 
-	slog.Info("explorer: plan generated", "tasks", len(plan.Tasks), "id", plan.ID, "tier", plan.Tier)
+	slog.Info("explorer: plan generated",
+		"id", plan.ID,
+		"tier", plan.Tier,
+		"reasoning", plan.Reasoning,
+		"tasks", len(plan.Tasks),
+		"task_list", planTaskSummaries(plan.Tasks),
+		"llm_tokens", planTokens,
+		"proposed_tasks", proposedTasks,
+		"dedup_dropped", proposedTasks-len(plan.Tasks),
+		"ready_combos_seen", readyCombos,
+		"blocked_combos_seen", blockedCombos,
+		"knowledge_gaps", len(input.Gaps))
 	if len(plan.Tasks) == 0 {
 		slog.Info("explorer: no tasks to execute after filtering")
 		// N1: empty plan still counts as a budget round — prevents infinite
 		// LLM calls when all proposed tasks are deduped.
+		enabled := true
+		roundsUsed, _ := e.claimPlanRound(ctx, mode, maxRounds)
 		e.mu.Lock()
-		e.roundsUsed++
 		if mode == "once" {
 			e.config.Enabled = false
+			enabled = false
 		}
 		e.mu.Unlock()
+		if !enabled {
+			e.persistConfigKey(ctx, "enabled", "false")
+		}
 		if mode == "once" {
 			slog.Info("explorer: once mode completed, auto-disabling")
 		}
+		closedPhase := "idle"
+		if mode == "once" {
+			closedPhase = "once_complete"
+		} else if mode == "budget" && maxRounds > 0 && roundsUsed >= maxRounds {
+			closedPhase = "budget_exhausted"
+		}
+		e.writeClosedPlanDocument(closedPhase, nil)
+		e.setPhase(closedPhase)
 		return
 	}
 
@@ -557,27 +770,30 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	}
 
 	// D1: synchronous execution — budget, dedup, and activePlan are naturally correct
+	roundsUsed, ok := e.claimPlanRound(ctx, mode, maxRounds)
+	if !ok {
+		if mode == "budget" && maxRounds > 0 {
+			slog.Info("explorer: budget exhausted", "rounds_used", roundsUsed, "max_rounds", maxRounds)
+			e.writeClosedPlanDocument("budget_exhausted", e.lastPlanMetrics)
+		}
+		return
+	}
 	e.mu.Lock()
 	e.activePlan = plan
 	e.lastRun = time.Now()
-	e.roundsUsed++ // increment BEFORE execution to prevent race
-	roundsUsed = e.roundsUsed
+	e.phase = "do"
 	e.mu.Unlock()
-	e.persistConfigKey(ctx, "rounds_used", strconv.Itoa(roundsUsed))
 
-	// Plan time budget
-	maxDur := e.config.MaxPlanDuration
-	if maxDur <= 0 {
-		maxDur = 30 * time.Minute
-	}
-	planCtx, planCancel := context.WithTimeout(ctx, maxDur)
+	// No hard timeout — PDCA runs until completion, budget exhaustion, or user-initiated Stop().
+	// The parent ctx is already cancellable via Explorer.Stop().
 
 	e.mu.RLock()
 	tokensBefore := e.tokensUsedToday
 	e.mu.RUnlock()
 
 	planStart := time.Now()
-	e.executePlan(planCtx, plan)
+	executedPlans := []*ExplorerPlan{plan}
+	e.executePlan(ctx, plan)
 
 	// PDCA Check+Act loop (only for AnalyzablePlanner, i.e., Tier 2 agent planner)
 	maxCycles := e.config.MaxCycles
@@ -587,24 +803,36 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 	if ap, ok := e.planner.(AnalyzablePlanner); ok {
 		for cycle := 0; cycle < maxCycles; cycle++ {
 			select {
-			case <-planCtx.Done():
-				slog.Info("explorer: PDCA timeout", "cycle", cycle)
+			case <-ctx.Done():
+				slog.Info("explorer: PDCA cancelled by user", "cycle", cycle)
 				goto pdcaDone
 			default:
 			}
 
+			if refresher, ok := ap.(FactRefreshablePlanner); ok {
+				input, err := e.buildPlanInput(ctx, &ev)
+				if err != nil {
+					slog.Warn("explorer: PDCA fact refresh build failed", "error", err, "cycle", cycle+1)
+				} else if err := refresher.RefreshFacts(*input); err != nil {
+					slog.Warn("explorer: PDCA fact refresh failed", "error", err, "cycle", cycle+1)
+				}
+			}
+
 			slog.Info("explorer: PDCA Check phase", "cycle", cycle+1)
-			verdict, extraTasks, analyzeTokens, err := ap.Analyze(planCtx)
+			e.setPhase("check")
+			verdict, extraTasks, analyzeTokens, err := ap.Analyze(ctx)
 			if analyzeTokens > 0 {
 				e.mu.Lock()
 				e.tokensUsedToday += analyzeTokens
 				e.mu.Unlock()
 			}
 			if err != nil {
-				// Only break on hard errors (context cancelled, LLM failure).
-				// Validation guard feedback is now injected into workspace by Analyze().
 				slog.Warn("explorer: PDCA analyze failed", "error", err, "cycle", cycle+1)
-				break
+				if errors.Is(err, context.Canceled) {
+					break
+				}
+				slog.Info("explorer: transient analyze error, continuing to next cycle", "cycle", cycle+1)
+				continue
 			}
 			slog.Info("explorer: PDCA verdict", "verdict", verdict, "extra_tasks", len(extraTasks), "cycle", cycle+1)
 
@@ -622,17 +850,28 @@ func (e *Explorer) handleEvent(ctx context.Context, ev ExplorerEvent) {
 				Tasks:     extraPlanTasks,
 				Reasoning: fmt.Sprintf("PDCA Act cycle %d", cycle+1),
 			}
+			roundsUsed, ok := e.claimPlanRound(ctx, mode, maxRounds)
+			if !ok {
+				if mode == "budget" && maxRounds > 0 {
+					slog.Info("explorer: budget exhausted", "rounds_used", roundsUsed, "max_rounds", maxRounds)
+				}
+				break
+			}
 			slog.Info("explorer: PDCA Do phase", "tasks", len(extraPlanTasks), "cycle", cycle+1)
 			if e.db != nil {
-				if err := e.persistExplorationPlan(planCtx, extraPlan, fmt.Sprintf("%s:pdca-act-%d", ev.Type, cycle+1)); err != nil {
+				if err := e.persistExplorationPlan(ctx, extraPlan, fmt.Sprintf("%s:pdca-act-%d", ev.Type, cycle+1)); err != nil {
 					slog.Warn("explorer: persist PDCA plan failed", "error", err, "cycle", cycle+1)
 				}
 			}
-			e.executePlan(planCtx, extraPlan)
+			e.mu.Lock()
+			e.activePlan = extraPlan
+			e.phase = "do"
+			e.mu.Unlock()
+			executedPlans = append(executedPlans, extraPlan)
+			e.executePlan(ctx, extraPlan)
 		}
 	}
 pdcaDone:
-	planCancel()
 	elapsed := time.Since(planStart)
 
 	// D8: refresh tier after execution (LLM may have gone offline)
@@ -642,12 +881,14 @@ pdcaDone:
 	tokensAfter := e.tokensUsedToday
 	e.mu.Unlock()
 
-	metrics := e.computePlanMetrics(plan, elapsed, tokensAfter-tokensBefore)
+	metrics := e.computePlanMetrics(executedPlans, elapsed, tokensAfter-tokensBefore)
 	e.mu.Lock()
 	e.lastPlanMetrics = metrics
 	e.activePlan = nil // D9: clear after execution
+	e.phase = "idle"
 	if mode == "once" {
 		e.config.Enabled = false
+		e.phase = "once_complete"
 	}
 	e.mu.Unlock()
 	if mode == "once" {
@@ -657,8 +898,21 @@ pdcaDone:
 
 	// D10: log what's still deployed when budget exhausted
 	if mode == "budget" && maxRounds > 0 && e.roundsUsed >= maxRounds {
-		slog.Info("explorer: budget exhausted — any active deployments remain running")
+		e.setPhase("budget_exhausted")
+		if deploys, err := e.refreshBlockedDeploys(ctx); err == nil && len(deploys) > 0 {
+			e.setPhase("blocked_by_deploys")
+			names := make([]string, 0, len(deploys))
+			for _, d := range deploys {
+				names = append(names, d.Model+"("+d.Engine+")")
+			}
+			slog.Warn("explorer: budget exhausted with active deployments still running",
+				"count", len(deploys), "deployments", strings.Join(names, ", "))
+		} else if err != nil {
+			slog.Debug("explorer: post-cycle deploy refresh failed", "error", err)
+		}
+		slog.Info("explorer: budget exhausted")
 	}
+	e.writeClosedPlanDocument(e.Status().Phase, metrics)
 }
 
 // handleAdvisory processes a central advisory event: parse advisory,
@@ -685,26 +939,25 @@ func (e *Explorer) handleAdvisory(ctx context.Context, ev ExplorerEvent) {
 	// If no exploration manager, just log and send feedback that we can't validate
 	if e.explMgr == nil || e.tier == 0 {
 		slog.Info("explorer: cannot validate advisory (no exploration manager or tier 0)")
-		e.sendAdvisoryFeedback(ctx, advisory.ID, "deferred", "no exploration capability on this device")
+		e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", "no exploration capability on this device")
 		return
 	}
 
-	harvester := e.currentHarvester()
 	go func() {
-		result := e.executeTask(ctx, task, "") // advisory tasks aren't from plans
-
-		if result.Success {
-			reason := fmt.Sprintf("validated: %.1f tok/s, TTFT P95 %.0fms", result.Throughput, result.TTFTP95)
-			e.sendAdvisoryFeedback(ctx, advisory.ID, "accepted", reason)
-		} else {
-			e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", "validation failed: "+result.Error)
-		}
-
-		actions := harvester.Harvest(ctx, HarvestInput{Task: task, Result: result})
-		for _, a := range actions {
-			slog.Info("explorer: advisory harvest action", "type", a.Type, "detail", a.Detail)
-		}
+		e.executeAdvisoryValidation(ctx, advisory, task)
 	}()
+}
+
+func (e *Explorer) rejectAdvisoryEvent(ctx context.Context, ev ExplorerEvent, reason string) {
+	if ev.Type != EventCentralAdvisory || len(ev.Advisory) == 0 {
+		return
+	}
+	advisory, _, err := parseAdvisoryTask(ev.Advisory, "")
+	if err != nil {
+		slog.Debug("explorer: advisory rejection parse skipped", "error", err)
+		return
+	}
+	e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", reason)
 }
 
 // handleScenario processes a central scenario event: parses the scenario,
@@ -754,40 +1007,248 @@ func (e *Explorer) sendAdvisoryFeedback(ctx context.Context, advisoryID, status,
 		slog.Debug("explorer: no advisory feedback callback, skipping")
 		return
 	}
+	switch status {
+	case "accepted", "validated", "rejected":
+	default:
+		slog.Warn("explorer: unsupported advisory feedback status, normalizing to rejected",
+			"advisory_id", advisoryID, "status", status)
+		status = "rejected"
+	}
 	if err := e.advisoryFeedback(ctx, advisoryID, status, reason); err != nil {
 		slog.Warn("explorer: advisory feedback failed",
 			"advisory_id", advisoryID, "error", err)
 	}
 }
 
+func (e *Explorer) advisoryTaskAllowed(ctx context.Context, task PlanTask) (bool, string) {
+	var (
+		hardware HardwareInfo
+		models   []LocalModel
+		engines  []LocalEngine
+	)
+	if e.gatherHardware != nil {
+		if hw, err := e.gatherHardware(ctx); err == nil {
+			hardware = hw
+		}
+	}
+	if e.gatherLocalModels != nil {
+		if localModels, err := e.gatherLocalModels(ctx); err == nil {
+			models = localModels
+		}
+	}
+	if e.gatherLocalEngines != nil {
+		if localEngines, err := e.gatherLocalEngines(ctx); err == nil {
+			engines = localEngines
+		}
+	}
+	if e.gatherComboFacts != nil {
+		var comboFacts []ComboFact
+		if gathered, err := e.gatherComboFacts(ctx, hardware, models, engines); err == nil {
+			comboFacts = gathered
+			if reason, blocked := taskBlockedByExecutableFacts(task.Model, task.Engine, comboFacts, nil); blocked {
+				return false, reason
+			}
+		}
+		pendingWork := e.derivePendingWork(ctx, hardware, models, engines, comboFacts)
+		if e.db != nil {
+			completed, _ := e.db.HasCompletedExploration(ctx, task.Model, task.Engine)
+			if completed && !hasPendingWorkFor(pendingWork, task.Model, task.Engine) {
+				return false, "already completed on this device"
+			}
+			structural, _ := e.db.HasStructuralExplorationFailure(ctx, task.Model, task.Engine)
+			if structural {
+				return false, "combo already has a structural exploration failure on this device"
+			}
+			failCount, _ := e.db.CountFailedExplorations(ctx, task.Model, task.Engine)
+			if failCount >= maxExplorationFailures {
+				return false, fmt.Sprintf("combo already failed %d times on this device", failCount)
+			}
+		}
+		return true, ""
+	}
+	if e.db != nil {
+		completed, _ := e.db.HasCompletedExploration(ctx, task.Model, task.Engine)
+		if completed {
+			return false, "already completed on this device"
+		}
+		structural, _ := e.db.HasStructuralExplorationFailure(ctx, task.Model, task.Engine)
+		if structural {
+			return false, "combo already has a structural exploration failure on this device"
+		}
+		failCount, _ := e.db.CountFailedExplorations(ctx, task.Model, task.Engine)
+		if failCount >= maxExplorationFailures {
+			return false, fmt.Sprintf("combo already failed %d times on this device", failCount)
+		}
+	}
+	return true, ""
+}
+
+// planTaskSummaries renders a short "kind:model/engine" per task so the
+// "explorer: plan generated" log line carries the decision trace without
+// callers having to post-join events.
+func planTaskSummaries(tasks []PlanTask) []string {
+	if len(tasks) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		out = append(out, fmt.Sprintf("%s:%s/%s", t.Kind, t.Model, t.Engine))
+	}
+	return out
+}
+
+func taskStatusFromHarvest(result HarvestResult) string {
+	if result.Success {
+		return "completed"
+	}
+	if result.Cancelled {
+		return "cancelled"
+	}
+	return "failed"
+}
+
+func advisoryPlanStatus(result HarvestResult) string {
+	if result.Success {
+		return "completed"
+	}
+	if result.Cancelled {
+		return "cancelled"
+	}
+	return "rejected"
+}
+
+func (e *Explorer) finalizeExplorationPlanRecord(ctx context.Context, plan *ExplorerPlan, terminalStatus string) {
+	if e.db == nil || plan == nil {
+		return
+	}
+	updateCtx := ctx
+	if updateCtx == nil || updateCtx.Err() != nil {
+		updateCtx = context.Background()
+	}
+	now := time.Now()
+	summaryJSON := ""
+	if planJSON, err := json.Marshal(plan); err == nil {
+		summaryJSON = string(planJSON)
+	}
+	if err := e.db.UpdateExplorationPlan(updateCtx, &state.ExplorationPlanRow{
+		ID:          plan.ID,
+		Status:      terminalStatus,
+		Progress:    len(plan.Tasks),
+		CompletedAt: &now,
+		SummaryJSON: summaryJSON,
+	}); err != nil {
+		slog.Debug("explorer: finalize plan failed", "error", err, "plan_id", plan.ID, "status", terminalStatus)
+	}
+}
+
+func (e *Explorer) executeAdvisoryValidation(ctx context.Context, advisory advisoryTask, task PlanTask) {
+	if e.cleanupDeploys != nil && e.gatherDeploys != nil {
+		if deploys, err := e.refreshBlockedDeploys(ctx); err == nil && len(deploys) > 0 {
+			e.setPhase("blocked_by_deploys")
+			e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", "active deployments already occupy this device")
+			return
+		}
+	}
+
+	if ok, reason := e.advisoryTaskAllowed(ctx, task); !ok {
+		slog.Info("explorer: advisory validation rejected by local execution facts",
+			"id", advisory.ID, "model", task.Model, "engine", task.Engine, "reason", reason)
+		e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", reason)
+		return
+	}
+
+	e.mu.RLock()
+	mode := e.config.Mode
+	maxRounds := e.config.MaxRounds
+	e.mu.RUnlock()
+	if mode == "budget" && maxRounds > 0 {
+		if roundsUsed, ok := e.claimPlanRound(ctx, mode, maxRounds); !ok {
+			e.setPhase("budget_exhausted")
+			e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", fmt.Sprintf("explorer budget exhausted on this device (%d/%d rounds)", roundsUsed, maxRounds))
+			return
+		}
+	}
+
+	plan := &ExplorerPlan{
+		ID:        "advisory-" + firstNonEmpty(advisory.ID, strconv.FormatInt(time.Now().UnixNano(), 10)),
+		Tier:      e.Status().Tier,
+		Tasks:     []PlanTask{task},
+		Reasoning: "central advisory validation",
+	}
+	if e.db != nil {
+		if err := e.persistExplorationPlan(ctx, plan, string(EventCentralAdvisory)); err != nil {
+			slog.Debug("explorer: persist advisory plan failed", "error", err, "plan_id", plan.ID)
+		}
+	}
+
+	e.mu.Lock()
+	e.activePlan = plan
+	e.lastRun = time.Now()
+	e.phase = "advisory"
+	e.mu.Unlock()
+
+	taskStart := time.Now()
+	result := e.executeTask(ctx, task, plan.ID)
+	taskElapsed := time.Since(taskStart)
+	plan.Tasks[0].Status = advisoryPlanStatus(result)
+
+	// Stamp the bench row with the advisory ID so Central's feedback ingest can
+	// attribute the evidence. Best-effort: stamping is not load-bearing for the
+	// feedback POST itself (which uses advisory.ID), only for downstream audit.
+	if e.db != nil && result.BenchmarkID != "" && advisory.ID != "" {
+		if err := e.db.UpdateBenchmarkAdvisoryID(ctx, result.BenchmarkID, advisory.ID); err != nil {
+			slog.Debug("explorer: stamp advisory_id on benchmark failed", "error", err,
+				"benchmark_id", result.BenchmarkID, "advisory_id", advisory.ID)
+		}
+	}
+
+	harvester := e.currentHarvester()
+	if harvester != nil {
+		actions := harvester.Harvest(ctx, HarvestInput{Task: task, Result: result})
+		for _, a := range actions {
+			slog.Info("explorer: advisory harvest action", "type", a.Type, "detail", a.Detail)
+		}
+	}
+
+	if e.workspace != nil {
+		if _, err := e.workspace.WriteExperimentResult(1, taskSpecFromPlanTask(task), harvestToExperimentResult(plan.Tasks[0].Status, taskStart, taskElapsed, result)); err != nil {
+			slog.Debug("explorer: write advisory experiment result failed", "error", err)
+		}
+	}
+
+	terminalStatus := advisoryPlanStatus(result)
+	if ctx.Err() != nil {
+		terminalStatus = "cancelled"
+	}
+	e.finalizeExplorationPlanRecord(ctx, plan, terminalStatus)
+
+	e.mu.Lock()
+	e.activePlan = nil
+	e.phase = "idle"
+	e.mu.Unlock()
+
+	if e.cleanupDeploys != nil && e.gatherDeploys != nil {
+		if deploys, err := e.refreshBlockedDeploys(ctx); err == nil && len(deploys) > 0 {
+			e.setPhase("blocked_by_deploys")
+		}
+	}
+
+	if result.Success {
+		reason := fmt.Sprintf("validated: %.1f tok/s, TTFT P95 %.0fms", result.Throughput, result.TTFTP95)
+		e.sendAdvisoryFeedback(ctx, advisory.ID, "accepted", reason)
+		return
+	}
+	e.sendAdvisoryFeedback(ctx, advisory.ID, "rejected", "validation failed: "+result.Error)
+}
+
 func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 	harvester := e.currentHarvester()
 	terminalStatus := "completed"
 	defer func() {
-		if e.db == nil || plan == nil {
-			return
-		}
-		updateCtx := ctx
-		if updateCtx.Err() != nil {
-			updateCtx = context.Background()
-		}
 		if ctx.Err() != nil {
 			terminalStatus = "cancelled"
 		}
-		now := time.Now()
-		summaryJSON := ""
-		if planJSON, err := json.Marshal(plan); err == nil {
-			summaryJSON = string(planJSON)
-		}
-		if err := e.db.UpdateExplorationPlan(updateCtx, &state.ExplorationPlanRow{
-			ID:          plan.ID,
-			Status:      terminalStatus,
-			Progress:    len(plan.Tasks),
-			CompletedAt: &now,
-			SummaryJSON: summaryJSON,
-		}); err != nil {
-			slog.Debug("explorer: finalize plan failed", "error", err, "plan_id", plan.ID, "status", terminalStatus)
-		}
+		e.finalizeExplorationPlanRecord(ctx, plan, terminalStatus)
 	}()
 	// Track deploy-level failures so we can skip doomed tasks within the same plan.
 	// Key: "model|engine", only set for deploy crashes (not benchmark/param failures).
@@ -806,13 +1267,7 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 						Success: false,
 						Error:   "skipped: timeout before execution",
 					}
-					timeoutTask := TaskSpec{
-						Kind:         plan.Tasks[j].Kind,
-						Model:        plan.Tasks[j].Model,
-						Engine:       plan.Tasks[j].Engine,
-						EngineParams: plan.Tasks[j].Params,
-						Reason:       plan.Tasks[j].Reason,
-					}
+					timeoutTask := taskSpecFromPlanTask(plan.Tasks[j])
 					if _, werr := e.workspace.WriteExperimentResult(j+1, timeoutTask, harvestToExperimentResult(plan.Tasks[j].Status, time.Now(), 0, timeoutResult)); werr != nil {
 						slog.Debug("explorer: write timeout experiment result failed", "error", werr)
 					}
@@ -844,14 +1299,7 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 				slog.Info("explorer: harvest action", "type", a.Type, "detail", a.Detail)
 			}
 			if e.workspace != nil {
-				expTask := TaskSpec{
-					Kind:         task.Kind,
-					Model:        task.Model,
-					Engine:       task.Engine,
-					EngineParams: task.Params,
-					Reason:       task.Reason,
-				}
-				if _, werr := e.workspace.WriteExperimentResult(i+1, expTask, harvestToExperimentResult(task.Status, time.Now(), 0, skipResult)); werr != nil {
+				if _, werr := e.workspace.WriteExperimentResult(i+1, taskSpecFromPlanTask(*task), harvestToExperimentResult(task.Status, time.Now(), 0, skipResult)); werr != nil {
 					slog.Debug("explorer: write skipped experiment result failed", "error", werr)
 				}
 			}
@@ -875,6 +1323,8 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 
 		if result.Success {
 			task.Status = "completed"
+		} else if result.Cancelled {
+			task.Status = "cancelled"
 		} else {
 			task.Status = "failed"
 			// Track deploy-level failures for intra-plan feedback
@@ -893,14 +1343,7 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 		// Write experiment result to workspace (for PDCA Check phase)
 		if e.workspace != nil {
 			expResult := harvestToExperimentResult(task.Status, taskStart, taskElapsed, result)
-			expTask := TaskSpec{
-				Kind:         task.Kind,
-				Model:        task.Model,
-				Engine:       task.Engine,
-				EngineParams: task.Params,
-				Reason:       task.Reason,
-			}
-			if _, werr := e.workspace.WriteExperimentResult(i+1, expTask, expResult); werr != nil {
+			if _, werr := e.workspace.WriteExperimentResult(i+1, taskSpecFromPlanTask(*task), expResult); werr != nil {
 				slog.Debug("explorer: write experiment result failed", "error", werr)
 			}
 		}
@@ -912,6 +1355,30 @@ func (e *Explorer) executePlan(ctx context.Context, plan *ExplorerPlan) {
 				Status:   "active",
 				Progress: i + 1,
 			})
+		}
+
+		// Bug-8: task-boundary teardown. The exploration manager releases its
+		// own lease when it created the deploy, but tune promotes a best-config
+		// redeploy and validate can reuse an existing ready deploy without
+		// releasing it. Force-delete the task's model so the next task sees a
+		// clean GPU, regardless of who owns the running container.
+		if e.cleanupModelDeploy != nil && task.Model != "" {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			if err := e.cleanupModelDeploy(cleanupCtx, task.Model); err != nil {
+				// "deployment not found" is the common case after a successful
+				// validate (exploration manager already released the lease) and
+				// after many failed deploys (nothing was ever created). Only
+				// surface as WARN when the error is likely actionable.
+				msg := err.Error()
+				if strings.Contains(msg, "not found") || strings.Contains(msg, "no deployment") {
+					slog.Debug("explorer: task-boundary cleanup skipped (already torn down)",
+						"model", task.Model, "detail", msg)
+				} else {
+					slog.Warn("explorer: task-boundary cleanup failed",
+						"model", task.Model, "error", err)
+				}
+			}
+			cancel()
 		}
 	}
 }
@@ -978,6 +1445,104 @@ func (e *Explorer) reconcileStaleExplorationPlans(ctx context.Context) {
 	}
 }
 
+func extractPlanIDFromGoal(goal string) string {
+	const prefix = "[plan:"
+	if !strings.HasPrefix(goal, prefix) {
+		return ""
+	}
+	end := strings.Index(goal, "]")
+	if end <= len(prefix) {
+		return ""
+	}
+	return goal[len(prefix):end]
+}
+
+func parsePlanTaskStatuses(summaryJSON string) map[string]string {
+	if strings.TrimSpace(summaryJSON) == "" {
+		return nil
+	}
+	var summary struct {
+		Tasks []PlanTask
+	}
+	if err := json.Unmarshal([]byte(summaryJSON), &summary); err != nil {
+		return nil
+	}
+	statuses := make(map[string]string, len(summary.Tasks))
+	for _, task := range summary.Tasks {
+		if task.Model == "" || task.Engine == "" || task.Status == "" {
+			continue
+		}
+		statuses[task.Model+"|"+task.Engine] = task.Status
+	}
+	return statuses
+}
+
+func canonicalRunStatusFromPlanTask(taskStatus string) string {
+	switch taskStatus {
+	case "failed":
+		return "failed"
+	case "cancelled", "skipped_timeout":
+		return "cancelled"
+	default:
+		return ""
+	}
+}
+
+func (e *Explorer) reconcileHistoricalExplorationRuns(ctx context.Context) {
+	if e.db == nil {
+		return
+	}
+	plans, err := e.db.ListExplorationPlans(ctx, "")
+	if err != nil || len(plans) == 0 {
+		return
+	}
+	planTasks := make(map[string]map[string]string, len(plans))
+	for _, plan := range plans {
+		if plan == nil || plan.ID == "" {
+			continue
+		}
+		if statuses := parsePlanTaskStatuses(plan.SummaryJSON); len(statuses) > 0 {
+			planTasks[plan.ID] = statuses
+		}
+	}
+	if len(planTasks) == 0 {
+		return
+	}
+	runs, err := e.db.ListExplorationRuns(ctx, "", 200)
+	if err != nil {
+		return
+	}
+	for _, run := range runs {
+		if run == nil || run.Status != "completed" {
+			continue
+		}
+		planID := extractPlanIDFromGoal(run.Goal)
+		if planID == "" {
+			continue
+		}
+		statuses := planTasks[planID]
+		if len(statuses) == 0 {
+			continue
+		}
+		taskStatus := statuses[run.ModelID+"|"+run.EngineID]
+		canonical := canonicalRunStatusFromPlanTask(taskStatus)
+		if canonical == "" || canonical == run.Status {
+			continue
+		}
+		run.Status = canonical
+		if run.Error == "" {
+			run.Error = fmt.Sprintf("reconciled from plan %s: task status=%s", planID, taskStatus)
+		}
+		if err := e.db.UpdateExplorationRun(context.Background(), run); err != nil {
+			slog.Debug("explorer: reconcile historical run failed", "error", err, "run_id", run.ID, "plan_id", planID)
+			continue
+		}
+		slog.Info("explorer: reconciled historical run status",
+			"run_id", run.ID, "plan_id", planID, "model", run.ModelID, "engine", run.EngineID,
+			"from", "completed", "to", canonical)
+	}
+}
+
 // resolveBenchmarkProfiles returns matrix profiles from catalog YAML, falling back to Go defaults.
 func (e *Explorer) resolveBenchmarkProfiles(hw HardwareInfo) []ExplorationBenchmarkProfile {
 	totalVRAM := hw.VRAMMiB * hw.GPUCount
@@ -990,6 +1555,62 @@ func (e *Explorer) resolveBenchmarkProfiles(hw HardwareInfo) []ExplorationBenchm
 		}
 	}
 	return defaultBenchmarkProfiles(hw)
+}
+
+// pickSingleBenchmarkProfile selects one profile out of the default latency/
+// throughput pair so validate tasks don't execute overlapping cells twice
+// (Bug-5/DC-7). For kinds with an obvious intent ("validate_long_context"),
+// pick the latency profile (broader input coverage). If callers want both,
+// they should author BenchmarkSpec themselves in the plan task.
+func pickSingleBenchmarkProfile(profiles []ExplorationBenchmarkProfile, kind string) []ExplorationBenchmarkProfile {
+	if len(profiles) <= 1 {
+		return profiles
+	}
+	preferred := "latency"
+	if strings.Contains(strings.ToLower(kind), "throughput") {
+		preferred = "throughput"
+	}
+	for _, p := range profiles {
+		if strings.EqualFold(p.Label, preferred) {
+			return []ExplorationBenchmarkProfile{p}
+		}
+	}
+	return profiles[:1]
+}
+
+// benchmarkSpecToProfile converts a planner-authored BenchmarkSpec into an ExplorationBenchmarkProfile.
+func benchmarkSpecToProfile(spec BenchmarkSpec) ExplorationBenchmarkProfile {
+	p := ExplorationBenchmarkProfile{
+		Label:             "plan",
+		ConcurrencyLevels: spec.Concurrency,
+		InputTokenLevels:  spec.InputTokens,
+		MaxTokenLevels:    spec.MaxTokens,
+		RequestsPerCombo:  spec.RequestsPerCombo,
+		Rounds:            1,
+	}
+	// If only single-value arrays, also set legacy single-point fields for tune-style tasks.
+	if len(spec.Concurrency) == 1 {
+		p.Concurrency = spec.Concurrency[0]
+	}
+	if len(spec.InputTokens) == 1 {
+		p.InputTokens = spec.InputTokens[0]
+	}
+	if len(spec.MaxTokens) == 1 {
+		p.MaxTokens = spec.MaxTokens[0]
+	}
+	return p
+}
+
+func taskSpecFromPlanTask(task PlanTask) TaskSpec {
+	return TaskSpec{
+		Kind:         task.Kind,
+		Model:        task.Model,
+		Engine:       task.Engine,
+		EngineParams: task.Params,
+		SearchSpace:  cloneSearchSpace(task.SearchSpace),
+		Benchmark:    task.Benchmark,
+		Reason:       task.Reason,
+	}
 }
 
 // defaultBenchmarkProfile returns sensible benchmark parameters based on hardware capability.
@@ -1065,17 +1686,219 @@ func defaultBenchmarkProfiles(hw HardwareInfo) []ExplorationBenchmarkProfile {
 	return profiles
 }
 
+// extractMaxModelLen reads max_model_len (vLLM) or context_length (sglang)
+// from the task params set by the LLM planner.
+func extractMaxModelLen(params map[string]any) int {
+	for _, key := range []string{"max_model_len", "context_length", "ctx_size", "max_context_tokens"} {
+		if v, ok := params[key]; ok {
+			switch x := v.(type) {
+			case float64:
+				return int(x)
+			case int:
+				return x
+			case int64:
+				return int(x)
+			}
+		}
+	}
+	return 0
+}
+
+func effectiveTaskMaxModelLen(task PlanTask, model *LocalModel) int {
+	if override := extractMaxModelLen(task.Params); override > 0 {
+		return override
+	}
+	if model != nil && model.MaxContextLen > 0 {
+		return model.MaxContextLen
+	}
+	return 0
+}
+
+var benchmarkTokenLadder = []int{128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072}
+
+// adaptBenchmarkProfiles keeps planner intent but enriches sparse plans with a
+// small bounded set of extra context points after the model is confirmed up.
+// It never explodes a planner-authored matrix into a full context ladder.
+func adaptBenchmarkProfiles(profiles []ExplorationBenchmarkProfile, maxModelLen int) []ExplorationBenchmarkProfile {
+	if maxModelLen <= 0 || len(profiles) == 0 {
+		return profiles
+	}
+
+	result := make([]ExplorationBenchmarkProfile, 0, len(profiles))
+	for _, p := range profiles {
+		if len(p.InputTokenLevels) == 0 {
+			result = append(result, p)
+			continue
+		}
+
+		minOutput := minPositiveInt(p.MaxTokenLevels)
+		if minOutput <= 0 {
+			minOutput = 128
+		}
+		maxInput := maxModelLen - minOutput
+		if maxInput <= 0 {
+			maxInput = maxModelLen
+		}
+		p.InputTokenLevels = boundedInputTokenLevels(p.InputTokenLevels, maxInput)
+
+		minInput := minPositiveInt(p.InputTokenLevels)
+		maxOutput := maxModelLen - minInput
+		if maxOutput <= 0 {
+			maxOutput = maxModelLen
+		}
+		p.MaxTokenLevels = feasibleOutputTokenLevels(p.MaxTokenLevels, maxOutput)
+
+		result = append(result, p)
+	}
+	return result
+}
+
+func boundedInputTokenLevels(existing []int, maxAllowed int) []int {
+	filtered := filterTokenLevelsAtOrBelow(existing, maxAllowed)
+	if len(filtered) == 0 {
+		if fallback := bestBenchmarkTokenLevel(maxAllowed); fallback > 0 {
+			return []int{fallback}
+		}
+		return []int{maxAllowed}
+	}
+	selected := append([]int{}, filtered...)
+	highest := bestBenchmarkTokenLevel(maxAllowed)
+	if highest > 0 && highest > maxInt(selected) && !containsInt(selected, highest) {
+		selected = append(selected, highest)
+	}
+	if len(selected) >= 3 {
+		return normalizeTokenLevels(selected)
+	}
+	for _, anchor := range []int{128, 512, 2048} {
+		if len(selected) >= 3 {
+			break
+		}
+		if anchor <= maxAllowed && !containsInt(selected, anchor) {
+			selected = append(selected, anchor)
+		}
+	}
+	return normalizeTokenLevels(selected)
+}
+
+func feasibleOutputTokenLevels(existing []int, maxAllowed int) []int {
+	filtered := filterTokenLevelsAtOrBelow(existing, maxAllowed)
+	if len(filtered) > 0 {
+		return filtered
+	}
+	if fallback := bestBenchmarkTokenLevel(maxAllowed); fallback > 0 {
+		return []int{fallback}
+	}
+	return []int{maxAllowed}
+}
+
+func filterTokenLevelsAtOrBelow(levels []int, maxAllowed int) []int {
+	if maxAllowed <= 0 {
+		return normalizeTokenLevels(levels)
+	}
+	filtered := make([]int, 0, len(levels))
+	for _, level := range levels {
+		if level > 0 && level <= maxAllowed {
+			filtered = append(filtered, level)
+		}
+	}
+	return normalizeTokenLevels(filtered)
+}
+
+func normalizeTokenLevels(levels []int) []int {
+	seen := make(map[int]bool, len(levels))
+	for _, level := range levels {
+		if level > 0 {
+			seen[level] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	ordered := make([]int, 0, len(seen))
+	for _, level := range benchmarkTokenLadder {
+		if seen[level] {
+			ordered = append(ordered, level)
+			delete(seen, level)
+		}
+	}
+	for _, level := range levels {
+		if seen[level] {
+			ordered = append(ordered, level)
+			delete(seen, level)
+		}
+	}
+	return ordered
+}
+
+func bestBenchmarkTokenLevel(maxAllowed int) int {
+	best := 0
+	for _, level := range benchmarkTokenLadder {
+		if level > maxAllowed {
+			break
+		}
+		best = level
+	}
+	return best
+}
+
+func minPositiveInt(vals []int) int {
+	for _, v := range normalizeTokenLevels(vals) {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func minInt(vals []int) int {
+	if len(vals) == 0 {
+		return 0
+	}
+	m := vals[0]
+	for _, v := range vals[1:] {
+		if v < m {
+			m = v
+		}
+	}
+	return m
+}
+
+func maxInt(vals []int) int {
+	if len(vals) == 0 {
+		return 0
+	}
+	m := vals[0]
+	for _, v := range vals[1:] {
+		if v > m {
+			m = v
+		}
+	}
+	return m
+}
+
+func containsInt(vals []int, target int) bool {
+	for _, value := range vals {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *Explorer) executeTask(ctx context.Context, task PlanTask, planID string) HarvestResult {
 	if e.explMgr == nil {
 		return HarvestResult{Success: false, Error: "no exploration manager"}
 	}
 
-	// Convert PlanTask params (map[string]any) to ExplorationStart.SearchSpace (map[string][]any)
 	var searchSpace map[string][]any
-	if task.Params != nil {
-		searchSpace = make(map[string][]any)
+	if len(task.SearchSpace) > 0 {
+		searchSpace = cloneSearchSpace(task.SearchSpace)
+	}
+	var engineParams map[string]any
+	if len(task.Params) > 0 {
+		engineParams = make(map[string]any, len(task.Params))
 		for k, v := range task.Params {
-			searchSpace[k] = []any{v}
+			engineParams[k] = v
 		}
 	}
 
@@ -1098,37 +1921,77 @@ func (e *Explorer) executeTask(ctx context.Context, task PlanTask, planID string
 	if searchSpace != nil {
 		req.SearchSpace = searchSpace
 	}
+	if engineParams != nil {
+		req.EngineParams = engineParams
+	}
 
-	// Populate model type from local inventory for accurate overlay YAML
+	var taskModelMeta *LocalModel
+	// Populate model metadata from local inventory for accurate overlay YAML
 	if e.gatherLocalModels != nil {
 		if models, err := e.gatherLocalModels(ctx); err == nil {
 			for _, m := range models {
-				if m.Name == task.Model {
+				if strings.EqualFold(m.Name, task.Model) {
+					model := m
+					taskModelMeta = &model
 					req.Target.ModelType = m.Type
+					req.Target.Family = m.Family
+					req.Target.ParameterCount = m.ParameterCount
 					break
 				}
 			}
 		}
 	}
 
-	// Populate internal args from engine YAML (INV-1: engine behavior = YAML)
+	// DC-1: long-context probes need the deploy's max_model_len to match the
+	// model's real capacity. Otherwise the planner's conservative default caps
+	// the probe and the benchmark silently tops out below target. Inject
+	// max_model_len into search space when the task is a long-context probe
+	// and the caller didn't already set it.
+	if task.Kind == "validate_long_context" && taskModelMeta != nil && taskModelMeta.MaxContextLen > 0 {
+		if req.SearchSpace == nil {
+			req.SearchSpace = map[string][]any{}
+		}
+		hasMaxLen := false
+		for _, key := range []string{"max_model_len", "context_length", "ctx_size", "max_context_tokens"} {
+			if _, ok := req.SearchSpace[key]; ok {
+				hasMaxLen = true
+				break
+			}
+		}
+		if !hasMaxLen {
+			req.SearchSpace["max_model_len"] = []any{taskModelMeta.MaxContextLen}
+			slog.Info("explorer: long-context probe set max_model_len to model capacity",
+				"model", task.Model, "max_context_len", taskModelMeta.MaxContextLen)
+		}
+	}
+
+	// Populate internal args + health check from engine YAML (INV-1: engine behavior = YAML)
 	if e.gatherLocalEngines != nil {
 		if engines, err := e.gatherLocalEngines(ctx); err == nil {
 			for _, eng := range engines {
-				if eng.Name == task.Engine || eng.Type == task.Engine {
+				if strings.EqualFold(eng.Name, task.Engine) || strings.EqualFold(eng.Type, task.Engine) {
 					req.Target.Runtime = eng.Runtime
 					req.Target.InternalArgs = eng.InternalArgs
+					req.Target.HealthCheckPath = eng.HealthCheckPath
 					break
 				}
 			}
 		}
 	}
 
-	// D6: set benchmark profile from hardware (catalog YAML → Go fallback)
-	if e.gatherHardware != nil {
+	// D6: set benchmark profile — prefer plan's BenchmarkSpec, fall back to hardware defaults.
+	if task.Benchmark.RequestsPerCombo > 0 || len(task.Benchmark.Concurrency) > 0 {
+		// LLM planner specified benchmark parameters — use them directly.
+		req.BenchmarkProfiles = []ExplorationBenchmarkProfile{benchmarkSpecToProfile(task.Benchmark)}
+	} else if e.gatherHardware != nil {
 		if hw, err := e.gatherHardware(ctx); err == nil {
 			if task.Kind == "validate" {
-				req.BenchmarkProfiles = e.resolveBenchmarkProfiles(hw)
+				// Bug-5/DC-7: pick a single profile per validate task to avoid
+				// running overlapping cells twice. Default picks the latency
+				// profile (broader input coverage, concurrency=1) unless the
+				// task explicitly declares throughput intent.
+				profiles := e.resolveBenchmarkProfiles(hw)
+				req.BenchmarkProfiles = pickSingleBenchmarkProfile(profiles, task.Kind)
 			} else {
 				// Tune tasks get a single-point profile (no matrix levels)
 				bp := defaultBenchmarkProfile(hw)
@@ -1137,24 +2000,58 @@ func (e *Explorer) executeTask(ctx context.Context, task PlanTask, planID string
 		}
 	}
 
+	// Adapt benchmark profiles to effective max_model_len:
+	// expand input_token_levels to cover longer contexts and
+	// filter out infeasible combos where input+output > max_model_len.
+	if maxModelLen := effectiveTaskMaxModelLen(task, taskModelMeta); maxModelLen > 0 {
+		req.BenchmarkProfiles = adaptBenchmarkProfiles(req.BenchmarkProfiles, maxModelLen)
+	}
+
 	status, err := e.explMgr.StartAndWait(ctx, req)
-	if err != nil {
-		return HarvestResult{Success: false, Error: err.Error()}
+	cancelled := err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+	if status == nil {
+		return HarvestResult{Success: false, Cancelled: cancelled, Error: err.Error()}
 	}
-
-	if status.Run.Status == "failed" {
-		return HarvestResult{Success: false, Error: status.Run.Error}
-	}
-
-	// Parse benchmark results from exploration summary
 	result := e.parseExplorationResult(status)
-	if len(task.Params) > 0 {
-		result.Config = make(map[string]any, len(task.Params))
-		for key, value := range task.Params {
-			result.Config[key] = value
-		}
+	switch {
+	case err != nil:
+		result.Success = false
+		result.Cancelled = cancelled
+		result.Error = err.Error()
+		return result
+	case status.Run.Status == "failed":
+		result.Success = false
+		result.Error = status.Run.Error
+		return result
+	case status.Run.Status == "cancelled":
+		result.Success = false
+		result.Cancelled = true
+		result.Error = status.Run.Error
+		return result
 	}
+
+	// Bug-6: record deploy-applied config (post safety-cap) for the harvest note
+	// and experiment file, not just planner-requested Params.
+	result.Config = mergeConfigPreferringApplied(task.Params, result.DeployConfig)
 	return result
+}
+
+// mergeConfigPreferringApplied returns planner params with any key that also
+// appears in the deploy-applied config replaced by the applied value. This
+// preserves planner intent for fields the deploy path doesn't echo back while
+// recording safety-cap adjustments (e.g. gmu=0.9 → 0.86) for the knowledge layer.
+func mergeConfigPreferringApplied(requested, applied map[string]any) map[string]any {
+	if len(requested) == 0 && len(applied) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(requested)+len(applied))
+	for k, v := range requested {
+		out[k] = v
+	}
+	for k, v := range applied {
+		out[k] = v
+	}
+	return out
 }
 
 func (e *Explorer) parseExplorationResult(status *ExplorationStatus) HarvestResult {
@@ -1164,8 +2061,10 @@ func (e *Explorer) parseExplorationResult(status *ExplorationStatus) HarvestResu
 		var summary map[string]any
 		if err := json.Unmarshal([]byte(status.Run.SummaryJSON), &summary); err == nil {
 			readBenchmarkMetrics(summary, &result)
+			readBenchmarkConfig(summary, &result)
 			if nested, ok := summary["result"].(map[string]any); ok {
 				readBenchmarkMetrics(nested, &result)
+				readBenchmarkConfig(nested, &result)
 			}
 			result.BenchmarkID = firstNonEmptyJSON(summary, "benchmark_id")
 			result.ConfigID = firstNonEmptyJSON(summary, "config_id")
@@ -1202,6 +2101,10 @@ func (e *Explorer) parseExplorationResult(status *ExplorationStatus) HarvestResu
 
 func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*PlanInput, error) {
 	input := &PlanInput{Event: ev}
+
+	// Self-heal historical late-write pollution before the next planning round
+	// so dedup and LLM facts both see the same canonical state.
+	e.reconcileHistoricalExplorationRuns(ctx)
 
 	// D4: Run independent gathers in parallel to reduce plan input build time.
 	// gatherComboFacts depends on hardware/models/engines, so it runs after.
@@ -1299,47 +2202,769 @@ func (e *Explorer) buildPlanInput(ctx context.Context, ev *ExplorerEvent) (*Plan
 
 	// Recent exploration history
 	if e.db != nil {
-		runs, _ := e.db.ListExplorationRuns(ctx, "", 10)
+		runs, _ := e.db.ListExplorationRuns(ctx, "", recentExplorationHistoryLimit)
 		for _, r := range runs {
 			input.History = append(input.History, *r)
+		}
+
+		skipReasons := make(map[string]string)
+		recordSkip := func(model, engine, reason string) {
+			key := planTaskComboKey(model, engine)
+			if key == "" || strings.TrimSpace(reason) == "" {
+				return
+			}
+			if _, exists := skipReasons[key]; exists {
+				return
+			}
+			skipReasons[key] = reason
+		}
+
+		// Recent history should immediately remove exact combos from the ready
+		// frontier for the rest of this run, even before they become permanent.
+		for _, r := range input.History {
+			switch r.Status {
+			case "failed":
+				recordSkip(r.ModelID, r.EngineID, "recently failed")
+			case "cancelled":
+				recordSkip(r.ModelID, r.EngineID, "recently cancelled")
+			}
 		}
 
 		// Prefill dedup: feed all explored combos to LLM so it avoids
 		// proposing already-tested tasks (cheap prefill vs expensive decode).
 		combos, _ := e.db.ListExploredCombos(ctx)
 		for _, c := range combos {
-			if c.Completed {
-				input.SkipCombos = append(input.SkipCombos, SkipCombo{
-					Model: c.Model, Engine: c.Engine, Reason: "completed",
-				})
+			structural, _ := e.db.HasStructuralExplorationFailure(ctx, c.Model, c.Engine)
+			if structural {
+				recordSkip(c.Model, c.Engine, "structural_failure")
 			} else if c.FailCount >= maxExplorationFailures {
-				input.SkipCombos = append(input.SkipCombos, SkipCombo{
-					Model:  c.Model,
-					Engine: c.Engine,
-					Reason: fmt.Sprintf("failed:%d", c.FailCount),
-				})
+				recordSkip(c.Model, c.Engine, fmt.Sprintf("failed:%d", c.FailCount))
+			}
+		}
+		for key, reason := range skipReasons {
+			parts := strings.SplitN(key, "|", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			input.SkipCombos = append(input.SkipCombos, SkipCombo{
+				Model:  parts[0],
+				Engine: parts[1],
+				Reason: reason,
+			})
+		}
+	}
+	input.PendingWork = e.derivePendingWork(ctx, input.Hardware, input.LocalModels, input.LocalEngines, input.ComboFacts)
+	if e.db != nil {
+		combos, _ := e.db.ListExploredCombos(ctx)
+		for _, c := range combos {
+			if !c.Completed || hasPendingWorkFor(input.PendingWork, c.Model, c.Engine) {
+				continue
+			}
+			input.SkipCombos = append(input.SkipCombos, SkipCombo{
+				Model:  c.Model,
+				Engine: c.Engine,
+				Reason: "completed",
+			})
+		}
+		for _, r := range input.History {
+			if r.Status != "completed" || hasPendingWorkFor(input.PendingWork, r.ModelID, r.EngineID) {
+				continue
+			}
+			input.SkipCombos = append(input.SkipCombos, SkipCombo{
+				Model:  r.ModelID,
+				Engine: r.EngineID,
+				Reason: "recently completed",
+			})
+		}
+	}
+	historyForBlockers := input.History
+	if e.db != nil {
+		if runs, err := e.db.ListExplorationRuns(ctx, "", 200); err == nil {
+			historyForBlockers = make([]ExplorationRun, 0, len(runs))
+			for _, run := range runs {
+				if run == nil {
+					continue
+				}
+				historyForBlockers = append(historyForBlockers, *run)
 			}
 		}
 	}
+	var records []ExperimentRecord
+	if e.workspace != nil {
+		if loaded, err := e.workspace.LoadExperimentRecords(); err == nil {
+			records = loaded
+		}
+	}
+	input.SkipCombos = append(input.SkipCombos,
+		deriveFamilyArtifactSkipCombos(input.LocalModels, input.LocalEngines, input.ComboFacts, input.SkipCombos, records, historyForBlockers)...)
+	for _, skip := range deriveModelScopeSkipCombos(input.ComboFacts, input.SkipCombos) {
+		input.SkipCombos = append(input.SkipCombos, skip)
+	}
+	input.SkipCombos = dedupeSkipCombos(input.SkipCombos)
+	input.PendingWork = filterPendingWork(input.PendingWork, input.ComboFacts, input.SkipCombos)
 
 	return input, nil
 }
 
-func (e *Explorer) computePlanMetrics(plan *ExplorerPlan, elapsed time.Duration, tokensUsed int) *PlanMetrics {
+func hasPendingWorkFor(pending []PendingWork, model, engine string) bool {
+	for _, work := range pending {
+		if strings.EqualFold(strings.TrimSpace(work.Model), strings.TrimSpace(model)) &&
+			strings.EqualFold(strings.TrimSpace(work.Engine), strings.TrimSpace(engine)) {
+			return true
+		}
+	}
+	return false
+}
+
+func filterPendingWork(pending []PendingWork, comboFacts []ComboFact, skipCombos []SkipCombo) []PendingWork {
+	if len(pending) == 0 {
+		return nil
+	}
+	filtered := make([]PendingWork, 0, len(pending))
+	for _, work := range pending {
+		if _, blocked := taskBlockedByExecutableFacts(work.Model, work.Engine, comboFacts, skipCombos); blocked {
+			continue
+		}
+		filtered = append(filtered, work)
+	}
+	return filtered
+}
+
+type comboCoverageState struct {
+	HasMeaningfulBenchmark bool
+	MaxSuccessfulInput     int
+	HasCompletedTune       bool
+}
+
+func (e *Explorer) derivePendingWork(ctx context.Context, hardware HardwareInfo, models []LocalModel, engines []LocalEngine, comboFacts []ComboFact) []PendingWork {
+	readySet := make(map[string]ComboFact, len(comboFacts))
+	for _, fact := range comboFacts {
+		if !strings.EqualFold(strings.TrimSpace(fact.Status), "ready") {
+			continue
+		}
+		key := planTaskComboKey(fact.Model, fact.Engine)
+		if key == "" {
+			continue
+		}
+		readySet[strings.ToLower(key)] = fact
+	}
+	if len(readySet) == 0 {
+		return nil
+	}
+
+	modelByName := make(map[string]LocalModel, len(models))
+	for _, model := range models {
+		modelByName[strings.ToLower(strings.TrimSpace(model.Name))] = model
+	}
+	engineByName := make(map[string]LocalEngine, len(engines)*2)
+	for _, engine := range engines {
+		for _, alias := range []string{engine.Name, engine.Type} {
+			alias = strings.ToLower(strings.TrimSpace(alias))
+			if alias == "" {
+				continue
+			}
+			engineByName[alias] = engine
+		}
+	}
+
+	stateByCombo := make(map[string]comboCoverageState, len(readySet))
+	if e.db != nil {
+		runs, _ := e.db.ListExplorationRuns(ctx, "", 200)
+		tunedByCombo := make(map[string]bool, len(runs))
+		for _, run := range runs {
+			if run == nil || !strings.EqualFold(run.Kind, "tune") || !strings.EqualFold(run.Status, "completed") {
+				continue
+			}
+			key := strings.ToLower(planTaskComboKey(run.ModelID, run.EngineID))
+			if key != "" {
+				tunedByCombo[key] = true
+			}
+		}
+		for key, fact := range readySet {
+			cfgs, err := e.db.ListConfigurations(ctx, hardware.Profile, fact.Model, fact.Engine)
+			if err != nil || len(cfgs) == 0 {
+				stateByCombo[key] = comboCoverageState{HasCompletedTune: tunedByCombo[key]}
+				continue
+			}
+			configIDs := make([]string, 0, len(cfgs))
+			for _, cfg := range cfgs {
+				if cfg == nil {
+					continue
+				}
+				configIDs = append(configIDs, cfg.ID)
+			}
+			results, err := e.db.ListBenchmarkResults(ctx, configIDs, 0)
+			if err != nil {
+				stateByCombo[key] = comboCoverageState{HasCompletedTune: tunedByCombo[key]}
+				continue
+			}
+			state := comboCoverageState{HasCompletedTune: tunedByCombo[key]}
+			for _, result := range results {
+				if !meaningfulBenchmarkRecord(result) {
+					continue
+				}
+				state.HasMeaningfulBenchmark = true
+				if inputTokens := parseBenchmarkBucketFloor(result.InputLenBucket); inputTokens > state.MaxSuccessfulInput {
+					state.MaxSuccessfulInput = inputTokens
+				}
+			}
+			stateByCombo[key] = state
+		}
+	}
+
+	var pending []PendingWork
+	for key, fact := range readySet {
+		model := modelByName[strings.ToLower(strings.TrimSpace(fact.Model))]
+		engine := engineByName[strings.ToLower(strings.TrimSpace(fact.Engine))]
+		state := stateByCombo[key]
+		if !state.HasMeaningfulBenchmark {
+			pending = append(pending, PendingWork{
+				Model:    fact.Model,
+				Engine:   fact.Engine,
+				Kind:     "validate_baseline",
+				Reason:   "baseline benchmark evidence missing for this ready combo",
+				Priority: 10,
+			})
+			continue
+		}
+		if longTarget := longContextProbeTarget(model.MaxContextLen); longTarget > 0 && state.MaxSuccessfulInput < longTarget {
+			pending = append(pending, PendingWork{
+				Model:  fact.Model,
+				Engine: fact.Engine,
+				Kind:   "validate_long_context",
+				Reason: fmt.Sprintf("long-context coverage missing (best successful input=%d, target=%d)", state.MaxSuccessfulInput, longTarget),
+				Benchmark: BenchmarkSpec{
+					Concurrency:      []int{1},
+					InputTokens:      []int{longTarget},
+					MaxTokens:        []int{256},
+					RequestsPerCombo: 3,
+				},
+				Priority: 20,
+			})
+		}
+		searchSpace := suggestedTuneSearchSpace(model, engine)
+		if !state.HasCompletedTune && len(searchSpace) > 0 {
+			pending = append(pending, PendingWork{
+				Model:       fact.Model,
+				Engine:      fact.Engine,
+				Kind:        "tune",
+				Reason:      "baseline exists and tunable search space remains unexplored",
+				SearchSpace: searchSpace,
+				Benchmark: BenchmarkSpec{
+					Concurrency:      []int{1},
+					InputTokens:      []int{128},
+					MaxTokens:        []int{256},
+					RequestsPerCombo: 3,
+				},
+				Priority: 30,
+			})
+		}
+	}
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].Priority != pending[j].Priority {
+			return pending[i].Priority < pending[j].Priority
+		}
+		if pending[i].Model != pending[j].Model {
+			return strings.ToLower(pending[i].Model) < strings.ToLower(pending[j].Model)
+		}
+		if pending[i].Engine != pending[j].Engine {
+			return strings.ToLower(pending[i].Engine) < strings.ToLower(pending[j].Engine)
+		}
+		return pending[i].Kind < pending[j].Kind
+	})
+	return pending
+}
+
+func meaningfulBenchmarkRecord(result *state.BenchmarkResult) bool {
+	if result == nil {
+		return false
+	}
+	if result.ThroughputTPS > 0 || result.QPS > 0 {
+		return true
+	}
+	for _, ptr := range []*float64{
+		result.ImagesPerSec,
+		result.AudioThroughput,
+		result.ASRThroughput,
+		result.RTFP50,
+		result.VideosPerHour,
+	} {
+		if ptr != nil && *ptr > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func parseBenchmarkBucketFloor(bucket string) int {
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" {
+		return 0
+	}
+	for _, sep := range []string{"-", "_"} {
+		if idx := strings.Index(bucket, sep); idx > 0 {
+			bucket = bucket[:idx]
+			break
+		}
+	}
+	v, _ := strconv.Atoi(bucket)
+	return v
+}
+
+func longContextProbeTarget(maxContext int) int {
+	if maxContext <= 8192 {
+		return 0
+	}
+	return bestBenchmarkTokenLevel(maxContext)
+}
+
+func suggestedTuneSearchSpace(model LocalModel, engine LocalEngine) map[string][]any {
+	if len(engine.TunableParams) == 0 {
+		return nil
+	}
+	space := make(map[string][]any)
+	for _, key := range []string{"gpu_memory_utilization", "mem_fraction_static"} {
+		if _, ok := engine.TunableParams[key]; ok {
+			space[key] = []any{0.7, 0.75, 0.8, 0.85, 0.9}
+		}
+	}
+	if model.MaxContextLen > 0 {
+		for _, key := range []string{"max_model_len", "context_length", "ctx_size", "max_context_tokens"} {
+			if _, ok := engine.TunableParams[key]; !ok {
+				continue
+			}
+			values := suggestedContextSearchValues(extractMaxModelLen(engine.TunableParams), model.MaxContextLen)
+			if len(values) > 1 {
+				space[key] = values
+			}
+		}
+	}
+	if len(space) == 0 {
+		return nil
+	}
+	return space
+}
+
+func suggestedContextSearchValues(current, maxAllowed int) []any {
+	if maxAllowed <= 0 {
+		return nil
+	}
+	if current <= 0 {
+		current = bestBenchmarkTokenLevel(minInt([]int{maxAllowed, 8192}))
+	}
+	high := bestBenchmarkTokenLevel(maxAllowed)
+	if current <= 0 || high <= 0 {
+		return nil
+	}
+	values := []int{current}
+	if high > current {
+		if mid := bestBenchmarkTokenLevel((current + high) / 2); mid > current && mid < high {
+			values = append(values, mid)
+		}
+		values = append(values, high)
+	}
+	values = normalizeTokenLevels(values)
+	if len(values) <= 1 {
+		return nil
+	}
+	result := make([]any, 0, len(values))
+	for _, value := range values {
+		result = append(result, value)
+	}
+	return result
+}
+
+func dedupeSkipCombos(skipCombos []SkipCombo) []SkipCombo {
+	if len(skipCombos) <= 1 {
+		return skipCombos
+	}
+	deduped := make([]SkipCombo, 0, len(skipCombos))
+	seen := make(map[string]struct{}, len(skipCombos))
+	for _, skip := range skipCombos {
+		key := strings.ToLower(strings.TrimSpace(skip.Model)) + "|" + strings.ToLower(strings.TrimSpace(skip.Engine))
+		if key == "|" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, skip)
+	}
+	sort.Slice(deduped, func(i, j int) bool {
+		if deduped[i].Model != deduped[j].Model {
+			return strings.ToLower(deduped[i].Model) < strings.ToLower(deduped[j].Model)
+		}
+		if deduped[i].Engine != deduped[j].Engine {
+			return strings.ToLower(deduped[i].Engine) < strings.ToLower(deduped[j].Engine)
+		}
+		return deduped[i].Reason < deduped[j].Reason
+	})
+	return deduped
+}
+
+func deriveModelScopeSkipCombos(comboFacts []ComboFact, skipCombos []SkipCombo) []SkipCombo {
+	if len(comboFacts) == 0 {
+		return nil
+	}
+	exactSkips := make(map[string]string, len(skipCombos))
+	modelSkips := make(map[string]struct{}, len(skipCombos))
+	for _, skip := range skipCombos {
+		model := strings.TrimSpace(skip.Model)
+		if model == "" {
+			continue
+		}
+		if strings.TrimSpace(skip.Engine) == "" {
+			modelSkips[strings.ToLower(model)] = struct{}{}
+			continue
+		}
+		exactSkips[strings.ToLower(planTaskComboKey(model, skip.Engine))] = strings.TrimSpace(skip.Reason)
+	}
+
+	type readyCombo struct {
+		engine string
+		reason string
+	}
+	readyByModel := make(map[string][]readyCombo)
+	for _, fact := range comboFacts {
+		if !strings.EqualFold(strings.TrimSpace(fact.Status), "ready") {
+			continue
+		}
+		model := strings.TrimSpace(fact.Model)
+		engine := strings.TrimSpace(fact.Engine)
+		if model == "" || engine == "" {
+			continue
+		}
+		reason := exactSkips[strings.ToLower(planTaskComboKey(model, engine))]
+		readyByModel[model] = append(readyByModel[model], readyCombo{engine: engine, reason: reason})
+	}
+
+	var derived []SkipCombo
+	for model, combos := range readyByModel {
+		if _, exists := modelSkips[strings.ToLower(model)]; exists {
+			continue
+		}
+		if len(combos) == 0 {
+			continue
+		}
+		allExhausted := true
+		reasons := make([]string, 0, len(combos))
+		seenReasons := make(map[string]struct{}, len(combos))
+		for _, combo := range combos {
+			if strings.TrimSpace(combo.reason) == "" {
+				allExhausted = false
+				break
+			}
+			if _, exists := seenReasons[combo.reason]; !exists {
+				seenReasons[combo.reason] = struct{}{}
+				reasons = append(reasons, combo.reason)
+			}
+		}
+		if !allExhausted {
+			continue
+		}
+		reason := "all ready combos exhausted on this device"
+		if len(reasons) == 1 {
+			reason = reasons[0]
+		}
+		derived = append(derived, SkipCombo{
+			Model:  model,
+			Reason: reason,
+		})
+	}
+	sort.Slice(derived, func(i, j int) bool {
+		return strings.ToLower(derived[i].Model) < strings.ToLower(derived[j].Model)
+	})
+	return derived
+}
+
+func deriveFamilyArtifactSkipCombos(localModels []LocalModel, localEngines []LocalEngine, comboFacts []ComboFact, skipCombos []SkipCombo, records []ExperimentRecord, runs []ExplorationRun) []SkipCombo {
+	if len(records) == 0 && len(runs) == 0 || len(comboFacts) == 0 {
+		return nil
+	}
+
+	type blockerGroup struct {
+		family     string
+		engine     string
+		artifact   string
+		summary    string
+		models     map[string]struct{}
+		modelCount int
+	}
+
+	familyByModel := make(map[string]string, len(localModels))
+	for _, model := range localModels {
+		name := strings.TrimSpace(model.Name)
+		if name == "" {
+			continue
+		}
+		family := strings.TrimSpace(model.Family)
+		if family == "" {
+			family = inferModelFamily(name)
+		}
+		familyByModel[strings.ToLower(name)] = family
+	}
+
+	engineArtifacts := make(map[string]string, len(localEngines)*2)
+	for _, engine := range localEngines {
+		artifact := strings.TrimSpace(engine.Artifact)
+		if artifact == "" {
+			continue
+		}
+		for _, alias := range []string{engine.Name, engine.Type} {
+			alias = strings.TrimSpace(alias)
+			if alias == "" {
+				continue
+			}
+			engineArtifacts[strings.ToLower(alias)] = artifact
+		}
+	}
+
+	comboArtifacts := make(map[string]string, len(comboFacts))
+	for _, fact := range comboFacts {
+		key := strings.ToLower(planTaskComboKey(fact.Model, fact.Engine))
+		if key == "" {
+			continue
+		}
+		artifact := strings.TrimSpace(fact.Artifact)
+		if artifact == "" {
+			artifact = engineArtifacts[strings.ToLower(strings.TrimSpace(fact.Engine))]
+		}
+		comboArtifacts[key] = artifact
+	}
+
+	exactSkips := make(map[string]struct{}, len(skipCombos))
+	modelSkips := make(map[string]struct{}, len(skipCombos))
+	for _, skip := range skipCombos {
+		model := strings.ToLower(strings.TrimSpace(skip.Model))
+		if model == "" {
+			continue
+		}
+		if strings.TrimSpace(skip.Engine) == "" {
+			modelSkips[model] = struct{}{}
+			continue
+		}
+		exactSkips[strings.ToLower(planTaskComboKey(skip.Model, skip.Engine))] = struct{}{}
+	}
+
+	groupBySignature := make(map[string]*blockerGroup)
+	groupByFrontier := make(map[string][]*blockerGroup)
+	addObservation := func(model, engine, artifact, signature, summary string) {
+		model = strings.TrimSpace(model)
+		engine = strings.TrimSpace(engine)
+		artifact = strings.TrimSpace(artifact)
+		if model == "" || engine == "" || artifact == "" || signature == "" {
+			return
+		}
+		family := strings.TrimSpace(familyByModel[strings.ToLower(model)])
+		if family == "" {
+			family = inferModelFamily(model)
+		}
+		if family == "" || family == "unknown" {
+			return
+		}
+		groupKey := strings.ToLower(family) + "|" + strings.ToLower(engine) + "|" + strings.ToLower(artifact) + "|" + signature
+		group := groupBySignature[groupKey]
+		if group == nil {
+			group = &blockerGroup{
+				family:   family,
+				engine:   engine,
+				artifact: artifact,
+				summary:  summary,
+				models:   make(map[string]struct{}),
+			}
+			groupBySignature[groupKey] = group
+			frontierKey := strings.ToLower(family) + "|" + strings.ToLower(engine) + "|" + strings.ToLower(artifact)
+			groupByFrontier[frontierKey] = append(groupByFrontier[frontierKey], group)
+		}
+		modelKey := strings.ToLower(model)
+		if _, exists := group.models[modelKey]; !exists {
+			group.models[modelKey] = struct{}{}
+			group.modelCount++
+		}
+	}
+	for _, rec := range records {
+		signature, summary := experimentFailureSignature(rec)
+		if signature == "" {
+			continue
+		}
+		model := strings.TrimSpace(rec.Task.Model)
+		engine := strings.TrimSpace(rec.Task.Engine)
+		comboKey := strings.ToLower(planTaskComboKey(model, engine))
+		artifact := strings.TrimSpace(comboArtifacts[comboKey])
+		if artifact == "" {
+			artifact = strings.TrimSpace(rec.Result.EngineImage)
+		}
+		if artifact == "" {
+			artifact = strings.TrimSpace(engineArtifacts[strings.ToLower(engine)])
+		}
+		addObservation(model, engine, artifact, signature, summary)
+	}
+	for _, run := range runs {
+		signature, summary := explorationRunFailureSignature(run)
+		if signature == "" {
+			continue
+		}
+		engine := strings.TrimSpace(run.EngineID)
+		model := strings.TrimSpace(run.ModelID)
+		artifact := strings.TrimSpace(engineArtifacts[strings.ToLower(engine)])
+		if artifact == "" {
+			continue
+		}
+		addObservation(model, engine, artifact, signature, summary)
+	}
+
+	var derived []SkipCombo
+	seenDerived := make(map[string]struct{})
+	for _, fact := range comboFacts {
+		if !strings.EqualFold(strings.TrimSpace(fact.Status), "ready") {
+			continue
+		}
+		model := strings.TrimSpace(fact.Model)
+		engine := strings.TrimSpace(fact.Engine)
+		if model == "" || engine == "" {
+			continue
+		}
+		modelKey := strings.ToLower(model)
+		if _, exists := modelSkips[modelKey]; exists {
+			continue
+		}
+		comboKey := strings.ToLower(planTaskComboKey(model, engine))
+		if _, exists := exactSkips[comboKey]; exists {
+			continue
+		}
+		family := strings.TrimSpace(familyByModel[modelKey])
+		if family == "" {
+			family = inferModelFamily(model)
+		}
+		if family == "" || family == "unknown" {
+			continue
+		}
+		artifact := strings.TrimSpace(fact.Artifact)
+		if artifact == "" {
+			artifact = strings.TrimSpace(comboArtifacts[comboKey])
+		}
+		if artifact == "" {
+			artifact = strings.TrimSpace(engineArtifacts[strings.ToLower(engine)])
+		}
+		if artifact == "" {
+			continue
+		}
+		frontierKey := strings.ToLower(family) + "|" + strings.ToLower(engine) + "|" + strings.ToLower(artifact)
+		groups := groupByFrontier[frontierKey]
+		var best *blockerGroup
+		for _, group := range groups {
+			if group == nil || group.modelCount < 2 {
+				continue
+			}
+			if best == nil || group.modelCount > best.modelCount {
+				best = group
+			}
+		}
+		if best == nil {
+			continue
+		}
+		if _, exists := seenDerived[comboKey]; exists {
+			continue
+		}
+		reason := fmt.Sprintf("repeated structural failure across %d %s-family models on %s: %s",
+			best.modelCount, best.family, best.artifact, best.summary)
+		derived = append(derived, SkipCombo{
+			Model:  model,
+			Engine: engine,
+			Reason: reason,
+		})
+		seenDerived[comboKey] = struct{}{}
+	}
+	return derived
+}
+
+func experimentFailureSignature(rec ExperimentRecord) (string, string) {
+	signal := experimentSignal(rec)
+	switch signal {
+	case "", "benchmark_ok", "completed", "unknown":
+		return "", ""
+	case "inference_no_output":
+		return signal, "benchmark matrix returned no successful output"
+	}
+	summary := extractFailureSummary(rec.Result.Error)
+	if summary == "" {
+		return "", ""
+	}
+	return signal + "|" + strings.ToLower(summary), summary
+}
+
+func explorationRunFailureSignature(run ExplorationRun) (string, string) {
+	status := strings.ToLower(strings.TrimSpace(run.Status))
+	if status != "failed" {
+		return "", ""
+	}
+	summary := extractFailureSummary(run.Error)
+	if summary == "" {
+		return "", ""
+	}
+	return "failed|" + strings.ToLower(summary), summary
+}
+
+func extractFailureSummary(errText string) string {
+	errText = strings.TrimSpace(errText)
+	if errText == "" {
+		return ""
+	}
+	matches := errorExcerptRe.FindAllString(errText, -1)
+	if len(matches) > 0 {
+		return compactFailureSummary(matches[len(matches)-1])
+	}
+	lines := strings.Split(errText, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := compactFailureSummary(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func compactFailureSummary(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	for _, marker := range []string{"ModuleNotFoundError:", "ValueError:", "RuntimeError:", "TypeError:", "AssertionError:"} {
+		if idx := strings.LastIndex(text, marker); idx >= 0 {
+			text = text[idx:]
+			break
+		}
+	}
+	if len(text) > 180 {
+		text = text[:177] + "..."
+	}
+	return text
+}
+
+func (e *Explorer) computePlanMetrics(plans []*ExplorerPlan, elapsed time.Duration, tokensUsed int) *PlanMetrics {
 	m := &PlanMetrics{
-		TotalTasks: len(plan.Tasks),
 		DurationS:  elapsed.Seconds(),
 		TokensUsed: tokensUsed,
 	}
-	for _, t := range plan.Tasks {
-		switch {
-		case t.Status == "completed":
-			m.Completed++
-			m.DiscoveryCount++
-		case t.Status == "failed":
-			m.Failed++
-		case strings.HasPrefix(t.Status, "skipped") || t.Status == "":
-			m.Skipped++
+	for _, plan := range plans {
+		if plan == nil {
+			continue
+		}
+		m.TotalTasks += len(plan.Tasks)
+		for _, t := range plan.Tasks {
+			switch {
+			case t.Status == "completed":
+				m.Completed++
+				m.DiscoveryCount++
+			case t.Status == "failed":
+				m.Failed++
+			case t.Status == "cancelled":
+				m.Skipped++
+			case strings.HasPrefix(t.Status, "skipped") || t.Status == "":
+				m.Skipped++
+			}
 		}
 	}
 	if m.TotalTasks > 0 {
@@ -1447,13 +3072,6 @@ func (e *Explorer) UpdateConfig(key, value string) (string, error) {
 			return "", fmt.Errorf("max_rounds must be a non-negative integer")
 		}
 		e.config.MaxRounds = n
-	case "max_plan_duration":
-		duration, err := time.ParseDuration(value)
-		if err != nil {
-			e.mu.Unlock()
-			return "", fmt.Errorf("parse max_plan_duration: %w", err)
-		}
-		e.config.MaxPlanDuration = duration
 	case "max_tokens_per_day":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 0 {
@@ -1476,12 +3094,11 @@ func (e *Explorer) UpdateConfig(key, value string) (string, error) {
 		}
 		e.config.MaxTasks = n
 	case "rounds_used":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 0 {
-			e.mu.Unlock()
-			return "", fmt.Errorf("rounds_used must be a non-negative integer")
-		}
-		e.roundsUsed = n
+		// Bug-4: rounds_used is a runtime counter, not a setting. Allowing users
+		// to overwrite it conflates persistent state with config and enables
+		// trivial budget resets. Use a separate reset tool if needed.
+		e.mu.Unlock()
+		return "", fmt.Errorf("rounds_used is read-only (runtime counter, not a setting)")
 	default:
 		e.mu.Unlock()
 		return "", fmt.Errorf("unknown explorer config key %q", key)
@@ -1490,6 +3107,12 @@ func (e *Explorer) UpdateConfig(key, value string) (string, error) {
 	e.config.Schedule = normalizeScheduleConfig(e.config.Schedule)
 	schedule := e.config.Schedule
 	normalized := e.configValueLocked(key)
+	// Bug-1: max_cycles / max_tasks are captured by the planner at construction.
+	// Rebuild it so the next plan phase honors the new budget instead of the
+	// value that was current at explorer startup.
+	if key == "max_cycles" || key == "max_tasks" {
+		e.setupPlannerLocked()
+	}
 	e.mu.Unlock()
 
 	e.scheduler.SetConfig(schedule)
@@ -1516,8 +3139,6 @@ func (e *Explorer) configValueLocked(key string) string {
 		return e.config.Mode
 	case "max_rounds":
 		return strconv.Itoa(e.config.MaxRounds)
-	case "max_plan_duration":
-		return e.config.MaxPlanDuration.String()
 	case "max_tokens_per_day":
 		return strconv.Itoa(e.config.MaxTokensPerDay)
 	case "max_cycles":
@@ -1575,15 +3196,44 @@ func extractAdvisoryConfig(payload map[string]any) map[string]any {
 		}
 		switch typed := value.(type) {
 		case map[string]any:
-			return typed
+			return sanitizeAdvisoryConfig(typed)
 		case string:
 			var parsed map[string]any
 			if err := json.Unmarshal([]byte(typed), &parsed); err == nil {
-				return parsed
+				return sanitizeAdvisoryConfig(parsed)
 			}
 		}
 	}
 	return nil
+}
+
+func sanitizeAdvisoryConfig(config map[string]any) map[string]any {
+	if len(config) == 0 {
+		return nil
+	}
+	sanitized := make(map[string]any, len(config))
+	for key, value := range config {
+		if advisoryScalarValue(value) {
+			sanitized[key] = value
+		}
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func advisoryScalarValue(value any) bool {
+	switch value.(type) {
+	case string, bool,
+		float64, float32,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		json.Number:
+		return true
+	default:
+		return false
+	}
 }
 
 func firstNonEmptyJSON(payload map[string]any, keys ...string) string {
@@ -1626,7 +3276,10 @@ func harvestToExperimentResult(status string, start time.Time, elapsed time.Dura
 			InputTokens:   r.InputTokens,
 			MaxTokens:     r.MaxTokens,
 			ThroughputTPS: r.Throughput,
+			LatencyP50Ms:  r.LatencyP50,
+			TTFTP50Ms:     r.TTFTP50,
 			TTFTP95Ms:     r.TTFTP95,
+			TPOTP50Ms:     r.TPOTP50,
 			TPOTP95Ms:     r.TPOTP95,
 			BenchmarkID:   r.BenchmarkID,
 			ConfigID:      r.ConfigID,
@@ -1679,8 +3332,11 @@ func benchmarkEntriesFromMatrixJSON(matrixJSON string) []BenchmarkEntry {
 				Error:         cell.Error,
 			}
 			if cell.Result != nil {
-				entry.ThroughputTPS = readFloatField(cell.Result, "throughput_tps")
+				entry.ThroughputTPS = primaryBenchmarkRate(cell.Result)
+				entry.LatencyP50Ms = primaryLatencyP50(cell.Result, cell.MaxTokens)
+				entry.TTFTP50Ms = readFloatField(cell.Result, "ttft_p50_ms")
 				entry.TTFTP95Ms = readFloatField(cell.Result, "ttft_p95_ms")
+				entry.TPOTP50Ms = readFloatField(cell.Result, "tpot_p50_ms")
 				entry.TPOTP95Ms = readFloatField(cell.Result, "tpot_p95_ms")
 			}
 			entries = append(entries, entry)
@@ -1699,20 +3355,94 @@ func readFloatField(summary map[string]any, key string) float64 {
 	return 0
 }
 
+func primaryBenchmarkRate(summary map[string]any) float64 {
+	for _, key := range []string{
+		"throughput_tps",
+		"images_per_sec",
+		"reranks_per_sec",
+		"embeddings_per_sec",
+		"asr_throughput",
+		"qps",
+	} {
+		if value := readFloatField(summary, key); value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func primaryLatencyP50(summary map[string]any, maxTokens int) float64 {
+	if summary == nil {
+		return 0
+	}
+	for _, key := range []string{
+		"latency_p50_ms",
+		"embedding_latency_p50_ms",
+		"rerank_latency_p50_ms",
+	} {
+		if value := readFloatField(summary, key); value > 0 {
+			return value
+		}
+	}
+	if value := readFloatField(summary, "video_latency_p50_s"); value > 0 {
+		return value * 1000
+	}
+	ttft := readFloatField(summary, "ttft_p50_ms")
+	tpot := readFloatField(summary, "tpot_p50_ms")
+	if ttft <= 0 && tpot <= 0 {
+		return 0
+	}
+	if maxTokens < 0 {
+		maxTokens = 0
+	}
+	return ttft + (float64(maxTokens) * tpot)
+}
+
 func readBenchmarkMetrics(summary map[string]any, result *HarvestResult) {
 	if result == nil {
 		return
 	}
-	if tp := readFloatField(summary, "throughput_tps"); tp > 0 {
+	if tp := primaryBenchmarkRate(summary); tp > 0 {
 		result.Throughput = tp
+	}
+	if ttft := readFloatField(summary, "ttft_p50_ms"); ttft > 0 {
+		result.TTFTP50 = ttft
 	}
 	if ttft := readFloatField(summary, "ttft_p95_ms"); ttft > 0 {
 		result.TTFTP95 = ttft
 	}
+	if tpot := readFloatField(summary, "tpot_p50_ms"); tpot > 0 {
+		result.TPOTP50 = tpot
+	}
 	if tpot := readFloatField(summary, "tpot_p95_ms"); tpot > 0 {
 		result.TPOTP95 = tpot
 	}
+	if latency := primaryLatencyP50(summary, result.MaxTokens); latency > 0 {
+		result.LatencyP50 = latency
+	}
 	if vram := readFloatField(summary, "vram_usage_mib"); vram > 0 {
 		result.VRAMMiB = vram
+	}
+}
+
+func readBenchmarkConfig(summary map[string]any, result *HarvestResult) {
+	if result == nil || summary == nil {
+		return
+	}
+	cfg, _ := summary["config"].(map[string]any)
+	if cfg == nil {
+		return
+	}
+	if concurrency, ok := cfg["concurrency"].(float64); ok && result.Concurrency <= 0 {
+		result.Concurrency = int(concurrency)
+	}
+	if inputTokens, ok := cfg["input_tokens"].(float64); ok && result.InputTokens <= 0 {
+		result.InputTokens = int(inputTokens)
+	}
+	if maxTokens, ok := cfg["max_tokens"].(float64); ok && result.MaxTokens <= 0 {
+		result.MaxTokens = int(maxTokens)
+	}
+	if latency := primaryLatencyP50(summary, result.MaxTokens); latency > 0 && result.LatencyP50 <= 0 {
+		result.LatencyP50 = latency
 	}
 }

@@ -157,13 +157,13 @@ Read facts and plan one task.
 }
 
 func TestPhasePromptsReferenceStructuredMemory(t *testing.T) {
-	if !containsAll(planPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "Ready Combos") {
+	if !containsAll(planPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "Ready Combos", "Pending Work", "search_space") {
 		t.Fatalf("plan prompt missing structured-memory guidance: %q", planPhaseSystemPrompt)
 	}
-	if !containsAll(checkPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "validated|tuned|provisional") {
+	if !containsAll(checkPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "validated|tuned|provisional", "Pending Work") {
 		t.Fatalf("check prompt missing structured-memory guidance: %q", checkPhaseSystemPrompt)
 	}
-	if !containsAll(actPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "Ready Combos") {
+	if !containsAll(actPhaseSystemPrompt, "Confirmed Blockers", "Do Not Retry This Cycle", "Evidence Ledger", "Ready Combos", "Pending Work", "search_space") {
 		t.Fatalf("act prompt missing structured-memory guidance: %q", actPhaseSystemPrompt)
 	}
 }
@@ -325,6 +325,89 @@ Done for now.
 	}
 }
 
+func TestAgentPlannerAnalyze_NotifiesPhaseObserver(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	summaryContent := `# Exploration Summary
+
+## Key Findings
+- one finding
+
+## Bugs And Failures
+- none
+
+## Confirmed Blockers
+` + "```yaml\n[]\n```\n\n" + `## Do Not Retry This Cycle
+` + "```yaml\n[]\n```\n\n" + `## Evidence Ledger
+` + "```yaml\n[]\n```\n\n" + `## Design Doubts
+- none
+
+## Recommended Configurations
+` + "```yaml\n[]\n```\n\n" + `## Current Strategy
+keep going
+
+## Next Cycle Candidates
+- test-model / vllm
+`
+	planContent := `# Exploration Plan
+
+## Objective
+Follow up.
+
+## Fact Snapshot
+- one fact
+
+## Task Board
+- [ ] validate test-model
+
+## Tasks
+` + "```yaml\n" + `- kind: validate
+  model: test-model
+  engine: vllm
+  engine_params: {}
+  benchmark:
+    concurrency: [1]
+    input_tokens: [128]
+    max_tokens: [256]
+    requests_per_combo: 3
+  reason: "follow-up"
+` + "```\n"
+
+	mock := &mockStreamingLLM{
+		responses: []Response{
+			{ToolCalls: []ToolCall{
+				{ID: "1", Name: "write", Arguments: `{"path":"summary.md","content":` + jsonEscape(summaryContent) + `}`},
+				{ID: "2", Name: "done", Arguments: `{"verdict":"continue"}`},
+			}},
+			{ToolCalls: []ToolCall{
+				{ID: "3", Name: "write", Arguments: `{"path":"plan.md","content":` + jsonEscape(planContent) + `}`},
+				{ID: "4", Name: "done", Arguments: `{}`},
+			}},
+		},
+	}
+
+	var phases []string
+	planner := NewExplorerAgentPlanner(mock, ws, WithAgentPhaseObserver(func(phase string) {
+		phases = append(phases, phase)
+	}))
+
+	verdict, extraTasks, _, err := planner.Analyze(context.Background())
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if verdict != "continue" {
+		t.Fatalf("verdict = %q, want continue", verdict)
+	}
+	if len(extraTasks) != 1 || extraTasks[0].Model != "test-model" {
+		t.Fatalf("extraTasks = %+v, want one follow-up task", extraTasks)
+	}
+	if strings.Join(phases, ",") != "check,act" {
+		t.Fatalf("phases = %v, want [check act]", phases)
+	}
+}
+
 func TestAgentPlannerAnalyze_AssistantOnlyContentDefaultsDone(t *testing.T) {
 	dir := t.TempDir()
 	ws := NewExplorerWorkspace(dir)
@@ -373,6 +456,103 @@ Done for now.
 	}
 	if len(configs) != 1 || configs[0].Model != "test-model" {
 		t.Errorf("recommendations: %+v", configs)
+	}
+}
+
+func TestFilterTaskSpecs_SanitizesEngineParamsToTunableSet(t *testing.T) {
+	planner := &ExplorerAgentPlanner{}
+	input := PlanInput{
+		LocalEngines: []LocalEngine{
+			{
+				Name: "vllm",
+				Type: "vllm",
+				TunableParams: map[string]any{
+					"gpu_memory_utilization": 0.9,
+					"tensor_parallel_size":   1,
+				},
+			},
+		},
+	}
+	tasks := []TaskSpec{
+		{
+			Kind:   "validate",
+			Model:  "test-model",
+			Engine: "vllm",
+			EngineParams: map[string]any{
+				"gpu_memory_utilization": 0.85,
+				"port":                   8001,
+				"unknown":                true,
+			},
+			Reason: "sanitize params",
+		},
+	}
+
+	filtered := planner.filterTaskSpecs(input, tasks)
+	if len(filtered) != 1 {
+		t.Fatalf("filtered len=%d, want 1", len(filtered))
+	}
+	if got := filtered[0].EngineParams; len(got) != 1 {
+		t.Fatalf("engine params = %#v, want only tunable params", got)
+	}
+	if got := filtered[0].EngineParams["gpu_memory_utilization"]; got != 0.85 {
+		t.Fatalf("gpu_memory_utilization = %#v, want 0.85", got)
+	}
+	if _, exists := filtered[0].EngineParams["port"]; exists {
+		t.Fatalf("unexpected port param survived sanitization: %#v", filtered[0].EngineParams)
+	}
+}
+
+func TestFilterTaskSpecs_TuneRequiresRealSearchSpace(t *testing.T) {
+	planner := &ExplorerAgentPlanner{}
+	input := PlanInput{
+		LocalEngines: []LocalEngine{
+			{
+				Name: "vllm",
+				Type: "vllm",
+				TunableParams: map[string]any{
+					"gpu_memory_utilization": 0.9,
+					"max_model_len":          8192,
+				},
+			},
+		},
+		ComboFacts: []ComboFact{
+			{Model: "test-model", Engine: "vllm", Status: "ready"},
+			{Model: "other-model", Engine: "vllm", Status: "ready"},
+		},
+	}
+	tasks := []TaskSpec{
+		{
+			Kind:   "tune",
+			Model:  "test-model",
+			Engine: "vllm",
+			EngineParams: map[string]any{
+				"gpu_memory_utilization": 0.85,
+			},
+			Reason: "pseudo tune",
+		},
+		{
+			Kind:   "tune",
+			Model:  "other-model",
+			Engine: "vllm",
+			EngineParams: map[string]any{
+				"max_model_len": 8192,
+			},
+			SearchSpace: map[string][]any{
+				"gpu_memory_utilization": []any{0.75, 0.85, 0.9},
+			},
+			Reason: "real tune",
+		},
+	}
+
+	filtered := planner.filterTaskSpecs(input, tasks)
+	if len(filtered) != 1 {
+		t.Fatalf("filtered len=%d, want 1", len(filtered))
+	}
+	if filtered[0].Model != "other-model" {
+		t.Fatalf("filtered task=%+v, want other-model", filtered[0])
+	}
+	if got := filtered[0].SearchSpace["max_model_len"]; len(got) != 1 || got[0] != 8192 {
+		t.Fatalf("fixed tune params should be merged into search_space, got %#v", filtered[0].SearchSpace)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jguan/aima/internal/agent"
+	"github.com/jguan/aima/internal/cloud"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
 
@@ -69,7 +71,7 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 
 	deps.ScenarioShow = func(ctx context.Context, name string) (json.RawMessage, error) {
 		for i := range cat.DeploymentScenarios {
-			if cat.DeploymentScenarios[i].Metadata.Name == name {
+			if strings.EqualFold(cat.DeploymentScenarios[i].Metadata.Name, name) {
 				ds := &cat.DeploymentScenarios[i]
 				return json.Marshal(map[string]any{
 					"name":                ds.Metadata.Name,
@@ -98,47 +100,27 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 	}
 
 	// Knowledge sync (K6)
-	syncHTTPClient := &http.Client{Timeout: 120 * time.Second}
+	// 600s accommodates LLM reasoning models (advise/scenario generate) that can exceed 2 min.
+	syncHTTPClient := &http.Client{Timeout: 600 * time.Second}
 	deps.SyncPush = func(ctx context.Context) (json.RawMessage, error) {
-		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
-		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
-		if endpoint == "" {
-			return nil, fmt.Errorf("central.endpoint not configured — use system.config set central.endpoint <url>")
+		deviceID, err := cloud.RequireRegistered(ctx, deps.GetConfig)
+		if err != nil {
+			return nil, err
 		}
+		endpoint := centralEndpoint(ctx, deps.GetConfig)
+		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
 		// Export local knowledge
 		exportData, err := deps.ExportKnowledge(ctx, json.RawMessage(`{}`))
 		if err != nil {
 			return nil, fmt.Errorf("export failed: %w", err)
 		}
-		// Transform export envelope to central's IngestPayload format.
-		var exportEnvelope struct {
-			Stats map[string]int `json:"stats"`
-			Data  struct {
-				Configurations   []json.RawMessage `json:"configurations"`
-				BenchmarkResults []json.RawMessage `json:"benchmark_results"`
-				KnowledgeNotes   []json.RawMessage `json:"knowledge_notes"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(exportData, &exportEnvelope); err != nil {
-			return nil, fmt.Errorf("parse export data: %w", err)
-		}
-
-		deviceID, _ := deps.GetConfig(ctx, "device.id")
 		hwTarget := edgeHardwareTarget(ctx, ac)
-
-		ingestPayload, err := json.Marshal(map[string]any{
-			"schema_version":  1,
-			"device_id":       deviceID,
-			"gpu_arch":        hwTarget.GPUArch,
-			"configurations":  exportEnvelope.Data.Configurations,
-			"benchmarks":      exportEnvelope.Data.BenchmarkResults,
-			"knowledge_notes": exportEnvelope.Data.KnowledgeNotes,
-		})
+		ingestPayload, exportStats, err := buildCentralIngestPayload(exportData, deviceID, hwTarget.GPUArch, hwTarget.HardwareProfile)
 		if err != nil {
-			return nil, fmt.Errorf("marshal ingest payload: %w", err)
+			return nil, fmt.Errorf("build ingest payload: %w", err)
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"/api/v1/ingest",
+		req, err := http.NewRequestWithContext(ctx, "POST", withDeviceID(endpoint+"/api/v1/ingest", deviceID),
 			strings.NewReader(string(ingestPayload)))
 		if err != nil {
 			return nil, err
@@ -149,12 +131,12 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 		}
 		resp, err := syncHTTPClient.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("push to central: %w", err)
+			return nil, fmt.Errorf("push to central %s: %w", endpoint, err)
 		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("central returned %d: %s", resp.StatusCode, string(body))
+			return nil, fmt.Errorf("central %s returned %d: %s", endpoint, resp.StatusCode, string(body))
 		}
 		_ = db.SetSyncTimestamp(ctx, "push")
 		return json.Marshal(map[string]any{
@@ -164,19 +146,20 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 			"device_id":        deviceID,
 			"hardware_profile": hwTarget.HardwareProfile,
 			"gpu_arch":         hwTarget.GPUArch,
-			"export_stats":     exportEnvelope.Stats,
+			"export_stats":     exportStats,
 			"ingest_result":    json.RawMessage(body),
 		})
 	}
 
 	deps.SyncPull = func(ctx context.Context) (json.RawMessage, error) {
-		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
-		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
-		if endpoint == "" {
-			return nil, fmt.Errorf("central.endpoint not configured — use system.config set central.endpoint <url>")
+		deviceID, err := cloud.RequireRegistered(ctx, deps.GetConfig)
+		if err != nil {
+			return nil, err
 		}
+		endpoint := centralEndpoint(ctx, deps.GetConfig)
+		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
 		since, _ := db.GetSyncTimestamp(ctx, "pull")
-		syncURL, err := buildSyncURL(endpoint, since)
+		syncURL, err := buildSyncURL(endpoint, since, deviceID)
 		if err != nil {
 			return nil, err
 		}
@@ -261,45 +244,56 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 	}
 
 	deps.SyncStatus = func(ctx context.Context) (json.RawMessage, error) {
-		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
+		endpoint := centralEndpoint(ctx, deps.GetConfig)
 		pushAt, _ := db.GetSyncTimestamp(ctx, "push")
 		pullAt, _ := db.GetSyncTimestamp(ctx, "pull")
 		connected := false
+		httpStatus := 0
+		var stats any
 		if endpoint != "" {
 			req, err := http.NewRequestWithContext(ctx, "GET", endpoint+"/api/v1/stats", nil)
 			if err == nil {
 				resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 				if err == nil {
+					httpStatus = resp.StatusCode
+					body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 					resp.Body.Close()
 					connected = resp.StatusCode == http.StatusOK
+					if len(body) > 0 {
+						if err := json.Unmarshal(body, &stats); err != nil {
+							stats = map[string]any{"raw": string(body)}
+						}
+					}
 				}
 			}
 		}
 		return json.Marshal(map[string]any{
-			"endpoint":  endpoint,
-			"connected": connected,
-			"last_push": pushAt,
-			"last_pull": pullAt,
+			"endpoint":    endpoint,
+			"connected":   connected,
+			"http_status": httpStatus,
+			"last_push":   pushAt,
+			"last_pull":   pullAt,
+			"stats":       stats,
 		})
 	}
 
 	// Sync v2: advisory pull, scenario requests, feedback (v0.4 integration)
 	deps.SyncPullAdvisories = func(ctx context.Context) (json.RawMessage, error) {
-		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
-		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
-		if endpoint == "" {
-			return nil, fmt.Errorf("central.endpoint not configured")
+		deviceID, err := cloud.RequireRegistered(ctx, deps.GetConfig)
+		if err != nil {
+			return nil, err
 		}
+		endpoint := centralEndpoint(ctx, deps.GetConfig)
+		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
 		hwTarget := edgeHardwareTarget(ctx, ac)
 		u := endpoint + "/api/v1/advisories"
 		params := url.Values{}
+		params.Set("device_id", deviceID)
 		if hwTarget.MatchValue != "" {
 			params.Set("hardware", hwTarget.MatchValue)
 		}
 		params.Set("status", "pending")
-		if len(params) > 0 {
-			u += "?" + params.Encode()
-		}
+		u += "?" + params.Encode()
 		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, err
@@ -329,20 +323,20 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 	}
 
 	deps.SyncPullScenarios = func(ctx context.Context) (json.RawMessage, error) {
-		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
-		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
-		if endpoint == "" {
-			return nil, fmt.Errorf("central.endpoint not configured")
+		deviceID, err := cloud.RequireRegistered(ctx, deps.GetConfig)
+		if err != nil {
+			return nil, err
 		}
+		endpoint := centralEndpoint(ctx, deps.GetConfig)
+		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
 		hwTarget := edgeHardwareTarget(ctx, ac)
 		u := endpoint + "/api/v1/scenarios"
 		params := url.Values{}
+		params.Set("device_id", deviceID)
 		if hwTarget.MatchValue != "" {
 			params.Set("hardware", hwTarget.MatchValue)
 		}
-		if len(params) > 0 {
-			u += "?" + params.Encode()
-		}
+		u += "?" + params.Encode()
 		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, err
@@ -371,11 +365,12 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 	}
 
 	deps.AdvisoryFeedback = func(ctx context.Context, advisoryID, feedbackStatus, reason string) (json.RawMessage, error) {
-		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
-		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
-		if endpoint == "" {
-			return nil, fmt.Errorf("central.endpoint not configured")
+		deviceID, err := cloud.RequireRegistered(ctx, deps.GetConfig)
+		if err != nil {
+			return nil, err
 		}
+		endpoint := centralEndpoint(ctx, deps.GetConfig)
+		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
 		normalizedStatus, accepted, err := normalizeFeedbackStatus(feedbackStatus)
 		if err != nil {
 			return nil, err
@@ -385,7 +380,7 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 			"accepted": accepted,
 		})
 		req, err := http.NewRequestWithContext(ctx, "POST",
-			endpoint+"/api/v1/advisories/"+advisoryID+"/feedback",
+			withDeviceID(endpoint+"/api/v1/advisories/"+advisoryID+"/feedback", deviceID),
 			strings.NewReader(string(payload)))
 		if err != nil {
 			return nil, err
@@ -413,15 +408,60 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 		})
 	}
 
-	deps.RequestAdvise = func(ctx context.Context, model, engine, intent string) (json.RawMessage, error) {
-		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
-		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
-		if endpoint == "" {
-			return nil, fmt.Errorf("central.endpoint not configured")
+	deps.ScenarioFeedback = func(ctx context.Context, scenarioID, feedbackStatus, reason string) (json.RawMessage, error) {
+		deviceID, err := cloud.RequireRegistered(ctx, deps.GetConfig)
+		if err != nil {
+			return nil, err
 		}
+		endpoint := centralEndpoint(ctx, deps.GetConfig)
+		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
+		status, accepted, err := normalizeScenarioFeedbackStatus(feedbackStatus)
+		if err != nil {
+			return nil, err
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"status":   status,
+			"feedback": reason,
+			"accepted": accepted,
+		})
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			withDeviceID(endpoint+"/api/v1/scenarios/"+scenarioID+"/feedback", deviceID),
+			strings.NewReader(string(payload)))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		resp, err := syncHTTPClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("send scenario feedback: %w", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("central returned %d: %s", resp.StatusCode, string(body))
+		}
+		return json.Marshal(map[string]any{
+			"scenario_id":        scenarioID,
+			"requested_status":   feedbackStatus,
+			"normalized_status":  status,
+			"feedback_submitted": true,
+		})
+	}
+
+	deps.RequestAdvise = func(ctx context.Context, model, engine, intent string) (json.RawMessage, error) {
+		deviceID, err := cloud.RequireRegistered(ctx, deps.GetConfig)
+		if err != nil {
+			return nil, err
+		}
+		endpoint := centralEndpoint(ctx, deps.GetConfig)
+		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
 		hwTarget := edgeHardwareTarget(ctx, ac)
 		payload, _ := json.Marshal(map[string]any{
 			"action":           "recommend",
+			"device_id":        deviceID,
 			"hardware":         hwTarget.MatchValue,
 			"hardware_profile": hwTarget.HardwareProfile,
 			"hardware_info":    hwTarget.Info,
@@ -430,7 +470,7 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 			"goal":             intent,
 			"intent":           intent,
 		})
-		req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"/api/v1/advise",
+		req, err := http.NewRequestWithContext(ctx, "POST", withDeviceID(endpoint+"/api/v1/advise", deviceID),
 			strings.NewReader(string(payload)))
 		if err != nil {
 			return nil, err
@@ -458,17 +498,19 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 	}
 
 	deps.RequestScenario = func(ctx context.Context, hardware string, models []string, goal string) (json.RawMessage, error) {
-		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
-		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
-		if endpoint == "" {
-			return nil, fmt.Errorf("central.endpoint not configured")
+		deviceID, err := cloud.RequireRegistered(ctx, deps.GetConfig)
+		if err != nil {
+			return nil, err
 		}
+		endpoint := centralEndpoint(ctx, deps.GetConfig)
+		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
 		payload, _ := json.Marshal(map[string]any{
-			"hardware": hardware,
-			"models":   models,
-			"goal":     goal,
+			"device_id": deviceID,
+			"hardware":  hardware,
+			"models":    models,
+			"goal":      goal,
 		})
-		req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"/api/v1/scenarios/generate",
+		req, err := http.NewRequestWithContext(ctx, "POST", withDeviceID(endpoint+"/api/v1/scenarios/generate", deviceID),
 			strings.NewReader(string(payload)))
 		if err != nil {
 			return nil, err
@@ -494,22 +536,22 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 	}
 
 	deps.ListCentralScenarios = func(ctx context.Context, hardware, source string) (json.RawMessage, error) {
-		endpoint, _ := deps.GetConfig(ctx, "central.endpoint")
-		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
-		if endpoint == "" {
-			return nil, fmt.Errorf("central.endpoint not configured")
+		deviceID, err := cloud.RequireRegistered(ctx, deps.GetConfig)
+		if err != nil {
+			return nil, err
 		}
+		endpoint := centralEndpoint(ctx, deps.GetConfig)
+		apiKey, _ := deps.GetConfig(ctx, "central.api_key")
 		u := endpoint + "/api/v1/scenarios"
 		params := url.Values{}
+		params.Set("device_id", deviceID)
 		if hardware != "" {
 			params.Set("hardware", hardware)
 		}
 		if source != "" {
 			params.Set("source", source)
 		}
-		if len(params) > 0 {
-			u += "?" + params.Encode()
-		}
+		u += "?" + params.Encode()
 		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, err
@@ -646,6 +688,83 @@ func buildIntegrationDeps(ac *appContext, deps *mcp.ToolDeps) {
 	}
 }
 
+func buildCentralIngestPayload(exportData []byte, deviceID, gpuArch, hwProfile string) ([]byte, map[string]int, error) {
+	var exportEnvelope struct {
+		Stats map[string]int `json:"stats"`
+		Data  struct {
+			Configurations   []json.RawMessage `json:"configurations"`
+			BenchmarkResults []json.RawMessage `json:"benchmark_results"`
+			KnowledgeNotes   []json.RawMessage `json:"knowledge_notes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(exportData, &exportEnvelope); err != nil {
+		return nil, nil, fmt.Errorf("parse export data: %w", err)
+	}
+
+	configs := make([]json.RawMessage, 0, len(exportEnvelope.Data.Configurations))
+	for _, raw := range exportEnvelope.Data.Configurations {
+		normalized, err := normalizeCentralIngestConfig(raw, hwProfile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("normalize config: %w", err)
+		}
+		configs = append(configs, normalized)
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"schema_version":   1,
+		"device_id":        deviceID,
+		"gpu_arch":         gpuArch,
+		"hardware_profile": hwProfile,
+		"configurations":   configs,
+		"benchmarks":       exportEnvelope.Data.BenchmarkResults,
+		"knowledge_notes":  exportEnvelope.Data.KnowledgeNotes,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal ingest payload: %w", err)
+	}
+	return payload, exportEnvelope.Stats, nil
+}
+
+func normalizeCentralIngestConfig(raw json.RawMessage, hwProfile string) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if cfgRaw, ok := fields["config"]; ok {
+		fields["config"] = normalizeEmbeddedJSONValue(cfgRaw)
+	}
+	// Inject hardware_profile per-config when the edge-local export omits it
+	// (edge schema stores hardware profile in the `hardware` column).
+	if hwProfile != "" {
+		if existing, ok := fields["hardware_profile"]; !ok || isJSONEmptyString(existing) {
+			encoded, _ := json.Marshal(hwProfile)
+			fields["hardware_profile"] = encoded
+		}
+	}
+	return json.Marshal(fields)
+}
+
+func isJSONEmptyString(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || string(trimmed) == `""` || string(trimmed) == "null"
+}
+
+func normalizeEmbeddedJSONValue(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '"' {
+		return raw
+	}
+	var encoded string
+	if err := json.Unmarshal(trimmed, &encoded); err != nil {
+		return raw
+	}
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" || !json.Valid([]byte(encoded)) {
+		return raw
+	}
+	return json.RawMessage(encoded)
+}
+
 // pullAdvisoriesToEventBus fetches advisories and scenarios from central
 // and publishes them as events on the EventBus for Explorer processing.
 func pullAdvisoriesToEventBus(ctx context.Context, ac *appContext, deps *mcp.ToolDeps) (advisories, scenarios []json.RawMessage, advisoryEvents, scenarioEvents int) {
@@ -740,17 +859,34 @@ func edgeHardwareTarget(ctx context.Context, ac *appContext) edgeHardwareMatch {
 	}
 }
 
-func buildSyncURL(endpoint, since string) (string, error) {
+func buildSyncURL(endpoint, since, deviceID string) (string, error) {
 	u, err := url.Parse(strings.TrimRight(endpoint, "/") + "/api/v1/sync")
 	if err != nil {
 		return "", err
 	}
+	q := u.Query()
 	if strings.TrimSpace(since) != "" {
-		q := u.Query()
 		q.Set("since", since)
-		u.RawQuery = q.Encode()
 	}
+	if strings.TrimSpace(deviceID) != "" {
+		q.Set("device_id", deviceID)
+	}
+	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+// withDeviceID appends ?device_id=X to the given URL (handling an existing
+// query string). Central's strict-mode middleware requires this parameter on
+// every scoped endpoint.
+func withDeviceID(rawURL, deviceID string) string {
+	if deviceID == "" {
+		return rawURL
+	}
+	sep := "?"
+	if strings.Contains(rawURL, "?") {
+		sep = "&"
+	}
+	return rawURL + sep + "device_id=" + url.QueryEscape(deviceID)
 }
 
 func normalizeFeedbackStatus(status string) (normalized string, accepted bool, err error) {
@@ -761,6 +897,26 @@ func normalizeFeedbackStatus(status string) (normalized string, accepted bool, e
 		return "rejected", false, nil
 	default:
 		return "", false, fmt.Errorf("unsupported advisory feedback status %q: use validated or rejected", status)
+	}
+}
+
+// normalizeScenarioFeedbackStatus accepts the four scenario outcome statuses
+// that Central's handleScenarioFeedback recognizes. `applied` means the edge
+// deployed the scenario; `rejected` / `deferred` / `failed` are terminal
+// non-success states. The bool is purely for the `accepted` convenience
+// field and is true only for `applied`.
+func normalizeScenarioFeedbackStatus(status string) (normalized string, accepted bool, err error) {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "applied", "accepted":
+		return "applied", true, nil
+	case "rejected":
+		return "rejected", false, nil
+	case "deferred":
+		return "deferred", false, nil
+	case "failed":
+		return "failed", false, nil
+	default:
+		return "", false, fmt.Errorf("unsupported scenario feedback status %q: use applied, rejected, deferred, or failed", status)
 	}
 }
 
@@ -1206,3 +1362,16 @@ func firstNonEmptyString(values ...string) string {
 var _ = strconv.Itoa
 var _ state.DB
 var _ = slog.Info
+
+const defaultCentralEndpoint = "https://aimaservice.ai/central"
+
+// centralEndpoint returns the configured central endpoint, falling back to the
+// production default (https://aimaservice.ai/central) when not explicitly set.
+// Users can override via: system.config set central.endpoint <url>
+func centralEndpoint(ctx context.Context, getConfig func(context.Context, string) (string, error)) string {
+	ep, _ := getConfig(ctx, "central.endpoint")
+	if ep == "" {
+		return defaultCentralEndpoint
+	}
+	return ep
+}

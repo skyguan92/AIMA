@@ -1,0 +1,19 @@
+Central store contract tests:
+- SQLite: PASS
+- Postgres: PASS
+
+Edge client shape comparison:
+- knowledge sync push/pull equivalent after stripping endpoint/device_id: True
+- knowledge advise equivalent after stripping advisory.id/advisory.created_at: True
+- scenario generate equivalent after stripping stored.id/stored.created_at/stored.updated_at: True
+- scenario list-central equivalent after stripping id/created_at/updated_at: True
+
+Raw timestamp samples from scenario list-central:
+- sqlite created_at: 2026-04-20T10:50:20Z
+- postgres created_at: 2026-04-20 18:51:20+08
+- sqlite updated_at: 2026-04-20T10:50:20Z
+- postgres updated_at: 2026-04-20 18:51:20+08
+
+Interpretation:
+- sync / advise / scenario.generate keep the same edge-facing JSON shape across both backends once volatile IDs and timestamps are ignored.
+- scenario.list-central exposes a backend-specific timestamp string format difference in raw output.

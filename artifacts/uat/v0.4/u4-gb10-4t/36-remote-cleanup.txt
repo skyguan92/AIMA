@@ -1,0 +1,5 @@
+cleaned
+---
+3535220 bash -lc set -e; if [ -f ~/aima-uat/u4/serve.pid ]; then pid=$(cat ~/aima-uat/u4/serve.pid); kill "$pid" 2>/dev/null || true; sleep 2; kill -9 "$pid" 2>/dev/null || true; fi; docker rm -f glm-4-1v-9b-thinking-vllm-nightly >/dev/null 2>&1 || true; rm -rf ~/aima-uat/u4; echo cleaned; echo ---; pgrep -af "aima-uat/u4|glm-4-1v-9b-thinking-vllm-nightly|127.0.0.1:9184|127.0.0.1:6284" || true; echo ---; docker ps --format "table {{.Names}}\t{{.Status}}" | sed -n "1,10p"
+---
+NAMES     STATUS

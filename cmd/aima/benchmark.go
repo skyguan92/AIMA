@@ -41,7 +41,48 @@ type benchmarkMetricsWindow struct {
 }
 
 var benchmarkMetricsSampleInterval = time.Second
+
+// unifiedMemoryRatioLow/High define the VRAM-to-RAM ratio band that identifies
+// unified memory systems (e.g., NVIDIA GB10, Apple Silicon) where VRAM and RAM
+// report nearly identical values from the same physical memory pool.
+const (
+	unifiedMemoryRatioLow  = 0.90
+	unifiedMemoryRatioHigh = 1.10
+)
+
+func isUnifiedMemory(vramMiB, ramMiB int) bool {
+	if vramMiB <= 0 || ramMiB <= 0 {
+		return false
+	}
+	ratio := float64(vramMiB) / float64(ramMiB)
+	return ratio > unifiedMemoryRatioLow && ratio < unifiedMemoryRatioHigh
+}
+
 var executeBenchmarkRun = benchpkg.Run
+
+// defaultChatRequester creates a ChatRequester from RunConfig for backward compatibility.
+func defaultChatRequester(cfg benchpkg.RunConfig) *benchpkg.ChatRequester {
+	return &benchpkg.ChatRequester{
+		Model:          cfg.Model,
+		MaxTokens:      cfg.MaxTokens,
+		InputTokens:    cfg.InputTokens,
+		Temperature:    cfg.Temperature,
+		APIKey:         cfg.APIKey,
+		Timeout:        cfg.Timeout,
+		MinOutputRatio: cfg.MinOutputRatio,
+		MaxRetries:     cfg.MaxRetries,
+		RetryDelay:     cfg.RetryDelay,
+	}
+}
+
+func storageBenchmarkModality(modality string) string {
+	switch strings.ToLower(strings.TrimSpace(modality)) {
+	case "", "llm", "text":
+		return "text"
+	default:
+		return strings.ToLower(strings.TrimSpace(modality))
+	}
+}
 
 var collectBenchmarkSystemMetrics = func(ctx context.Context) benchmarkSystemMetrics {
 	var metrics benchmarkSystemMetrics
@@ -109,6 +150,13 @@ func (w *benchmarkMetricsWindow) snapshot() benchmarkSystemMetrics {
 }
 
 func runBenchmarkWithMetrics(ctx context.Context, cfg benchpkg.RunConfig) (*benchpkg.RunResult, benchmarkSystemMetrics, error) {
+	return runBenchmarkWithMetricsAndRequester(ctx, cfg, defaultChatRequester(cfg))
+}
+
+func runBenchmarkWithMetricsAndRequester(ctx context.Context, cfg benchpkg.RunConfig, req benchpkg.Requester) (*benchpkg.RunResult, benchmarkSystemMetrics, error) {
+	// Capture baseline metrics before benchmark for delta calculation
+	baseline := collectBenchmarkSystemMetrics(ctx)
+
 	window := &benchmarkMetricsWindow{}
 	sampleCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -130,7 +178,7 @@ func runBenchmarkWithMetrics(ctx context.Context, cfg benchpkg.RunConfig) (*benc
 		}
 	}()
 
-	result, err := executeBenchmarkRun(ctx, cfg)
+	result, err := executeBenchmarkRun(ctx, cfg, req)
 	window.observe(collectBenchmarkSystemMetrics(ctx))
 	cancel()
 	wg.Wait()
@@ -139,6 +187,33 @@ func runBenchmarkWithMetrics(ctx context.Context, cfg benchpkg.RunConfig) (*benc
 	if metrics == (benchmarkSystemMetrics{}) {
 		metrics = collectBenchmarkSystemMetrics(ctx)
 	}
+
+	// Apply M2 honesty rule: only report memory numbers we can actually
+	// attribute to this benchmark run. The host-level probe (nvidia-smi,
+	// mthreads-smi, /proc) sees every tenant on the device; for containerised
+	// or remote engines the raw peak can reflect unrelated workloads, so we
+	// always report delta-over-baseline. If the peak never rose above the
+	// baseline, the probe is unreliable for this run and we emit 0 (NULL in
+	// the DB via COALESCE), rather than a misleading absolute value.
+	if metrics.VRAMUsageMiB > 0 || baseline.VRAMUsageMiB > 0 {
+		if metrics.VRAMUsageMiB > baseline.VRAMUsageMiB {
+			metrics.VRAMUsageMiB -= baseline.VRAMUsageMiB
+		} else {
+			slog.Debug("benchmark metrics: VRAM probe did not observe engine delta, dropping",
+				"baseline_mib", baseline.VRAMUsageMiB, "peak_mib", metrics.VRAMUsageMiB)
+			metrics.VRAMUsageMiB = 0
+		}
+	}
+	if metrics.RAMUsageMiB > 0 || baseline.RAMUsageMiB > 0 {
+		if metrics.RAMUsageMiB > baseline.RAMUsageMiB {
+			metrics.RAMUsageMiB -= baseline.RAMUsageMiB
+		} else {
+			slog.Debug("benchmark metrics: RAM probe did not observe engine delta, dropping",
+				"baseline_mib", baseline.RAMUsageMiB, "peak_mib", metrics.RAMUsageMiB)
+			metrics.RAMUsageMiB = 0
+		}
+	}
+
 	return result, metrics, err
 }
 
@@ -162,6 +237,12 @@ func resourceUsageMap(metrics benchmarkSystemMetrics) map[string]any {
 			}
 		}
 	}
+
+	// Flag unified memory systems for downstream consumers.
+	if isUnifiedMemory(metrics.VRAMUsageMiB, metrics.RAMUsageMiB) {
+		resourceUsage["unified_memory"] = true
+	}
+
 	return resourceUsage
 }
 
@@ -288,19 +369,32 @@ func refreshPerfVectors(ctx context.Context, kStore *knowledge.Store) {
 
 // saveBenchmarkResult saves a benchmark result and its configuration to the DB.
 // Returns (benchmarkID, configID, saved benchmark row) or error.
-// B12: Skip saving when throughput is zero — indicates no real inference happened.
 func saveBenchmarkResult(ctx context.Context, db *state.DB, hardware, engineID, model string,
-	result *benchpkg.RunResult, deployConfig map[string]any, metrics benchmarkSystemMetrics, concurrency, inputTokens, maxTokens int, notes string) (string, string, *state.BenchmarkResult, error) {
-	if result.ThroughputTPS <= 0 {
-		return "", "", nil, fmt.Errorf("zero throughput — no inference service responded; benchmark not saved")
+	modality string, result *benchpkg.RunResult, deployConfig map[string]any, metrics benchmarkSystemMetrics, concurrency int, notes string) (string, string, *state.BenchmarkResult, error) {
+	if result == nil {
+		return "", "", nil, fmt.Errorf("benchmark result is nil")
 	}
+	// Bug-7: reject phantom rows that have no runtime evidence at all — this
+	// happens when tune's best-config redeploy path copies throughput/TTFT from
+	// the best scoring cell into a new row but never ran any request against it.
+	// A genuine benchmark always has TotalRequests > 0 OR SuccessfulReqs > 0
+	// (e.g., reranker zero-output evidence sets SuccessfulReqs but TotalRequests=0
+	// is impossible in practice); be permissive about which counter is set, but
+	// require at least one.
+	if result.TotalRequests <= 0 && result.SuccessfulReqs <= 0 {
+		return "", "", nil, fmt.Errorf("benchmark has no request counters — not saved")
+	}
+	if result.ThroughputTPS <= 0 && result.QPS <= 0 && result.ReranksPerSec <= 0 {
+		return "", "", nil, fmt.Errorf("benchmark has no throughput/QPS signal — not saved")
+	}
+	// v0.4 §10.1: configurations are deploy-level. Never mix cell-level
+	// benchmark params (concurrency/input_tokens/max_tokens) into the hash —
+	// doing so multiplies one deploy into one config row per matrix cell and
+	// corrupts frontier/dedup. Empty deploy config is acceptable (all cells
+	// share a single anchor configuration for this model×engine×hardware).
 	config := deployConfig
-	if len(config) == 0 {
-		config = map[string]any{
-			"concurrency":  concurrency,
-			"max_tokens":   maxTokens,
-			"input_tokens": inputTokens,
-		}
+	if config == nil {
+		config = map[string]any{}
 	}
 	configJSON, _ := json.Marshal(config)
 	configHash := fmt.Sprintf("%x", sha256.Sum256(
@@ -310,29 +404,31 @@ func saveBenchmarkResult(ctx context.Context, db *state.DB, hardware, engineID, 
 	if err != nil {
 		return "", "", nil, fmt.Errorf("find config: %w", err)
 	}
+	var newCfg *state.Configuration
+	configID := ""
 	if existingCfg == nil {
-		existingCfg = &state.Configuration{
+		newCfg = &state.Configuration{
 			ID: configHash[:16], HardwareID: hardware,
 			EngineID: engineID, ModelID: model,
 			Config: string(configJSON), ConfigHash: configHash,
 			Status: "experiment", Source: "benchmark",
 		}
-		if err := db.InsertConfiguration(ctx, existingCfg); err != nil {
-			return "", "", nil, fmt.Errorf("create configuration: %w", err)
-		}
+		configID = newCfg.ID
+	} else {
+		configID = existingCfg.ID
 	}
 
 	benchmarkID := fmt.Sprintf("%x", sha256.Sum256(
-		[]byte(existingCfg.ID+"|"+fmt.Sprintf("%d", time.Now().UnixNano()))))[:16]
+		[]byte(configID+"|"+fmt.Sprintf("%d", time.Now().UnixNano()))))[:16]
 
 	if metrics == (benchmarkSystemMetrics{}) {
 		metrics = collectBenchmarkSystemMetrics(ctx)
 	}
 	br := &state.BenchmarkResult{
-		ID: benchmarkID, ConfigID: existingCfg.ID, Concurrency: concurrency,
+		ID: benchmarkID, ConfigID: configID, Concurrency: concurrency,
 		InputLenBucket:  tokenBucket(result.AvgInputTokens),
 		OutputLenBucket: tokenBucket(result.AvgOutputTokens),
-		Modality:        "text",
+		Modality:        storageBenchmarkModality(modality),
 		TTFTP50ms:       result.TTFTP50ms, TTFTP95ms: result.TTFTP95ms, TTFTP99ms: result.TTFTP99ms,
 		TPOTP50ms: result.TPOTP50ms, TPOTP95ms: result.TPOTP95ms,
 		ThroughputTPS: result.ThroughputTPS, QPS: result.QPS,
@@ -345,19 +441,27 @@ func saveBenchmarkResult(ctx context.Context, db *state.DB, hardware, engineID, 
 		SampleCount:    result.TotalRequests,
 		DurationS:      int(result.DurationMs / 1000),
 		TestedAt:       time.Now(),
-		Stability:      stabilityFromCV(result.TTFTCVPct),
+		Stability:      deriveStability(result.TTFTCVPct, result.ErrorRate),
 		Notes:          notes,
 	}
-	if err := db.InsertBenchmarkResult(ctx, br); err != nil {
+	// v0.4 §10.1 invariant: config + benchmark must land together or neither.
+	if err := db.InsertConfigurationAndBenchmarkResult(ctx, existingCfg, newCfg, br); err != nil {
 		return "", "", nil, fmt.Errorf("save benchmark result: %w", err)
 	}
-	return benchmarkID, existingCfg.ID, br, nil
+	return benchmarkID, configID, br, nil
 }
 
 // maybeAutoPromote promotes a config to golden if its benchmark throughput beats
 // the current golden by >5%. Returns (promoted, oldGoldenID).
-func maybeAutoPromote(ctx context.Context, db *state.DB, newConfigID string, newThroughput float64, hardware, engine, model string) (bool, string) {
-	goldenCfg, goldenBench, err := db.FindGoldenBenchmark(ctx, hardware, engine, model)
+// Golden status is configuration-level today, not modality-level, so automatic
+// promotion is intentionally limited to text benchmarks until the schema grows
+// explicit modality-scoped golden state.
+func maybeAutoPromote(ctx context.Context, db *state.DB, newConfigID string, newThroughput float64, hardware, engine, model, modality string) (bool, string) {
+	modality = storageBenchmarkModality(modality)
+	if modality != "text" {
+		return false, ""
+	}
+	goldenCfg, goldenBench, err := db.FindGoldenBenchmark(ctx, hardware, engine, model, modality)
 	if err != nil {
 		slog.Warn("auto-promote: failed to query golden", "error", err)
 		return false, ""
@@ -487,8 +591,14 @@ func tokenBucket(tokens int) string {
 	}
 }
 
-// stabilityFromCV derives a stability label from coefficient of variation (percentage).
-func stabilityFromCV(cvPct float64) string {
+// deriveStability derives a stability label from TTFT coefficient of variation
+// and error rate. High error rates short-circuit to "unstable" regardless of
+// latency variance — a cell that fails more than half of its requests cannot
+// be called stable even if the few successes clustered tightly.
+func deriveStability(cvPct, errorRate float64) string {
+	if errorRate >= 0.5 {
+		return "unstable"
+	}
 	switch {
 	case cvPct <= 15:
 		return "stable"

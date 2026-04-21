@@ -98,6 +98,61 @@ func TestResolveIncludesCompatibilityMetadata(t *testing.T) {
 	}
 }
 
+func TestInferEngineTypeSkipsUnsupportedVariants(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{Name: "blocked-engine", Type: "blocked-engine"},
+				Hardware: EngineHardware{GPUArch: "*"},
+				Amplifier: EngineAmplifier{
+					PerformanceMultiplier: 10,
+				},
+			},
+			{
+				Metadata: EngineMetadata{Name: "good-engine", Type: "good-engine"},
+				Hardware: EngineHardware{GPUArch: "*"},
+				Amplifier: EngineAmplifier{
+					PerformanceMultiplier: 1,
+				},
+			},
+		},
+		ModelAssets: []ModelAsset{
+			{
+				Metadata: ModelMetadata{Name: "demo-model"},
+				Variants: []ModelVariant{
+					{
+						Name:   "demo-model-blocked",
+						Engine: "blocked-engine",
+						Format: "safetensors",
+						Hardware: ModelVariantHardware{
+							GPUArch: "*",
+						},
+						Compatibility: ModelCompatibility{
+							UnsupportedReason: "blocked by catalog",
+						},
+					},
+					{
+						Name:   "demo-model-good",
+						Engine: "good-engine",
+						Format: "safetensors",
+						Hardware: ModelVariantHardware{
+							GPUArch: "*",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	engine, err := cat.InferEngineType("demo-model", HardwareInfo{GPUArch: "Blackwell"})
+	if err != nil {
+		t.Fatalf("InferEngineType: %v", err)
+	}
+	if engine != "good-engine" {
+		t.Fatalf("InferEngineType = %q, want good-engine", engine)
+	}
+}
+
 func TestResolveWildcardEngine(t *testing.T) {
 	cat := mustLoadCatalog(t)
 
@@ -275,6 +330,69 @@ func TestResolvePrefersExactEngineAssetVariant(t *testing.T) {
 	}
 }
 
+// TestResolveCarriesEngineAssetName verifies the U9 label-drift fix: when
+// the user passes an engine type alias (e.g. "vllm-nightly"), the resolved
+// ResolvedConfig must expose the concrete asset metadata.name via
+// EngineAssetName (e.g. "vllm-nightly-blackwell") so the downstream
+// aima.dev/engine label matches what runtime/progress.go's findEngineAsset
+// looks up. Resolver.Engine keeps the original alias for CLI/DB key
+// stability, but EngineAssetName is the canonical label key.
+func TestResolveCarriesEngineAssetName(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{
+					Name: "vllm-nightly-blackwell", Type: "vllm-nightly", Version: "1.0",
+					SupportedFormats: []string{"safetensors"},
+				},
+				Hardware: EngineHardware{GPUArch: "Blackwell"},
+				Startup: EngineStartup{
+					DefaultArgs: map[string]any{"gpu_memory_utilization": 0.9},
+					HealthCheck: HealthCheck{Path: "/health", TimeoutS: 300},
+				},
+				Image: EngineImage{Name: "vllm/vllm-openai", Tag: "nightly-blackwell"},
+			},
+			{
+				Metadata: EngineMetadata{
+					Name: "vllm-nightly-ada", Type: "vllm-nightly", Version: "1.0",
+					SupportedFormats: []string{"safetensors"},
+				},
+				Hardware: EngineHardware{GPUArch: "Ada"},
+				Startup: EngineStartup{
+					DefaultArgs: map[string]any{"gpu_memory_utilization": 0.9},
+					HealthCheck: HealthCheck{Path: "/health", TimeoutS: 300},
+				},
+				Image: EngineImage{Name: "vllm/vllm-openai", Tag: "nightly-ada"},
+			},
+		},
+		ModelAssets: []ModelAsset{
+			{
+				Metadata: ModelMetadata{Name: "demo-model", Type: "llm"},
+				Variants: []ModelVariant{{
+					Name:     "demo-blackwell",
+					Hardware: ModelVariantHardware{GPUArch: "Blackwell", VRAMMinMiB: 0},
+					Engine:   "vllm-nightly", // type alias
+					Format:   "safetensors",
+				}},
+			},
+		},
+	}
+
+	hw := HardwareInfo{GPUArch: "Blackwell", GPUVRAMMiB: 120000, GPUCount: 1}
+	resolved, err := cat.Resolve(hw, "demo-model", "vllm-nightly", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.Engine != "vllm-nightly" {
+		t.Errorf("resolved.Engine = %q, want %q (type alias preserved for CLI/DB stability)",
+			resolved.Engine, "vllm-nightly")
+	}
+	if resolved.EngineAssetName != "vllm-nightly-blackwell" {
+		t.Fatalf("resolved.EngineAssetName = %q, want %q (asset metadata.name keys the aima.dev/engine label)",
+			resolved.EngineAssetName, "vllm-nightly-blackwell")
+	}
+}
+
 func TestBuildSyntheticModelAsset(t *testing.T) {
 	// Build a catalog with engines that declare supported_formats.
 	// This mirrors the real catalog: llamacpp supports gguf, vllm supports safetensors.
@@ -340,6 +458,118 @@ func TestBuildSyntheticModelAsset(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResolveCatalogModelName(t *testing.T) {
+	cat := &Catalog{
+		ModelAssets: []ModelAsset{
+			{Metadata: ModelMetadata{
+				Name:    "qwen3-emb-0.6b",
+				Aliases: []string{"Qwen3-Embedding-0.6B", "qwen3-embedding-0.6b"},
+			}},
+			{Metadata: ModelMetadata{
+				Name:    "qwen3-8b",
+				Aliases: []string{"Qwen3-8B-junhowie", "gptq-Qwen3-8B-junhowie"},
+			}},
+			{Metadata: ModelMetadata{Name: "llama-3.1-8b"}},
+		},
+	}
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"alias exact case", "Qwen3-Embedding-0.6B", "qwen3-emb-0.6b"},
+		{"alias lowercase", "qwen3-embedding-0.6b", "qwen3-emb-0.6b"},
+		{"quant-prefixed alias", "gptq-Qwen3-8B-junhowie", "qwen3-8b"},
+		{"canonical name passthrough", "qwen3-8b", "qwen3-8b"},
+		{"canonical name different case", "LLaMA-3.1-8B", "llama-3.1-8b"},
+		{"no match returns input", "some-unknown-model", "some-unknown-model"},
+		{"empty returns empty", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cat.resolveCatalogModelName(tt.in); got != tt.want {
+				t.Fatalf("resolveCatalogModelName(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildSyntheticModelAssetDisallowsMooerForNonASRSafetensors(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{
+					Name: "mooer-test", Type: "mooer", Version: "1.0",
+					SupportedFormats: []string{"safetensors"},
+				},
+				Hardware: EngineHardware{GPUArch: "MUSA"},
+			},
+			{
+				Metadata: EngineMetadata{
+					Name: "vllm-test", Type: "vllm", Version: "1.0",
+					Default: true, SupportedFormats: []string{"safetensors"},
+				},
+				Hardware: EngineHardware{GPUArch: "MUSA"},
+			},
+		},
+	}
+	hw := HardwareInfo{GPUArch: "MUSA", GPUVRAMMiB: 32768}
+
+	llm := cat.BuildSyntheticModelAsset(ScanMetadata{
+		Name: "synthetic-llm", Type: "llm", Format: "safetensors",
+	}, hw)
+	if llm.Variants[0].Engine != "vllm" {
+		t.Fatalf("llm synthetic engine = %q, want vllm", llm.Variants[0].Engine)
+	}
+	for _, v := range llm.Variants {
+		if v.Engine == "mooer" {
+			t.Fatalf("llm synthetic should not include mooer fallback: %+v", llm.Variants)
+		}
+	}
+
+	emb := cat.BuildSyntheticModelAsset(ScanMetadata{
+		Name: "synthetic-emb", Type: "embedding", Format: "safetensors",
+	}, hw)
+	if emb.Variants[0].Engine != "vllm" {
+		t.Fatalf("embedding synthetic engine = %q, want vllm", emb.Variants[0].Engine)
+	}
+	for _, v := range emb.Variants {
+		if v.Engine == "mooer" {
+			t.Fatalf("embedding synthetic should not include mooer fallback: %+v", emb.Variants)
+		}
+	}
+}
+
+func TestBuildSyntheticModelAssetKeepsMooerForASR(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{
+					Name: "mooer-test", Type: "mooer", Version: "1.0",
+					SupportedFormats: []string{"safetensors"},
+				},
+				Hardware: EngineHardware{GPUArch: "MUSA"},
+			},
+			{
+				Metadata: EngineMetadata{
+					Name: "vllm-test", Type: "vllm", Version: "1.0",
+					Default: true, SupportedFormats: []string{"safetensors"},
+				},
+				Hardware: EngineHardware{GPUArch: "MUSA"},
+			},
+		},
+	}
+	hw := HardwareInfo{GPUArch: "MUSA", GPUVRAMMiB: 32768}
+	asr := cat.BuildSyntheticModelAsset(ScanMetadata{
+		Name: "synthetic-asr", Type: "asr", Format: "safetensors",
+	}, hw)
+	if asr.Variants[0].Engine != "mooer" {
+		t.Fatalf("asr synthetic engine = %q, want mooer", asr.Variants[0].Engine)
 	}
 }
 
@@ -425,6 +655,13 @@ func TestBuildSyntheticWithHardware(t *testing.T) {
 					SupportedFormats: []string{"safetensors"},
 				},
 				Hardware: EngineHardware{GPUArch: "*"},
+				// Production vLLM YAMLs declare these knobs in default_args;
+				// the synthetic config path now strictly honors the declaration
+				// (INV-1 U6/U10 fix).
+				Startup: EngineStartup{DefaultArgs: map[string]any{
+					"gpu_memory_utilization": 0.90,
+					"max_model_len":          8192,
+				}},
 			},
 			{
 				Metadata: EngineMetadata{
@@ -1582,6 +1819,117 @@ func TestFindEngineByName(t *testing.T) {
 	}
 }
 
+func TestFindEngineByName_WildcardPreferredOverMismatch(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{Name: "eng-platform-a", Type: "eng", Version: "1.0"},
+				Hardware: EngineHardware{GPUArch: "PlatformA"},
+				Image:    EngineImage{Name: "img/eng", Tag: "platform-a"},
+			},
+			{
+				Metadata: EngineMetadata{Name: "eng-universal", Type: "eng", Version: "1.0"},
+				Hardware: EngineHardware{GPUArch: "*"},
+				Image:    EngineImage{Name: "img/eng", Tag: "universal"},
+			},
+		},
+	}
+
+	// Query with unrelated arch should prefer wildcard, not first type match.
+	ea := cat.FindEngineByName("eng", HardwareInfo{GPUArch: "UnrelatedArch"})
+	if ea == nil {
+		t.Fatal("expected non-nil")
+	}
+	if ea.Metadata.Name != "eng-universal" {
+		t.Errorf("Name = %q, want eng-universal (wildcard should be preferred over platform mismatch)", ea.Metadata.Name)
+	}
+
+	// Exact arch match should still win over wildcard.
+	ea = cat.FindEngineByName("eng", HardwareInfo{GPUArch: "PlatformA"})
+	if ea == nil {
+		t.Fatal("expected non-nil")
+	}
+	if ea.Metadata.Name != "eng-platform-a" {
+		t.Errorf("Name = %q, want eng-platform-a (exact arch match should win)", ea.Metadata.Name)
+	}
+}
+
+// TestFindEngine_BlockedButLocalImageCached covers the unblock-on-local-cache
+// path: an engine marked `status: blocked` (typically because its image was
+// removed from public registries) should still be selectable when the device
+// has the image in its local runtime. Without an image checker, the engine
+// stays blocked.
+func TestFindEngine_BlockedButLocalImageCached(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{
+					Name:         "vllm-nightly-blackwell",
+					Type:         "vllm-nightly",
+					Version:      "nightly",
+					Status:       "blocked",
+					StatusReason: "image vllm/vllm-openai:qwen3_5-cu130 does not exist in any registry",
+				},
+				Hardware: EngineHardware{GPUArch: "Blackwell"},
+				Image:    EngineImage{Name: "vllm/vllm-openai", Tag: "qwen3_5-cu130"},
+			},
+		},
+	}
+	hw := HardwareInfo{GPUArch: "Blackwell"}
+
+	t.Run("no checker keeps engine blocked", func(t *testing.T) {
+		ea, err := cat.findEngine("vllm-nightly", hw, nil)
+		if err == nil || ea != nil {
+			t.Fatalf("expected blocked error, got engine=%v err=%v", ea, err)
+		}
+		if !strings.Contains(err.Error(), "blocked") {
+			t.Fatalf("err should mention blocked, got: %v", err)
+		}
+	})
+
+	t.Run("checker returning false keeps engine blocked", func(t *testing.T) {
+		opts := &resolveOpts{LocalImageChecker: func(ref string) bool { return false }}
+		ea, err := cat.findEngine("vllm-nightly", hw, opts)
+		if err == nil || ea != nil {
+			t.Fatalf("expected blocked error, got engine=%v err=%v", ea, err)
+		}
+	})
+
+	t.Run("checker returning true for matching ref unblocks engine", func(t *testing.T) {
+		var queriedRef string
+		opts := &resolveOpts{LocalImageChecker: func(ref string) bool {
+			queriedRef = ref
+			return ref == "vllm/vllm-openai:qwen3_5-cu130"
+		}}
+		ea, err := cat.findEngine("vllm-nightly", hw, opts)
+		if err != nil {
+			t.Fatalf("expected unblock, got err=%v", err)
+		}
+		if ea == nil || ea.Metadata.Name != "vllm-nightly-blackwell" {
+			t.Fatalf("engine = %v, want vllm-nightly-blackwell", ea)
+		}
+		if queriedRef != "vllm/vllm-openai:qwen3_5-cu130" {
+			t.Fatalf("checker queried ref = %q, want image:tag joined", queriedRef)
+		}
+	})
+
+	t.Run("engine without image name stays blocked even with checker", func(t *testing.T) {
+		catNoImage := &Catalog{
+			EngineAssets: []EngineAsset{
+				{
+					Metadata: EngineMetadata{Name: "eng-blocked", Type: "eng", Status: "blocked"},
+					Hardware: EngineHardware{GPUArch: "Blackwell"},
+				},
+			},
+		}
+		opts := &resolveOpts{LocalImageChecker: func(ref string) bool { return true }}
+		ea, err := catNoImage.findEngine("eng", hw, opts)
+		if err == nil || ea != nil {
+			t.Fatalf("expected blocked (no image ref to check), got engine=%v err=%v", ea, err)
+		}
+	})
+}
+
 func TestGPUCountFiltering(t *testing.T) {
 	// Build a catalog with a multi-GPU variant (gpu_count_min: 2) and a single-GPU fallback.
 	cat := &Catalog{
@@ -1765,4 +2113,110 @@ func TestCheckFitTPExceedsGPUCount(t *testing.T) {
 			t.Fatalf("expected Fit=true without TP config, got Reason=%q", fit.Reason)
 		}
 	})
+}
+
+// TestBuildSyntheticConfig_NoVRAMLeakForEnginesWithoutDeclaredKnob is the
+// U6/U10 regression test: synthesized config must NOT inject
+// gpu_memory_utilization (nor mem_fraction_static) into engines whose YAML
+// does not declare any VRAM-fraction knob. llama-server rejects
+// --gpu-memory-utilization as an unknown flag at startup, so silent
+// synthesis there is an INV-1 violation.
+//
+// Context/TP fallback remains permissive by design — many vLLM engine YAMLs
+// only declare a subset of knobs in default_args while still accepting the
+// standard vLLM flag names for TP/context. That broader synthesis stays
+// intact; only the memory-fraction concept is strictly gated.
+func TestBuildSyntheticConfig_NoVRAMLeakForEnginesWithoutDeclaredKnob(t *testing.T) {
+	hw := HardwareInfo{GPUArch: "Ada", GPUVRAMMiB: 24576, GPUCount: 1}
+
+	tests := []struct {
+		name            string
+		engine          EngineAsset
+		gmu             float64
+		maxLen          int
+		tp              int
+		wantMemKey      string // empty → must not emit any VRAM-fraction key
+		wantCtxKey      string // empty → must not emit any context key
+		forbiddenMemKey bool   // when true, assert neither VRAM alias is present
+	}{
+		{
+			name: "vllm declaring gpu_memory_utilization → emits gpu_memory_utilization",
+			engine: EngineAsset{
+				Metadata: EngineMetadata{Name: "vllm", Type: "vllm"},
+				Hardware: EngineHardware{GPUArch: "*"},
+				Startup: EngineStartup{DefaultArgs: map[string]any{
+					"gpu_memory_utilization": 0.9,
+					"max_model_len":          8192,
+				}},
+			},
+			gmu: 0.8, maxLen: 4096, tp: 2,
+			wantMemKey: "gpu_memory_utilization",
+			wantCtxKey: "max_model_len",
+		},
+		{
+			name: "sglang-kt declaring mem_fraction_static → emits mem_fraction_static",
+			engine: EngineAsset{
+				Metadata: EngineMetadata{Name: "sglang-kt", Type: "sglang-kt"},
+				Hardware: EngineHardware{GPUArch: "*"},
+				Startup: EngineStartup{DefaultArgs: map[string]any{
+					"mem_fraction_static": 0.85,
+					"tp_size":             1,
+				}},
+			},
+			gmu: 0.8, maxLen: 4096, tp: 2,
+			wantMemKey: "mem_fraction_static",
+			wantCtxKey: "", // sglang-kt has no context-length knob
+		},
+		{
+			name: "llamacpp declaring only ctx_size → MUST NOT emit gpu_memory_utilization",
+			engine: EngineAsset{
+				Metadata: EngineMetadata{Name: "llamacpp-rocm", Type: "llamacpp"},
+				Hardware: EngineHardware{GPUArch: "*"},
+				Startup: EngineStartup{DefaultArgs: map[string]any{
+					"ctx_size":     4096,
+					"n_gpu_layers": 999,
+				}},
+			},
+			gmu: 0.5, maxLen: 8192, tp: 1,
+			forbiddenMemKey: true,
+			wantCtxKey:      "ctx_size",
+		},
+		{
+			name: "engine with no default_args → MUST NOT emit gpu_memory_utilization (U6/U10)",
+			engine: EngineAsset{
+				Metadata: EngineMetadata{Name: "llamacpp-universal", Type: "llamacpp"},
+				Hardware: EngineHardware{GPUArch: "*"},
+			},
+			gmu: 0.5, maxLen: 4096, tp: 1,
+			forbiddenMemKey: true,
+		},
+	}
+
+	memAliases := []string{"gpu_memory_utilization", "mem_fraction_static"}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cat := &Catalog{EngineAssets: []EngineAsset{tc.engine}}
+			cfg := cat.buildSyntheticConfig(tc.engine.Metadata.Type, hw, tc.gmu, tc.maxLen, tc.tp)
+
+			if tc.forbiddenMemKey {
+				for _, k := range memAliases {
+					if _, ok := cfg[k]; ok {
+						t.Errorf("INV-1 violation: synthetic cfg leaked %q=%v into engine %q (no VRAM knob declared)",
+							k, cfg[k], tc.engine.Metadata.Type)
+					}
+				}
+			}
+			if tc.wantMemKey != "" {
+				if _, ok := cfg[tc.wantMemKey]; !ok {
+					t.Errorf("missing memory key %q in cfg %v", tc.wantMemKey, cfg)
+				}
+			}
+			if tc.wantCtxKey != "" {
+				if _, ok := cfg[tc.wantCtxKey]; !ok {
+					t.Errorf("missing context key %q in cfg %v", tc.wantCtxKey, cfg)
+				}
+			}
+		})
+	}
 }

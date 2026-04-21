@@ -1,0 +1,98 @@
+[
+  {
+    "available": true,
+    "binary_path": "",
+    "created_at": "2026-04-15T06:54:16Z",
+    "id": "sha256:7a69e2d73d4c26a4c42fe7e7c257dc34f408d27696ddaa6ac312da88b033a165",
+    "image": "lmsysorg/sglang",
+    "platform": "linux-amd64",
+    "runtime_type": "container",
+    "size_bytes": 0,
+    "tag": "dev-cu13",
+    "type": "sglang"
+  },
+  {
+    "available": true,
+    "binary_path": "",
+    "created_at": "2026-04-10T09:12:06Z",
+    "id": "sha256:1d597ffcd93a082fe9e21a001f1587edd240d45ae6d0dcaaa9db9fe107215cbc",
+    "image": "vllm/vllm-openai",
+    "platform": "linux-amd64",
+    "runtime_type": "container",
+    "size_bytes": 0,
+    "tag": "gemma4-cu130",
+    "type": "vllm"
+  },
+  {
+    "available": true,
+    "binary_path": "",
+    "created_at": "2026-04-10T09:12:06Z",
+    "id": "sha256:cf52d479f95fa71fed3ef47a0a09119f567f49d50214a2bd1708acfdb9dec127",
+    "image": "zhiwen-ktransformers",
+    "platform": "linux-amd64",
+    "runtime_type": "container",
+    "size_bytes": 0,
+    "tag": "v0.5.1",
+    "type": "sglang-kt"
+  },
+  {
+    "available": true,
+    "binary_path": "",
+    "created_at": "2026-04-10T09:12:06Z",
+    "id": "sha256:1e54315524640ce1713721cd04e39b34313613f6a0897708cfc517645893ff29",
+    "image": "zhiwen-sglang",
+    "platform": "linux-amd64",
+    "runtime_type": "container",
+    "size_bytes": 0,
+    "tag": "v0.5.8",
+    "type": "sglang"
+  },
+  {
+    "available": true,
+    "binary_path": "",
+    "created_at": "2026-04-10T09:12:06Z",
+    "id": "sha256:87bc3ebf174c8ed176ca974a6d24a5e7f8eddaaef98c8de60b8edc77c39092aa",
+    "image": "zhiwen-llama-box",
+    "platform": "linux-amd64",
+    "runtime_type": "container",
+    "size_bytes": 0,
+    "tag": "v3.3.1",
+    "type": "llamacpp"
+  },
+  {
+    "available": true,
+    "binary_path": "",
+    "created_at": "2026-04-10T09:12:06Z",
+    "id": "sha256:5791f8642d1b71d45d832e232250aeca6a9aeb99b89698dff3c1ca5eea7a9655",
+    "image": "zhiwen-vllm",
+    "platform": "linux-amd64",
+    "runtime_type": "container",
+    "size_bytes": 0,
+    "tag": "v3.3.1",
+    "type": "vllm"
+  },
+  {
+    "available": true,
+    "binary_path": "/home/cjwx/.aima/dist/linux-amd64/sglang-kt",
+    "created_at": "2026-04-10T09:12:06Z",
+    "id": "332c7dc119881d2c",
+    "image": "",
+    "platform": "linux-amd64",
+    "runtime_type": "native",
+    "size_bytes": 4719475192,
+    "tag": "",
+    "type": "sglang-kt"
+  },
+  {
+    "available": true,
+    "binary_path": "/usr/local/bin/torchrun",
+    "created_at": "2026-04-10T09:12:06Z",
+    "id": "11b138d55655e202",
+    "image": "",
+    "platform": "linux-amd64",
+    "runtime_type": "native",
+    "size_bytes": 220,
+    "tag": "",
+    "type": "xdit-wan22"
+  }
+]

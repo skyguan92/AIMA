@@ -1,11 +1,9 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -19,10 +17,16 @@ func isTTY() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
+// newInitCmd is the legacy `aima init` command. As of v0.4.x it is a thin
+// wrapper over ToolDeps.OnboardingInit so human users walk the same code path
+// as the Web UI wizard and the MCP onboarding tool.
+//
+// Deprecated: prefer `aima onboarding init`. This command is kept for backward
+// compatibility and will be removed in v0.5.x.
 func newInitCmd(app *App) *cobra.Command {
 	var (
-		yesFlag  bool
-		k3sFlag  bool
+		yesFlag bool
+		k3sFlag bool
 	)
 
 	cmd := &cobra.Command{
@@ -35,130 +39,77 @@ Tiers:
   aima init --k3s  + K3S + HAMi (GPU partitioning, multi-model scheduling)
 
 The K3S tier is a superset of the Docker tier. Missing files are auto-downloaded
-when confirmed (or use --yes to skip the prompt).`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			allowDownload := false
+when confirmed (or use --yes to skip the prompt).
 
+Deprecated: prefer ` + "`aima onboarding init`" + `. This command is kept for backward
+compatibility and will be removed in v0.5.x.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"[deprecated] `aima init` will be removed in v0.5.x. Please use `aima onboarding init` instead.")
+
+			if app.ToolDeps.OnboardingInit == nil {
+				return fmt.Errorf("onboarding.init not available")
+			}
+
+			ctx := cmd.Context()
 			tier := "docker"
 			if k3sFlag {
 				tier = "k3s"
 			}
 
-			// 1. Preflight: check for missing files
-			if app.ToolDeps.StackPreflight != nil {
-				preflightData, err := app.ToolDeps.StackPreflight(ctx, tier)
-				if err != nil {
-					return fmt.Errorf("preflight: %w", err)
-				}
+			// --yes also implies allow-download, matching legacy semantics where
+			// non-interactive invocations should proceed without prompting.
+			allowDownload := yesFlag || !isTTY()
 
-				var downloads []struct {
-					Name     string `json:"name"`
-					FileName string `json:"file_name"`
-					URL      string `json:"url"`
-				}
-				if err := json.Unmarshal(preflightData, &downloads); err == nil && len(downloads) > 0 {
-					fmt.Fprintf(cmd.ErrOrStderr(), "The following files need to be downloaded:\n")
-					for _, d := range downloads {
-						fmt.Fprintf(cmd.ErrOrStderr(), "  %s (%s)\n    %s\n", d.Name, d.FileName, d.URL)
-					}
-
-					if yesFlag || !isTTY() {
-						allowDownload = true
-					} else {
-						fmt.Fprintf(cmd.ErrOrStderr(), "\nDownload these files? [Y/n] ")
-						scanner := bufio.NewScanner(cmd.InOrStdin())
-						if scanner.Scan() {
-							answer := strings.TrimSpace(scanner.Text())
-							allowDownload = answer == "" || strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes")
-						}
-					}
-
-					if !allowDownload {
-						fmt.Fprintf(cmd.ErrOrStderr(), "Skipping download. Init will proceed without missing files.\n")
-					}
-				}
-			}
-
-			// 2. Run init
 			tierLabel := "Docker"
 			if k3sFlag {
 				tierLabel = "K3S (full stack)"
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Initializing AIMA infrastructure stack [%s tier]...\n", tierLabel)
 
-			data, err := app.ToolDeps.StackInit(ctx, tier, allowDownload)
+			data, err := app.ToolDeps.OnboardingInit(ctx, tier, allowDownload)
 			if err != nil {
 				return fmt.Errorf("init: %w", err)
 			}
 
-			// 3. Display results
-			var result struct {
-				Components []struct {
-					Name    string `json:"name"`
-					Ready   bool   `json:"ready"`
-					Skipped bool   `json:"skipped"`
-					Message string `json:"message"`
-					Pods    []struct {
-						Name    string `json:"name"`
-						Phase   string `json:"phase"`
-						Ready   bool   `json:"ready"`
-						Message string `json:"message"`
-					} `json:"pods"`
-				} `json:"components"`
-				AllReady bool `json:"all_ready"`
+			var env struct {
+				Result json.RawMessage `json:"result"`
+				Events []struct {
+					Type string         `json:"type"`
+					Data map[string]any `json:"data"`
+				} `json:"events"`
 			}
-			if err := json.Unmarshal(data, &result); err != nil {
+			if err := json.Unmarshal(data, &env); err != nil {
 				fmt.Fprintln(cmd.OutOrStdout(), string(data))
 				return nil
 			}
 
-			for _, c := range result.Components {
-				status := "FAIL"
-				if c.Ready {
-					status = "OK"
-				} else if c.Skipped {
-					status = "SKIP"
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "  [%s] %s: %s\n", status, c.Name, c.Message)
-				for _, p := range c.Pods {
-					podStatus := "FAIL"
-					if p.Ready {
-						podStatus = "OK"
-					}
-					detail := p.Phase
-					if p.Message != "" {
-						detail += " (" + p.Message + ")"
-					}
-					fmt.Fprintf(cmd.OutOrStdout(), "    [%s] pod/%s: %s\n", podStatus, p.Name, detail)
-				}
+			w := cmd.OutOrStdout()
+			for _, ev := range env.Events {
+				printEvent(w, ev.Type, ev.Data)
 			}
 
-			// 4. Auto-import Docker images to K3S containerd (only for K3S tier)
-			if k3sFlag && result.AllReady && app.ToolDeps.ScanEngines != nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "\nImporting Docker engine images to K3S containerd...")
-				if _, err := app.ToolDeps.ScanEngines(ctx, "auto", true); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: engine import failed: %v\n", err)
-				}
+			var res struct {
+				AllReady    bool `json:"all_ready"`
+				StackStatus struct {
+					Docker string `json:"docker"`
+					K3S    string `json:"k3s"`
+				} `json:"stack_status"`
+				Tier string `json:"tier,omitempty"`
+			}
+			if err := json.Unmarshal(env.Result, &res); err != nil {
+				fmt.Fprintln(w, string(env.Result))
+				return nil
 			}
 
-			if result.AllReady {
-				fmt.Fprintln(cmd.OutOrStdout(), "\nAll components ready. Run 'aima serve' to begin.")
+			fmt.Fprintf(w, "\nInit complete: tier=%s all_ready=%v (docker=%s k3s=%s)\n",
+				res.Tier, res.AllReady, res.StackStatus.Docker, res.StackStatus.K3S)
+
+			if res.AllReady {
+				fmt.Fprintln(w, "All components ready. Run 'aima serve' to begin.")
 			} else {
-				allSkipped := true
-				for _, c := range result.Components {
-					if !c.Ready && !c.Skipped {
-						allSkipped = false
-						break
-					}
-				}
-				if allSkipped {
-					fmt.Fprintln(cmd.OutOrStdout(), "\nNo supported components on this platform.")
-				} else {
-					fmt.Fprintln(cmd.OutOrStdout(), "\nSome components failed. Check messages above.")
-				}
+				fmt.Fprintln(w, "Some components are not ready. Check events above.")
 			}
-
 			return nil
 		},
 	}

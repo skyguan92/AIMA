@@ -1,0 +1,10 @@
+3834069
+---
+2026/04/20 11:58:26 INFO catalog overlay merged dir=/home/qujing/aima-uat/u5/data/catalog overlay_assets=6 new_assets=6
+2026/04/20 11:58:26 INFO runtime selected runtime=docker docker_available=true k3s_available=false
+2026/04/20 11:58:26 INFO explorer started tier=1
+2026/04/20 11:58:26 INFO starting MCP server (HTTP) addr=127.0.0.1:9185
+2026/04/20 11:58:26 INFO starting proxy server addr=127.0.0.1:6285
+2026/04/20 11:58:26 INFO proxy server starting addr=127.0.0.1:6285
+2026/04/20 11:58:26 WARN device registration blocked on user input — run `aima device register` after providing the credential kind=recovery_code detail="valid recovery_code required to refresh existing device credentials"
+2026/04/20 11:58:26 INFO startup engine scan completed

@@ -4,6 +4,7 @@ metadata:
   name: llamacpp-rocm-rdna3
   type: llamacpp
   version: "latest"
+  supported_model_types: [llm, vlm, embedding]
 hardware:
   gpu_arch: RDNA3
   vram_min_mib: 2048
@@ -25,6 +26,8 @@ patterns:
   - "llama-rocm"
   - "gguf-rocm"
 startup:
+  # full-rocm image ships llama-server under /app, not on PATH
+  command: ["/app/llama-server", "--model", "{{.ModelPath}}", "--host", "0.0.0.0"]
   env:
     HSA_OVERRIDE_GFX_VERSION: "11.0.0"
     HSA_ENABLE_SDMA: "0"

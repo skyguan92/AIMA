@@ -6,6 +6,7 @@ hardware:
   gpu:
     arch: Ascend910B
     vram_mib: 65536
+    bandwidth_gbps: 394
     compute_id: ""
     compute_units: 0
     resource_name: ""

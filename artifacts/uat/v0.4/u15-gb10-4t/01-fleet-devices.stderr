@@ -1,0 +1,67 @@
+2026/04/20 10:54:59 INFO runtime selected runtime=docker docker_available=true k3s_available=false
+2026/04/20 10:54:59 INFO explorer started tier=1
+2026/04/20 10:55:02 [INFO] mdns: Closing client {true true 0x141e8b01c000 0x141e8b01c008 0x141e8b01c010 0x141e8b01c018 1 0x141e8af5c0e0 0x141e8ab9e0c0}
+2026/04/20 10:55:02 [INFO] mdns: Closing client {true true 0x141e8b082310 0x141e8b082318 0x141e8b082320 0x141e8b082328 1 0x141e8aab5ea0 0x141e8ab9e0c0}
+2026/04/20 10:55:02 [INFO] mdns: Closing client {true true 0x141e8ae82000 0x141e8ae82008 0x141e8ae82010 0x141e8ae82018 1 0x141e8ad980e0 0x141e8ab9e0c0}
+[
+  {
+    "addr_v4": "192.168.110.70",
+    "id": "aitopatom-070b",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "aitopatom-070b",
+    "online": true,
+    "port": 6188,
+    "self": false
+  },
+  {
+    "addr_v4": "192.168.108.131",
+    "id": "aitopatom-66c4",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "aitopatom-66c4",
+    "online": true,
+    "port": 6295,
+    "self": false
+  },
+  {
+    "addr_v4": "192.168.110.71",
+    "id": "aitopatom-73c6",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "aitopatom-73c6",
+    "online": true,
+    "port": 6188,
+    "self": false
+  },
+  {
+    "addr_v4": "192.168.11.200",
+    "id": "davinci-mini",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "davinci-mini",
+    "online": true,
+    "port": 6188,
+    "self": false
+  },
+  {
+    "addr_v4": "192.168.109.189",
+    "id": "quings",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "quings",
+    "online": true,
+    "port": 6188,
+    "self": false
+  },
+  {
+    "addr_v4": "192.168.109.23",
+    "id": "qujing24",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "qujing24",
+    "online": true,
+    "port": 6188,
+    "self": false
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "device_id": "dev_19b6713629b8",
+  "referral_code": "WISE-GATE-9179",
+  "registered": true,
+  "registration_state": "registered"
+}

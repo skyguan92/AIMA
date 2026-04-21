@@ -32,8 +32,10 @@ Test vllm on this device for the first time.
   model: qwen3.5-27b
   engine: sglang-kt
   engine_params:
-    gpu_memory_utilization: 0.70
     cpu_offload_gb: 20
+  search_space:
+    gpu_memory_utilization: [0.70, 0.80, 0.90]
+    cpu_offload_gb: [20]
   benchmark:
     concurrency: [1]
     input_tokens: [128]
@@ -60,6 +62,9 @@ Test vllm on this device for the first time.
 	}
 	if tasks[1].Kind != "tune" || tasks[1].Engine != "sglang-kt" {
 		t.Errorf("task 1: kind=%s engine=%s", tasks[1].Kind, tasks[1].Engine)
+	}
+	if got := tasks[1].SearchSpace["gpu_memory_utilization"]; len(got) != 3 {
+		t.Errorf("task 1 search_space=%v, want 3 gmu values", tasks[1].SearchSpace)
 	}
 }
 
@@ -91,6 +96,37 @@ func TestParsePlanTasks_CommentOnlyYaml(t *testing.T) {
 	}
 	if len(tasks) != 0 {
 		t.Fatalf("expected 0 tasks, got %d", len(tasks))
+	}
+}
+
+func TestParsePlanTasks_WrappedTasksMap(t *testing.T) {
+	md := `# Exploration Plan
+
+## Tasks
+` + "```yaml\n" + `tasks:
+  - kind: validate
+    model: qwen3-4b
+    engine: vllm
+    engine_params:
+      tensor_parallel_size: 1
+      gpu_memory_utilization: 0.9
+    benchmark:
+      concurrency: [1, 2, 4]
+      input_tokens: [512, 1024]
+      max_tokens: [256, 512]
+      requests_per_combo: 10
+    reason: "baseline validation"
+` + "```\n"
+
+	tasks, err := parsePlanTasks(md)
+	if err != nil {
+		t.Fatalf("parsePlanTasks(wrapped): %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].Kind != "validate" || tasks[0].Model != "qwen3-4b" || tasks[0].Engine != "vllm" {
+		t.Fatalf("task = %+v", tasks[0])
 	}
 }
 
@@ -133,6 +169,41 @@ Focus on engine comparison.
 	}
 	if configs[0].Performance.ThroughputTPS != 95.2 {
 		t.Errorf("config 0 throughput=%f", configs[0].Performance.ThroughputTPS)
+	}
+}
+
+func TestParseRecommendedConfigs_WithScenario(t *testing.T) {
+	md := `# Summary
+
+## Recommended Configurations
+` + "```yaml\n" + `- model: qwen3-4b
+  engine: vllm
+  hardware: nvidia-rtx4090-x86
+  engine_params:
+    gpu_memory_utilization: 0.9
+  performance:
+    throughput_tps: 445.6
+    throughput_scenario: "concurrency=8, input=512, max_tokens=1024"
+    latency_p50_ms: 25.0
+    latency_scenario: "concurrency=1, input=128, max_tokens=256"
+  confidence: validated
+  note: "fast small LLM"
+` + "```\n" + `
+## Current Strategy
+done
+`
+	configs, err := parseRecommendedConfigs(md)
+	if err != nil {
+		t.Fatalf("parseRecommendedConfigs: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("got %d configs, want 1", len(configs))
+	}
+	if configs[0].Performance.ThroughputScenario != "concurrency=8, input=512, max_tokens=1024" {
+		t.Errorf("throughput_scenario = %q", configs[0].Performance.ThroughputScenario)
+	}
+	if configs[0].Performance.LatencyScenario != "concurrency=1, input=128, max_tokens=256" {
+		t.Errorf("latency_scenario = %q", configs[0].Performance.LatencyScenario)
 	}
 }
 
@@ -215,6 +286,71 @@ func TestParseSummaryMachineReadableSections(t *testing.T) {
 	}
 	if len(configs) != 1 || configs[0].Model != "qwen3-4b" {
 		t.Fatalf("configs: %+v", configs)
+	}
+}
+
+func TestConfirmedBlockerMatches(t *testing.T) {
+	tests := []struct {
+		name     string
+		blocker  ConfirmedBlocker
+		model    string
+		engine   string
+		hardware string
+		want     bool
+	}{
+		{
+			name:    "scope=combo matches only exact pair",
+			blocker: ConfirmedBlocker{Scope: "combo", Model: "Qwen2.5-7B", Engine: "vllm"},
+			model:   "Qwen2.5-7B", engine: "vllm", want: true,
+		},
+		{
+			name:    "scope=combo does not match different model on same engine",
+			blocker: ConfirmedBlocker{Scope: "combo", Model: "Qwen2.5-7B", Engine: "vllm"},
+			model:   "GLM-4.5", engine: "vllm", want: false,
+		},
+		{
+			name:    "scope=engine matches all combos with that engine",
+			blocker: ConfirmedBlocker{Scope: "engine", Engine: "sglang"},
+			model:   "anything", engine: "sglang", want: true,
+		},
+		{
+			name:    "scope=model matches all engines with that model",
+			blocker: ConfirmedBlocker{Scope: "model", Model: "GLM-4.5"},
+			model:   "GLM-4.5", engine: "anything", want: true,
+		},
+		{
+			name:     "hardware filter limits engine-wide blocker to matching profile",
+			blocker:  ConfirmedBlocker{Scope: "engine", Engine: "sglang", Hardware: "nvidia-gb10-arm64"},
+			model:    "anything", engine: "sglang", hardware: "nvidia-gb10-arm64", want: true,
+		},
+		{
+			name:     "hardware filter excludes non-matching profile",
+			blocker:  ConfirmedBlocker{Scope: "engine", Engine: "sglang", Hardware: "nvidia-gb10-arm64"},
+			model:    "anything", engine: "sglang", hardware: "amd-w7900d-x86", want: false,
+		},
+		{
+			name:     "empty hardware on blocker applies everywhere",
+			blocker:  ConfirmedBlocker{Scope: "engine", Engine: "sglang"},
+			model:    "anything", engine: "sglang", hardware: "any-profile", want: true,
+		},
+		{
+			name:    "free-form scope prose is treated literally, fall through to field match",
+			blocker: ConfirmedBlocker{Scope: "sglang on GB10", Model: "GLM-4.6V-Flash-FP4", Engine: "sglang"},
+			// Fall-through matches on Model+Engine exact pair, not the scope prose.
+			model: "GLM-4.7-Flash-NVFP4", engine: "sglang", want: false,
+		},
+		{
+			name:    "engine-only blocker with empty scope matches any model",
+			blocker: ConfirmedBlocker{Engine: "sglang"},
+			model:   "anything", engine: "sglang", want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := confirmedBlockerMatches(tc.blocker, tc.model, tc.engine, tc.hardware); got != tc.want {
+				t.Fatalf("confirmedBlockerMatches = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -323,7 +459,7 @@ func TestWorkspaceReadOnlyGuard(t *testing.T) {
 	dir := t.TempDir()
 	ws := NewExplorerWorkspace(dir)
 	_ = ws.Init()
-	for _, name := range []string{"index.md", "device-profile.md", "available-combos.md", "knowledge-base.md"} {
+	for _, name := range []string{"index.md", "device-profile.md", "available-combos.md", "knowledge-base.md", "experiment-facts.md"} {
 		if err := ws.WriteFile(name, "hack"); err == nil {
 			t.Errorf("WriteFile(%s) should fail for read-only doc", name)
 		}
@@ -424,6 +560,73 @@ func TestWriteExperimentResult(t *testing.T) {
 	}
 }
 
+func TestWriteExperimentResult_NoOutputStatus(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	task := TaskSpec{Kind: "validate", Model: "test-model", Engine: "vllm"}
+	result := ExperimentResult{
+		Status: "completed",
+		Benchmarks: []BenchmarkEntry{
+			{Concurrency: 1, InputTokens: 128, MaxTokens: 256,
+				ThroughputTPS: 95.2, TTFTP95Ms: 42, TPOTP95Ms: 10},
+			// Zero throughput + zero TTFT = no-output (not "ok")
+			{Concurrency: 1, InputTokens: 8192, MaxTokens: 1024,
+				ThroughputTPS: 0, TTFTP95Ms: 0, TPOTP95Ms: 0},
+			// Zero throughput but has error = show error, not no-output
+			{Concurrency: 1, InputTokens: 4096, MaxTokens: 1024,
+				ThroughputTPS: 0, TTFTP95Ms: 0, TPOTP95Ms: 0, Error: "timeout"},
+		},
+	}
+
+	path, err := ws.WriteExperimentResult(1, task, result)
+	if err != nil {
+		t.Fatalf("WriteExperimentResult: %v", err)
+	}
+
+	content, _ := ws.ReadFile(path)
+	// First row: normal throughput → ok
+	if !strings.Contains(content, "| 95.2 | 42 | 10 | ok |") {
+		t.Error("expected ok status for successful benchmark")
+	}
+	// Second row: zero throughput, no error → no-output
+	if !strings.Contains(content, "no-output") {
+		t.Error("expected no-output status for zero throughput cell")
+	}
+	// Third row: zero throughput with error → show error
+	if !strings.Contains(content, "| timeout |") {
+		t.Error("expected timeout status for errored cell")
+	}
+}
+
+func TestWriteExperimentResult_AllocatesUniqueOrdinal(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	task := TaskSpec{Kind: "validate", Model: "test-model", Engine: "vllm"}
+	result := ExperimentResult{Status: "completed"}
+
+	first, err := ws.WriteExperimentResult(1, task, result)
+	if err != nil {
+		t.Fatalf("first WriteExperimentResult: %v", err)
+	}
+	second, err := ws.WriteExperimentResult(1, task, result)
+	if err != nil {
+		t.Fatalf("second WriteExperimentResult: %v", err)
+	}
+	if first == second {
+		t.Fatalf("paths should differ, got %q", first)
+	}
+	if !strings.Contains(first, "001-test-model-vllm.md") {
+		t.Fatalf("first path = %q, want 001 ordinal", first)
+	}
+	if !strings.Contains(second, "002-test-model-vllm.md") {
+		t.Fatalf("second path = %q, want 002 ordinal", second)
+	}
+}
+
 func TestParsePlanFromWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	ws := NewExplorerWorkspace(dir)
@@ -469,6 +672,169 @@ func TestExtractRecommendations_NoSummary(t *testing.T) {
 	}
 	if configs != nil {
 		t.Errorf("expected nil configs, got %+v", configs)
+	}
+}
+
+func TestLoadExperimentRecords(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	_, err := ws.WriteExperimentResult(1, TaskSpec{
+		Kind:   "validate",
+		Model:  "test-model",
+		Engine: "vllm",
+	}, ExperimentResult{
+		Status: "completed",
+		Benchmarks: []BenchmarkEntry{{
+			Concurrency:   1,
+			InputTokens:   128,
+			MaxTokens:     256,
+			ThroughputTPS: 88.0,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("WriteExperimentResult: %v", err)
+	}
+
+	records, err := ws.LoadExperimentRecords()
+	if err != nil {
+		t.Fatalf("LoadExperimentRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records len=%d, want 1", len(records))
+	}
+	if records[0].Task.Model != "test-model" || records[0].Result.Status != "completed" {
+		t.Fatalf("record = %+v, want parsed task/result", records[0])
+	}
+}
+
+func TestLoadExperimentRecordsRecoversMalformedResultYAML(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	if err := ws.writeFactDocument("experiments/001-bad.md", "# Experiment 001\n\n## Task\n```yaml\nkind: validate\nmodel: bad-model\nengine: vllm\n```\n\n## Result\n```yaml\nstatus: failed\nerror: \"broken\n```\n"); err != nil {
+		t.Fatalf("writeFactDocument: %v", err)
+	}
+
+	records, err := ws.LoadExperimentRecords()
+	if err != nil {
+		t.Fatalf("LoadExperimentRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records len=%d, want 1", len(records))
+	}
+	if records[0].Task.Model != "bad-model" {
+		t.Fatalf("Task.Model = %q, want bad-model", records[0].Task.Model)
+	}
+	if records[0].Result.Status != "invalid_record" {
+		t.Fatalf("Result.Status = %q, want invalid_record", records[0].Result.Status)
+	}
+	if !strings.Contains(records[0].Result.Error, "parse result yaml") {
+		t.Fatalf("Result.Error = %q, want parse result yaml", records[0].Result.Error)
+	}
+
+	if err := ws.RefreshFactDocuments(PlanInput{}); err != nil {
+		t.Fatalf("RefreshFactDocuments: %v", err)
+	}
+	ef, err := ws.ReadFile("experiment-facts.md")
+	if err != nil {
+		t.Fatalf("ReadFile experiment-facts.md: %v", err)
+	}
+	if !strings.Contains(ef, "invalid_record") {
+		t.Fatalf("experiment-facts.md = %q, want invalid_record row", ef)
+	}
+}
+
+func TestGenerateExperimentFacts_ClassifiesSignals(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	if _, err := ws.WriteExperimentResult(1, TaskSpec{
+		Kind: "validate", Model: "ok-model", Engine: "vllm-nightly",
+	}, ExperimentResult{
+		Status:       "completed",
+		MatrixCells:  2,
+		SuccessCells: 2,
+		Benchmarks: []BenchmarkEntry{{
+			Concurrency:   1,
+			InputTokens:   128,
+			MaxTokens:     256,
+			ThroughputTPS: 110,
+			BenchmarkID:   "bench-ok",
+		}},
+	}); err != nil {
+		t.Fatalf("WriteExperimentResult ok-model: %v", err)
+	}
+	if _, err := ws.WriteExperimentResult(2, TaskSpec{
+		Kind: "validate", Model: "no-output-model", Engine: "vllm-nightly",
+	}, ExperimentResult{
+		Status:       "failed",
+		Error:        "benchmark matrix: no successful cells (total=6)",
+		MatrixCells:  6,
+		SuccessCells: 0,
+		Benchmarks: []BenchmarkEntry{{
+			Concurrency: 1, InputTokens: 128, MaxTokens: 256, ThroughputTPS: 0,
+		}},
+	}); err != nil {
+		t.Fatalf("WriteExperimentResult no-output-model: %v", err)
+	}
+	if _, err := ws.WriteExperimentResult(3, TaskSpec{
+		Kind: "validate", Model: "deploy-fail-model", Engine: "sglang",
+	}, ExperimentResult{
+		Status: "failed",
+		Error:  "pre-flight deploy: wait for deployed endpoint deploy-fail-model: timeout waiting for inference endpoint",
+	}); err != nil {
+		t.Fatalf("WriteExperimentResult deploy-fail-model: %v", err)
+	}
+	if _, err := ws.WriteExperimentResult(4, TaskSpec{
+		Kind: "validate", Model: "image-model", Engine: "z-image-diffusers",
+	}, ExperimentResult{
+		Status:       "completed",
+		MatrixCells:  1,
+		SuccessCells: 1,
+		Benchmarks: []BenchmarkEntry{{
+			Concurrency:   1,
+			InputTokens:   128,
+			MaxTokens:     256,
+			ThroughputTPS: 0.017,
+			BenchmarkID:   "bench-img",
+		}},
+	}); err != nil {
+		t.Fatalf("WriteExperimentResult image-model: %v", err)
+	}
+
+	if err := ws.RefreshFactDocuments(PlanInput{}); err != nil {
+		t.Fatalf("RefreshFactDocuments: %v", err)
+	}
+	ef, err := ws.ReadFile("experiment-facts.md")
+	if err != nil {
+		t.Fatalf("ReadFile experiment-facts.md: %v", err)
+	}
+	for _, want := range []string{"| Signal |", "benchmark_ok", "inference_no_output", "deploy_failed", "Best Rate"} {
+		if !strings.Contains(ef, want) {
+			t.Fatalf("experiment-facts.md missing %q: %s", want, ef)
+		}
+	}
+	if !strings.Contains(ef, "0.017") {
+		t.Fatalf("experiment-facts.md missing low-rate precision: %s", ef)
+	}
+}
+
+func TestNormalizeSummaryMarkdown_AppendsRequiredSections(t *testing.T) {
+	got := normalizeSummaryMarkdown("# Exploration Summary\n\n## Key Findings\n\n- one fact\n")
+	for _, want := range []string{
+		"## Bugs And Failures",
+		"## Confirmed Blockers",
+		"## Evidence Ledger",
+		"## Recommended Configurations",
+		"## Next Cycle Candidates",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("normalized summary missing %q: %s", want, got)
+		}
 	}
 }
 
@@ -546,6 +912,12 @@ func TestRefreshFactDocuments(t *testing.T) {
 	if !strings.Contains(kb, "Knowledge Base") {
 		t.Error("knowledge-base.md missing header")
 	}
+	if !strings.Contains(kb, "Frontier Coverage") {
+		t.Error("knowledge-base.md missing Frontier Coverage section")
+	}
+	if !strings.Contains(kb, "prefer for new coverage") {
+		t.Error("knowledge-base.md missing frontier coverage guidance")
+	}
 
 	// Check index.md exists and encodes authority rules
 	index, _ := ws.ReadFile("index.md")
@@ -554,6 +926,146 @@ func TestRefreshFactDocuments(t *testing.T) {
 	}
 	if !strings.Contains(index, "Ready Combos") {
 		t.Error("index.md missing ready-combo rule")
+	}
+	if !strings.Contains(index, "experiment-facts.md") {
+		t.Error("index.md missing experiment-facts read order")
+	}
+	ef, _ := ws.ReadFile("experiment-facts.md")
+	if !strings.Contains(ef, "No experiments yet") {
+		t.Error("experiment-facts missing empty-state summary")
+	}
+}
+
+func TestRefreshFactDocuments_PendingWorkSurfacedInDocs(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	input := PlanInput{
+		Hardware: HardwareInfo{Profile: "nvidia-gb10-arm64", GPUArch: "blackwell", GPUCount: 1, VRAMMiB: 120000},
+		LocalModels: []LocalModel{
+			{Name: "qwen3-8b", Format: "safetensors", Type: "llm", MaxContextLen: 32768},
+		},
+		LocalEngines: []LocalEngine{
+			{Name: "vllm-nightly", Type: "vllm-nightly", Runtime: "container", TunableParams: map[string]any{
+				"gpu_memory_utilization": 0.85,
+				"max_model_len":          8192,
+			}},
+		},
+		ComboFacts: []ComboFact{
+			{Model: "qwen3-8b", Engine: "vllm-nightly", Runtime: "docker", Artifact: "vllm-nightly:latest", Status: "ready"},
+		},
+		PendingWork: []PendingWork{
+			{
+				Model:     "qwen3-8b",
+				Engine:    "vllm-nightly",
+				Kind:      "validate_long_context",
+				Reason:    "long-context coverage missing",
+				Benchmark: BenchmarkSpec{Concurrency: []int{1}, InputTokens: []int{32768}, MaxTokens: []int{256}, RequestsPerCombo: 3},
+			},
+			{
+				Model:  "qwen3-8b",
+				Engine: "vllm-nightly",
+				Kind:   "tune",
+				Reason: "baseline exists and tunable search space remains unexplored",
+				SearchSpace: map[string][]any{
+					"gpu_memory_utilization": []any{0.75, 0.85, 0.9},
+					"max_model_len":          []any{8192, 16384, 32768},
+				},
+				Benchmark: BenchmarkSpec{Concurrency: []int{1}, InputTokens: []int{128}, MaxTokens: []int{256}, RequestsPerCombo: 3},
+			},
+		},
+	}
+
+	if err := ws.RefreshFactDocuments(input); err != nil {
+		t.Fatalf("RefreshFactDocuments: %v", err)
+	}
+
+	ac, err := ws.ReadFile("available-combos.md")
+	if err != nil {
+		t.Fatalf("ReadFile available-combos.md: %v", err)
+	}
+	if !strings.Contains(ac, "pending: validate_long_context, tune") {
+		t.Fatalf("available-combos.md missing pending-work summary: %s", ac)
+	}
+
+	kb, err := ws.ReadFile("knowledge-base.md")
+	if err != nil {
+		t.Fatalf("ReadFile knowledge-base.md: %v", err)
+	}
+	if !strings.Contains(kb, "## Pending Work") {
+		t.Fatalf("knowledge-base.md missing Pending Work section: %s", kb)
+	}
+	if !strings.Contains(kb, "| qwen3-8b | vllm-nightly | validate_long_context | long-context coverage missing | benchmark c=[1] input=[32768] max=[256] |") {
+		t.Fatalf("knowledge-base.md missing validate_long_context row: %s", kb)
+	}
+	if !strings.Contains(kb, "gpu_memory_utilization=[0.75 0.85 0.9]; max_model_len=[8192 16384 32768]") {
+		t.Fatalf("knowledge-base.md missing tune action summary: %s", kb)
+	}
+
+	index, err := ws.ReadFile("index.md")
+	if err != nil {
+		t.Fatalf("ReadFile index.md: %v", err)
+	}
+	if !strings.Contains(index, "| Pending Work Items | 2 |") {
+		t.Fatalf("index.md missing pending-work count: %s", index)
+	}
+}
+
+func TestRefreshFactDocuments_ModelScopeSkipRemovesReadyFrontier(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	input := PlanInput{
+		Hardware: HardwareInfo{
+			Profile:  "nvidia-gb10-arm64",
+			GPUArch:  "blackwell",
+			GPUCount: 1,
+			VRAMMiB:  120000,
+		},
+		LocalModels: []LocalModel{
+			{Name: "qwen3-8b", Format: "safetensors", Type: "llm", SizeBytes: 7_500_000_000},
+			{Name: "glm-4.1v", Format: "safetensors", Type: "llm", SizeBytes: 19_000_000_000},
+		},
+		LocalEngines: []LocalEngine{
+			{Name: "vllm", Type: "vllm"},
+			{Name: "sglang", Type: "sglang"},
+		},
+		ComboFacts: []ComboFact{
+			{Model: "qwen3-8b", Engine: "vllm", Status: "ready"},
+			{Model: "qwen3-8b", Engine: "sglang", Status: "ready"},
+			{Model: "glm-4.1v", Engine: "sglang", Status: "ready"},
+		},
+		SkipCombos: []SkipCombo{
+			{Model: "qwen3-8b", Reason: "all ready combos exhausted on this device"},
+		},
+	}
+
+	if err := ws.RefreshFactDocuments(input); err != nil {
+		t.Fatalf("RefreshFactDocuments: %v", err)
+	}
+
+	ac, err := ws.ReadFile("available-combos.md")
+	if err != nil {
+		t.Fatalf("ReadFile available-combos.md: %v", err)
+	}
+	if strings.Contains(ac, "| qwen3-8b | vllm | resolver and local no-pull runtime checks passed |") {
+		t.Fatalf("available-combos.md still shows exhausted qwen3-8b as ready: %s", ac)
+	}
+	if !strings.Contains(ac, "| qwen3-8b | vllm | _n/a_ | _n/a_ | all ready combos exhausted on this device |") {
+		t.Fatalf("available-combos.md missing model-scope explored reason: %s", ac)
+	}
+
+	kb, err := ws.ReadFile("knowledge-base.md")
+	if err != nil {
+		t.Fatalf("ReadFile knowledge-base.md: %v", err)
+	}
+	if strings.Contains(kb, "| qwen3-8b | vllm, sglang |") {
+		t.Fatalf("knowledge-base.md still shows exhausted qwen3-8b in Frontier Coverage: %s", kb)
+	}
+	if !strings.Contains(kb, "| glm-4.1v | sglang | no | prefer for new coverage |") {
+		t.Fatalf("knowledge-base.md missing surviving frontier model: %s", kb)
 	}
 }
 
@@ -592,5 +1104,35 @@ func TestEnsureWorkingDocuments(t *testing.T) {
 	}
 	if !strings.Contains(summary, "## Evidence Ledger") {
 		t.Fatal("summary.md missing Evidence Ledger template")
+	}
+}
+
+func TestWriteClosedPlanDocument(t *testing.T) {
+	dir := t.TempDir()
+	ws := NewExplorerWorkspace(dir)
+	_ = ws.Init()
+
+	err := ws.WriteClosedPlanDocument("budget_exhausted", &PlanMetrics{
+		TotalTasks: 4,
+		Completed:  1,
+		Failed:     3,
+	})
+	if err != nil {
+		t.Fatalf("WriteClosedPlanDocument: %v", err)
+	}
+
+	plan, err := ws.ReadFile("plan.md")
+	if err != nil {
+		t.Fatalf("ReadFile(plan.md): %v", err)
+	}
+	for _, want := range []string{
+		"No pending executable plan",
+		"Explorer state: `budget_exhausted`",
+		"Last run metrics: total=4 completed=1 failed=3 skipped=0",
+		"```yaml\n[]\n```",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("closed plan missing %q:\n%s", want, plan)
+		}
 	}
 }

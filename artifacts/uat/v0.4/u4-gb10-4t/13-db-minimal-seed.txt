@@ -1,0 +1,5 @@
+models
+('GLM-4.7-Flash', '/mnt/data/models/GLM-4.7-Flash', 'safetensors', 'llm')
+('Qwen3.5-9B', '/mnt/data/models/Qwen3.5-9B', 'safetensors', 'llm')
+engines
+('sha256:07205636414f262aede8aa95be69b0ba975c16ab5a51b14afa6eda60508e41bd', 'vllm', 'qujing/vllm-gemma4-gb10', '0.19.0-torchmoe2', 1)

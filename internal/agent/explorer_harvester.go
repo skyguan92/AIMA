@@ -17,13 +17,17 @@ type HarvestInput struct {
 // HarvestResult captures benchmark/exploration outcomes.
 type HarvestResult struct {
 	Success         bool
+	Cancelled       bool
 	BenchmarkID     string
 	ConfigID        string
 	ExecutionPath   string
 	Throughput      float64
 	QPS             float64
+	TTFTP50         float64
 	TTFTP95         float64
+	TPOTP50         float64
 	TPOTP95         float64
+	LatencyP50      float64
 	VRAMMiB         float64
 	RAMMiB          float64
 	CPUUsagePct     float64
@@ -95,10 +99,9 @@ func (h *Harvester) Harvest(ctx context.Context, input HarvestInput) []HarvestAc
 	var actions []HarvestAction
 
 	if !input.Result.Success {
-		note := generateFailureNote(input)
-		actions = append(actions, HarvestAction{Type: "note", Detail: note})
-		// Don't persist failure notes to DB — failure data is already in exploration_runs.
-		// This prevents polluting central with failure notes during sync.
+		// Skip all failure note persistence — failures are tracked locally in the
+		// PDCA workspace (summary.md blockers) and should not pollute the central
+		// knowledge server. Only successful, validated data points are harvested.
 		return actions
 	}
 
@@ -126,11 +129,21 @@ func (h *Harvester) Harvest(ctx context.Context, input HarvestInput) []HarvestAc
 		})
 	}
 
-	// Sync push if available
+	// Sync push if available. Bug-10: record the failure as an action too so
+	// the caller (explorer PDCA log, harvest audit) sees that push failed —
+	// a silent warn in serve.log is easy to miss when central is down.
 	if h.syncPush != nil {
 		if err := h.syncPush(ctx); err != nil {
-			slog.Warn("harvester sync push failed", "error", err)
+			slog.Warn("harvester sync push failed", "error", err,
+				"model", input.Task.Model, "engine", input.Task.Engine)
+			actions = append(actions, HarvestAction{
+				Type:   "sync_push",
+				Detail: fmt.Sprintf("FAILED: %s", err.Error()),
+			})
 		} else {
+			slog.Info("harvester sync push succeeded",
+				"model", input.Task.Model, "engine", input.Task.Engine,
+				"benchmark_id", input.Result.BenchmarkID, "config_id", input.Result.ConfigID)
 			actions = append(actions, HarvestAction{Type: "sync_push", Detail: "incremental push"})
 		}
 	}
@@ -203,29 +216,34 @@ func (h *Harvester) generateMatrixNote(input HarvestInput) string {
 		input.Task.Model, engineLabel,
 		input.Result.MatrixCells, input.Result.SuccessCells)
 
-	var profiles []json.RawMessage
-	_ = json.Unmarshal([]byte(input.Result.MatrixJSON), &profiles)
+	type matrixProfile struct {
+		Label string `json:"label"`
+		Cells []struct {
+			Concurrency int `json:"concurrency"`
+			InputTokens int `json:"input_tokens"`
+			MaxTokens   int `json:"max_tokens"`
+			Result      struct {
+				ThroughputTPS float64 `json:"throughput_tps"`
+				TTFTP95ms     float64 `json:"ttft_p95_ms"`
+			} `json:"result"`
+			Error string `json:"error"`
+		} `json:"cells"`
+	}
+	var wrapped struct {
+		MatrixProfiles []matrixProfile `json:"matrix_profiles"`
+	}
+	profiles := wrapped.MatrixProfiles
+	if err := json.Unmarshal([]byte(input.Result.MatrixJSON), &wrapped); err == nil {
+		profiles = wrapped.MatrixProfiles
+	}
+	if len(profiles) == 0 {
+		_ = json.Unmarshal([]byte(input.Result.MatrixJSON), &profiles)
+	}
 
 	var lines []string
 	lines = append(lines, header)
 
-	for _, profileJSON := range profiles {
-		var profile struct {
-			Label string `json:"label"`
-			Cells []struct {
-				Concurrency int `json:"concurrency"`
-				InputTokens int `json:"input_tokens"`
-				MaxTokens   int `json:"max_tokens"`
-				Result      struct {
-					ThroughputTPS float64 `json:"throughput_tps"`
-					TTFTP95ms     float64 `json:"ttft_p95_ms"`
-				} `json:"result"`
-				Error string `json:"error"`
-			} `json:"cells"`
-		}
-		if json.Unmarshal(profileJSON, &profile) != nil {
-			continue
-		}
+	for _, profile := range profiles {
 		label := "Unknown"
 		if profile.Label != "" {
 			label = strings.ToUpper(profile.Label[:1]) + profile.Label[1:]
@@ -378,23 +396,4 @@ func classifyError(errMsg string) string {
 	default:
 		return "error"
 	}
-}
-
-// generateFailureNote creates a structured failure note with config evidence.
-func generateFailureNote(input HarvestInput) string {
-	var parts []string
-	parts = append(parts, fmt.Sprintf("%s on %s: FAILED [%s].", input.Task.Model, input.Task.Engine, classifyError(input.Result.Error)))
-	parts = append(parts, fmt.Sprintf("Error: %s.", input.Result.Error))
-	if len(input.Result.Config) > 0 {
-		parts = append(parts, fmt.Sprintf("Config tried: %v.", input.Result.Config))
-	} else if len(input.Task.Params) > 0 {
-		parts = append(parts, fmt.Sprintf("Config tried: %v.", input.Task.Params))
-	}
-	if input.Task.Kind != "" {
-		parts = append(parts, fmt.Sprintf("Task kind: %s.", input.Task.Kind))
-	}
-	if input.Task.Reason != "" {
-		parts = append(parts, fmt.Sprintf("Reason: %s.", input.Task.Reason))
-	}
-	return strings.Join(parts, " ")
 }

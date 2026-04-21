@@ -1088,7 +1088,7 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 					t.Fatalf("unmarshal benchmark args: %v", err)
 				}
 				benchmarkArgs = append(benchmarkArgs, payload)
-				return &ToolResult{Content: `{"result":{"throughput_tps":42.5,"ttft_p95_ms":123.4},"saved":true}`}, nil
+				return &ToolResult{Content: `{"benchmark_id":"bench-001","config_id":"cfg-001","result":{"throughput_tps":42.5,"ttft_p50_ms":111.1,"ttft_p95_ms":123.4,"tpot_p50_ms":12.3,"tpot_p95_ms":14.5,"config":{"concurrency":2,"num_requests":50,"rounds":3,"input_tokens":512,"max_tokens":128}},"resource_usage":{"vram_usage_mib":2048},"saved":true}`}, nil
 			default:
 				return nil, fmt.Errorf("unexpected tool: %s", name)
 			}
@@ -1098,9 +1098,15 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 	tuner := NewTuner(tools)
 	tuner.gpuReleaseSleep = 0 // skip GPU release delay in tests
 	session, err := tuner.Start(context.Background(), TuningConfig{
-		Model:      "qwen3-8b",
-		Engine:     "vllm",
-		MaxConfigs: 1,
+		Model:       "qwen3-8b",
+		Engine:      "vllm",
+		Concurrency: 2,
+		NumRequests: 50,
+		InputTokens: 512,
+		MaxTokens:   128,
+		Rounds:      3,
+		Modality:    "llm",
+		MaxConfigs:  1,
 		Parameters: []TunableParam{{
 			Key:    "gpu_memory_utilization",
 			Values: []any{0.8},
@@ -1129,8 +1135,17 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 	if session.Results[0].ThroughputTPS != 42.5 {
 		t.Fatalf("throughput = %v, want 42.5", session.Results[0].ThroughputTPS)
 	}
+	if session.Results[0].TTFTP50Ms != 111.1 {
+		t.Fatalf("ttft_p50 = %v, want 111.1", session.Results[0].TTFTP50Ms)
+	}
 	if session.Results[0].TTFTP95Ms != 123.4 {
 		t.Fatalf("ttft_p95 = %v, want 123.4", session.Results[0].TTFTP95Ms)
+	}
+	if session.Results[0].BenchmarkID != "bench-001" || session.Results[0].ConfigID != "cfg-001" {
+		t.Fatalf("artifacts = (%q,%q), want (bench-001,cfg-001)", session.Results[0].BenchmarkID, session.Results[0].ConfigID)
+	}
+	if got := session.Results[0].ResourceUsage["vram_usage_mib"]; got != float64(2048) {
+		t.Fatalf("resource usage = %#v, want 2048", got)
 	}
 	// With 1 candidate, tuner may skip final redeploy if best config is already deployed.
 	if len(deployArgs) < 1 || len(deployArgs) > 2 {
@@ -1153,6 +1168,21 @@ func TestTunerRunParsesBenchmarkEnvelopeAndUsesConfigField(t *testing.T) {
 	if benchmarkArgs[0]["endpoint"] != "http://127.0.0.1:30000/v1/chat/completions" {
 		t.Fatalf("benchmark endpoint = %#v, want direct deployment endpoint", benchmarkArgs[0]["endpoint"])
 	}
+	if benchmarkArgs[0]["concurrency"] != float64(2) {
+		t.Fatalf("benchmark concurrency = %#v, want 2", benchmarkArgs[0]["concurrency"])
+	}
+	if benchmarkArgs[0]["num_requests"] != float64(50) {
+		t.Fatalf("benchmark num_requests = %#v, want 50", benchmarkArgs[0]["num_requests"])
+	}
+	if benchmarkArgs[0]["input_tokens"] != float64(512) {
+		t.Fatalf("benchmark input_tokens = %#v, want 512", benchmarkArgs[0]["input_tokens"])
+	}
+	if benchmarkArgs[0]["max_tokens"] != float64(128) {
+		t.Fatalf("benchmark max_tokens = %#v, want 128", benchmarkArgs[0]["max_tokens"])
+	}
+	if benchmarkArgs[0]["modality"] != "llm" {
+		t.Fatalf("benchmark modality = %#v, want llm", benchmarkArgs[0]["modality"])
+	}
 	if _, ok := benchmarkArgs[0]["deploy_config"]; !ok {
 		t.Fatalf("benchmark args missing deploy_config: %#v", benchmarkArgs[0])
 	}
@@ -1174,7 +1204,7 @@ func TestExplorationManagerTunePersistsRun(t *testing.T) {
 			case "deploy.run":
 				return &ToolResult{Content: `{"status":"ready","address":"127.0.0.1:30000","config":{"gpu_memory_utilization":0.8}}`}, nil
 			case "benchmark.run":
-				return &ToolResult{Content: `{"result":{"throughput_tps":42.5,"ttft_p95_ms":123.4},"saved":true}`}, nil
+				return &ToolResult{Content: `{"benchmark_id":"bench-001","config_id":"cfg-001","result":{"throughput_tps":42.5,"ttft_p95_ms":123.4,"config":{"concurrency":2,"num_requests":7,"rounds":3,"input_tokens":512,"max_tokens":128}},"saved":true}`}, nil
 			default:
 				return nil, fmt.Errorf("unexpected tool: %s", name)
 			}
@@ -1195,8 +1225,11 @@ func TestExplorationManagerTunePersistsRun(t *testing.T) {
 			"gpu_memory_utilization": {0.8},
 		},
 		BenchmarkProfiles: []ExplorationBenchmarkProfile{{
-			Concurrency: 2,
-			Rounds:      3,
+			ConcurrencyLevels: []int{2},
+			InputTokenLevels:  []int{512},
+			MaxTokenLevels:    []int{128},
+			RequestsPerCombo:  7,
+			Rounds:            3,
 		}},
 		Constraints: ExplorationConstraints{
 			MaxCandidates: 1,
@@ -1245,12 +1278,27 @@ func TestExplorationManagerTunePersistsRun(t *testing.T) {
 	if got := request["concurrency"]; got != float64(2) {
 		t.Fatalf("tuning request concurrency = %v, want 2", got)
 	}
+	if got := request["num_requests"]; got != float64(7) {
+		t.Fatalf("tuning request num_requests = %v, want 7", got)
+	}
+	if got := request["input_tokens"]; got != float64(512) {
+		t.Fatalf("tuning request input_tokens = %v, want 512", got)
+	}
+	if got := request["max_tokens"]; got != float64(128) {
+		t.Fatalf("tuning request max_tokens = %v, want 128", got)
+	}
 	if got := request["rounds"]; got != float64(3) {
 		t.Fatalf("tuning request rounds = %v, want 3", got)
 	}
+	if !strings.Contains(status.Run.SummaryJSON, `"benchmark_id":"bench-001"`) {
+		t.Fatalf("summary missing benchmark artifact: %s", status.Run.SummaryJSON)
+	}
+	if !strings.Contains(status.Run.SummaryJSON, `"matrix_profiles"`) {
+		t.Fatalf("summary missing matrix_profiles: %s", status.Run.SummaryJSON)
+	}
 }
 
-func TestExplorationManagerValidatePersistsRun(t *testing.T) {
+func TestExplorationManagerTuneFailsWithoutSuccessfulBenchmarks(t *testing.T) {
 	ctx := context.Background()
 	db, err := state.Open(ctx, ":memory:")
 	if err != nil {
@@ -1261,12 +1309,86 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 	tools := &mockTools{
 		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
 			switch name {
+			case "deploy.delete":
+				return &ToolResult{Content: `{"status":"deleted"}`}, nil
 			case "deploy.run":
-				return &ToolResult{Content: `{"status":"ready","name":"qwen3-8b-vllm","address":"127.0.0.1:30000","config":{"gpu_memory_utilization":0.8}}`}, nil
+				return &ToolResult{Content: `{"status":"ready","address":"127.0.0.1:30000","config":{"gpu_memory_utilization":0.8}}`}, nil
+			case "benchmark.run":
+				return nil, fmt.Errorf("benchmark run: no successful benchmark requests — benchmark not saved")
+			default:
+				return nil, fmt.Errorf("unexpected tool: %s", name)
+			}
+		},
+	}
+
+	tuner := NewTuner(tools)
+	tuner.gpuReleaseSleep = 0
+	manager := NewExplorationManager(db, tuner, tools)
+	run, err := manager.Start(ctx, ExplorationStart{
+		Kind: "tune",
+		Target: ExplorationTarget{
+			Hardware: "nvidia-gb10-arm64",
+			Model:    "qwen3-8b",
+			Engine:   "vllm",
+		},
+		SearchSpace: map[string][]any{
+			"gpu_memory_utilization": {0.8},
+		},
+		BenchmarkProfiles: []ExplorationBenchmarkProfile{{
+			ConcurrencyLevels: []int{1},
+			InputTokenLevels:  []int{512},
+			MaxTokenLevels:    []int{128},
+			RequestsPerCombo:  5,
+		}},
+		Constraints: ExplorationConstraints{MaxCandidates: 1},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var status *ExplorationStatus
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err = manager.Result(ctx, run.ID)
+		if err != nil {
+			t.Fatalf("Result: %v", err)
+		}
+		if status.Run.Status == "failed" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if status == nil || status.Run.Status != "failed" {
+		t.Fatalf("run status = %v, want failed", status)
+	}
+	if !strings.Contains(status.Run.Error, "no successful tuning benchmark results") {
+		t.Fatalf("run error = %q, want no successful tuning benchmark results", status.Run.Error)
+	}
+	if !strings.Contains(status.Run.SummaryJSON, `"tuning_session"`) {
+		t.Fatalf("summary missing tuning_session: %s", status.Run.SummaryJSON)
+	}
+}
+
+func TestExplorationManagerValidatePersistsRun(t *testing.T) {
+	ctx := context.Background()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	tools := &mockTools{
+		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
+			switch name {
+			case "deploy.run":
+				return &ToolResult{Content: fmt.Sprintf(`{"status":"ready","name":"qwen3-8b-vllm","address":%q,"config":{"gpu_memory_utilization":0.8}}`, addr)}, nil
 			case "deploy.apply":
 				return &ToolResult{Content: `{"name":"qwen3-8b-vllm","config":{"gpu_memory_utilization":0.8}}`}, nil
 			case "deploy.status":
-				return &ToolResult{Content: `{"name":"qwen3-8b-vllm","phase":"running","ready":true,"address":"127.0.0.1:30000"}`}, nil
+				return &ToolResult{Content: fmt.Sprintf(`{"name":"qwen3-8b-vllm","phase":"running","ready":true,"address":%q}`, addr)}, nil
 			case "deploy.delete":
 				return &ToolResult{Content: `{"status":"deleted"}`}, nil
 			case "benchmark.run":
@@ -1345,6 +1467,8 @@ func TestExplorationManagerValidatePersistsRun(t *testing.T) {
 
 func TestExplorationManagerOpenQuestionAutoResolves(t *testing.T) {
 	ctx := context.Background()
+	server, addr := newInferenceReadyServer(t)
+	defer server.Close()
 	db, err := state.Open(ctx, ":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -1359,11 +1483,11 @@ func TestExplorationManagerOpenQuestionAutoResolves(t *testing.T) {
 		execute: func(ctx context.Context, name string, arguments json.RawMessage) (*ToolResult, error) {
 			switch name {
 			case "deploy.run":
-				return &ToolResult{Content: `{"status":"ready","name":"qwen3-8b-vllm","address":"127.0.0.1:30001","config":{"gpu_memory_utilization":0.82}}`}, nil
+				return &ToolResult{Content: fmt.Sprintf(`{"status":"ready","name":"qwen3-8b-vllm","address":%q,"config":{"gpu_memory_utilization":0.82}}`, addr)}, nil
 			case "deploy.apply":
 				return &ToolResult{Content: `{"name":"qwen3-8b-vllm","config":{"gpu_memory_utilization":0.82}}`}, nil
 			case "deploy.status":
-				return &ToolResult{Content: `{"name":"qwen3-8b-vllm","phase":"running","ready":true,"address":"127.0.0.1:30001"}`}, nil
+				return &ToolResult{Content: fmt.Sprintf(`{"name":"qwen3-8b-vllm","phase":"running","ready":true,"address":%q}`, addr)}, nil
 			case "deploy.delete":
 				return &ToolResult{Content: `{"status":"deleted"}`}, nil
 			case "benchmark.run":

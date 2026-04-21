@@ -1,0 +1,62 @@
+[
+  {
+    "addr_v4": "192.168.110.70",
+    "id": "aitopatom-070b",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "aitopatom-070b",
+    "online": true,
+    "port": 6188,
+    "self": false
+  },
+  {
+    "addr_v4": "192.168.108.131",
+    "id": "aitopatom-66c4",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "aitopatom-66c4",
+    "online": true,
+    "port": 6295,
+    "self": false
+  },
+  {
+    "addr_v4": "192.168.110.71",
+    "id": "aitopatom-73c6",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "aitopatom-73c6",
+    "online": true,
+    "port": 6188,
+    "self": false
+  },
+  {
+    "addr_v4": "192.168.11.200",
+    "id": "davinci-mini",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "davinci-mini",
+    "online": true,
+    "port": 6188,
+    "self": false
+  },
+  {
+    "addr_v4": "192.168.109.189",
+    "id": "quings",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "quings",
+    "online": true,
+    "port": 6188,
+    "self": false
+  },
+  {
+    "addr_v4": "192.168.109.23",
+    "id": "qujing24",
+    "last_seen": "2026-04-20T10:55:02Z",
+    "models": null,
+    "name": "qujing24",
+    "online": true,
+    "port": 6188,
+    "self": false
+  }
+]

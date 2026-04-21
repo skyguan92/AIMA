@@ -4,6 +4,10 @@ metadata:
   type: llm
   family: qwen
   parameter_count: "8B"
+  released_at: "2025-04"
+  aliases:
+    - Qwen3-8B-junhowie
+    - gptq-Qwen3-8B-junhowie
 storage:
   formats: [safetensors, gguf]
   default_path_pattern: "{{.DataDir}}/models/{{.Name}}"
@@ -138,6 +142,7 @@ variants:
     hardware:
       gpu_arch: "*"
       vram_min_mib: 0
+      ram_min_mib: 6144
     engine: llamacpp
     format: gguf
     default_config:

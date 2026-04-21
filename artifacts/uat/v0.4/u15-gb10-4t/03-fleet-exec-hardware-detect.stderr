@@ -1,0 +1,13 @@
+2026/04/20 10:55:19 INFO runtime selected runtime=docker docker_available=true k3s_available=false
+2026/04/20 10:55:19 INFO explorer started tier=1
+2026/04/20 10:55:22 [INFO] mdns: Closing client {true true 0x4ee222e1c010 0x4ee222e1c018 0x4ee222e1c020 0x4ee222e1c030 1 0x4ee2229ca230 0x4ee2229523f0}
+2026/04/20 10:55:22 [INFO] mdns: Closing client {true true 0x4ee222880088 0x4ee2228800f0 0x4ee2228800f8 0x4ee222880108 1 0x4ee222b820e0 0x4ee2229523f0}
+2026/04/20 10:55:22 [INFO] mdns: Closing client {true true 0x4ee222d82308 0x4ee222d82310 0x4ee222d82318 0x4ee222d82320 1 0x4ee2228bff10 0x4ee2229523f0}
+{
+  "content": [
+    {
+      "text": "{\"gpu\":{\"vendor\":\"nvidia\",\"name\":\"NVIDIA GeForce RTX 4090\",\"arch\":\"Ada\",\"vram_mib\":49140,\"compute_id\":\"8.9\",\"driver_version\":\"580.95.05\",\"sdk_version\":\"CUDA 13.0\",\"power_draw_watts\":14.66,\"power_limit_watts\":450,\"temperature_celsius\":34,\"unified_memory\":false,\"count\":2},\"cpu\":{\"arch\":\"amd64\",\"model\":\"Intel(R) Xeon(R) Platinum 8488C\",\"cores\":48,\"threads\":96,\"freq_ghz\":2.4},\"ram\":{\"total_mib\":515434,\"available_mib\":266113,\"swap_total_mib\":8191},\"storage\":{\"data_dir_path\":\"/root/.aima\",\"free_mib\":79500,\"total_mib\":446502,\"volumes\":[{\"mount_point\":\"/\",\"device\":\"/dev/mapper/ubuntu--vg-ubuntu--lv\",\"total_mib\":446502,\"free_mib\":79500},{\"mount_point\":\"/mnt/data\",\"device\":\"/dev/nvme0n1\",\"total_mib\":3604224,\"free_mib\":1577403},{\"mount_point\":\"/boot\",\"device\":\"/dev/sda2\",\"total_mib\":1945,\"free_mib\":1535},{\"mount_point\":\"/boot/efi\",\"device\":\"/dev/sda1\",\"total_mib\":1072,\"free_mib\":1066}]},\"os\":{\"os\":\"linux\",\"arch\":\"amd64\",\"version\":\"22.04\",\"container_runtime\":\"docker\"}}",
+      "type": "text"
+    }
+  ]
+}

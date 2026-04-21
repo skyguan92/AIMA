@@ -1,0 +1,50 @@
+[
+  {
+    "address": "127.0.0.1:8080",
+    "engine": "llamacpp",
+    "error_lines": "      total time =     250.86 ms /    14 tokens\nslot      release: id  3 | task 51 | stop processing: n_tokens = 16, truncated = 0\nsrv  update_slots: all slots are idle\nsrv  log_server_r: done request: POST /v1/chat/completions 127.0.0.1 200\nsrv  log_server_r: done request: GET / 100.125.202.50 200",
+    "message": "process exited before readiness",
+    "model": "Qwen3-0.6B-Q8_0",
+    "name": "Qwen3-0.6B-Q8_0",
+    "phase": "failed",
+    "ready": false,
+    "runtime": "native",
+    "served_model": "Qwen3-0.6B-Q8_0",
+    "slot": "primary",
+    "start_time": "2026-03-03T02:26:47Z",
+    "started_at_unix": 1772504807,
+    "status": "failed"
+  },
+  {
+    "address": "127.0.0.1:8081",
+    "engine": "llamacpp",
+    "error_lines": "       eval time =    2961.72 ms /    64 tokens (   46.28 ms per token,    21.61 tokens per second)\n      total time =    4236.28 ms /   194 tokens\nslot      release: id  3 | task 1806 | stop processing: n_tokens = 197, truncated = 0\nsrv  update_slots: all slots are idle\n^C",
+    "message": "process exited before readiness",
+    "model": "qwen3-30b-a3b",
+    "name": "qwen3-30b-a3b",
+    "phase": "failed",
+    "ready": false,
+    "runtime": "native",
+    "served_model": "qwen3-30b-a3b",
+    "slot": "primary",
+    "start_time": "2026-03-31T15:18:03Z",
+    "started_at_unix": 1774970283,
+    "status": "failed"
+  },
+  {
+    "address": "127.0.0.1:8080",
+    "engine": "llamacpp",
+    "error_lines": "srv          init: init: chat template, thinking = 1\nmain: model loaded\nmain: server is listening on http://0.0.0.0:8080\nmain: starting the main loop...\nsrv  update_slots: all slots are idle",
+    "message": "process exited before readiness",
+    "model": "qwen3-8b",
+    "name": "qwen3-8b",
+    "phase": "failed",
+    "ready": false,
+    "runtime": "native",
+    "served_model": "qwen3-8b",
+    "slot": "primary",
+    "start_time": "2026-03-30T11:37:07Z",
+    "started_at_unix": 1774870627,
+    "status": "failed"
+  }
+]

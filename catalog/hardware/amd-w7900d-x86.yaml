@@ -6,6 +6,7 @@ hardware:
   gpu:
     arch: RDNA3
     vram_mib: 49136
+    bandwidth_gbps: 864
     compute_id: "gfx1100"
     compute_units: 6144
     resource_name: "amd.com/gpu"

@@ -45,7 +45,7 @@ var profileIncludes = map[Profile][]string{
 		"hardware.detect", "hardware.metrics",
 		"deploy.apply", "deploy.approve", "deploy.dry_run", "deploy.status",
 		"deploy.list", "deploy.logs", "deploy.delete",
-		"benchmark.run", "benchmark.record", "benchmark.list",
+		"benchmark.run", "benchmark.record", "benchmark.list", "benchmark.ensure_assets",
 		"knowledge.resolve", "knowledge.search", "knowledge.promote", "knowledge.save",
 		"explore", "tuning", "explorer",
 		"central.advise",
@@ -157,9 +157,11 @@ func RegisterAllTools(s *Server, deps *ToolDeps) {
 	registerCentralTools(s, deps)
 	registerDataTools(s, deps)
 	registerAgentTools(s, deps)
+	registerDeviceTools(s, deps)
 	registerAutomationTools(s, deps)
 	registerFleetTools(s, deps)
 	registerScenarioTools(s, deps)
 	registerOpenClawTools(s, deps)
 	registerStackTools(s, deps)
+	registerOnboardingTools(s, deps)
 }

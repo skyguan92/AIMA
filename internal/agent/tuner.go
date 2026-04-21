@@ -31,14 +31,27 @@ type TuningConfig struct {
 	Parameters  []TunableParam `json:"parameters"`
 	Concurrency int            `json:"concurrency,omitempty"`
 	Rounds      int            `json:"rounds,omitempty"`
+	NumRequests int            `json:"num_requests,omitempty"`
+	InputTokens int            `json:"input_tokens,omitempty"`
+	MaxTokens   int            `json:"max_tokens,omitempty"`
+	WarmupCount int            `json:"warmup_count,omitempty"`
+	Modality    string         `json:"modality,omitempty"`
 	MaxConfigs  int            `json:"max_configs,omitempty"` // cap grid search
+
+	// CleanupAfter asks the tuner to tear down any running deploy it created
+	// once the session ends, skipping the best-config redeploy. Set by the
+	// explorer so the task-boundary teardown sees a stopped GPU.
+	CleanupAfter bool `json:"-"`
 }
 
 // TuningResult holds a single candidate's benchmark outcome.
 type TuningResult struct {
 	ConfigOverrides map[string]any `json:"config_overrides"`
 	ThroughputTPS   float64        `json:"throughput_tps"`
+	LatencyP50Ms    float64        `json:"latency_p50_ms,omitempty"`
+	TTFTP50Ms       float64        `json:"ttft_p50_ms,omitempty"`
 	TTFTP95Ms       float64        `json:"ttft_p95_ms"`
+	TPOTP50Ms       float64        `json:"tpot_p50_ms,omitempty"`
 	TPOTP95Ms       float64        `json:"tpot_p95_ms,omitempty"`
 	QPS             float64        `json:"qps,omitempty"`
 	Concurrency     int            `json:"concurrency,omitempty"`
@@ -54,8 +67,11 @@ type TuningResult struct {
 	CPUUsagePct     float64        `json:"cpu_usage_pct,omitempty"`
 	GPUUtilPct      float64        `json:"gpu_utilization_pct,omitempty"`
 	PowerDrawWatts  float64        `json:"power_draw_watts,omitempty"`
+	BenchmarkID     string         `json:"benchmark_id,omitempty"`
+	ConfigID        string         `json:"config_id,omitempty"`
 	EngineVersion   string         `json:"engine_version,omitempty"`
 	EngineImage     string         `json:"engine_image,omitempty"`
+	ResourceUsage   map[string]any `json:"resource_usage,omitempty"`
 	Score           float64        `json:"score"` // composite ranking score
 }
 
@@ -74,6 +90,11 @@ type TuningSession struct {
 	Error       string         `json:"error,omitempty"`
 }
 
+// TuningSink persists a session snapshot. Called on start, on each progress
+// tick, and when the session terminates (completed/failed/cancelled).
+// Nil sink is a no-op so callers that don't care skip persistence.
+type TuningSink func(ctx context.Context, session *TuningSession)
+
 // Tuner orchestrates parameter search + benchmark loops.
 type Tuner struct {
 	tools           ToolExecutor
@@ -81,11 +102,42 @@ type Tuner struct {
 	session         *TuningSession
 	cancel          context.CancelFunc
 	gpuReleaseSleep time.Duration // grace period after deploy.delete; 0 in tests
+	sink            TuningSink
+}
+
+// TunerOption configures a Tuner.
+type TunerOption func(*Tuner)
+
+// WithTuningSink wires a sink that persists session state on every update.
+func WithTuningSink(sink TuningSink) TunerOption {
+	return func(t *Tuner) { t.sink = sink }
 }
 
 // NewTuner creates a tuner.
-func NewTuner(tools ToolExecutor) *Tuner {
-	return &Tuner{tools: tools, gpuReleaseSleep: gpuReleaseGrace}
+func NewTuner(tools ToolExecutor, opts ...TunerOption) *Tuner {
+	t := &Tuner{tools: tools, gpuReleaseSleep: gpuReleaseGrace}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
+}
+
+// emitSink snapshots the session under the mutex and invokes the sink outside
+// it so sink I/O cannot deadlock the tuner.
+func (t *Tuner) emitSink(ctx context.Context, session *TuningSession) {
+	if t.sink == nil {
+		return
+	}
+	t.mu.Lock()
+	snapshot := *session
+	if len(session.Results) > 0 {
+		snapshot.Results = append([]TuningResult(nil), session.Results...)
+	}
+	if session.BestConfig != nil {
+		snapshot.BestConfig = cloneAnyMap(session.BestConfig)
+	}
+	t.mu.Unlock()
+	t.sink(ctx, &snapshot)
 }
 
 // Start kicks off a tuning session. Returns immediately with the session ID.
@@ -141,6 +193,7 @@ func (t *Tuner) Start(ctx context.Context, config TuningConfig) (*TuningSession,
 	ctx, t.cancel = context.WithCancel(ctx)
 	t.mu.Unlock()
 
+	t.emitSink(ctx, session)
 	go t.run(ctx, session, candidates)
 	return session, nil
 }
@@ -148,31 +201,56 @@ func (t *Tuner) Start(ctx context.Context, config TuningConfig) (*TuningSession,
 // Stop cancels the running tuning session.
 func (t *Tuner) Stop() {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.cancel != nil {
 		t.cancel()
 	}
+	var stopped *TuningSession
 	if t.session != nil && t.session.Status == "running" {
 		t.session.Status = "cancelled"
 		t.session.CompletedAt = time.Now()
+		stopped = t.session
+	}
+	t.mu.Unlock()
+	if stopped != nil {
+		t.emitSink(context.Background(), stopped)
 	}
 }
 
-// CurrentSession returns the current/last session.
+// CurrentSession returns a snapshot of the current/last session. Returning a
+// copy (rather than the live pointer) lets callers read fields without
+// coordinating with the tuner's internal mutex.
 func (t *Tuner) CurrentSession() *TuningSession {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.session
+	if t.session == nil {
+		return nil
+	}
+	snapshot := *t.session
+	if len(t.session.Results) > 0 {
+		snapshot.Results = append([]TuningResult(nil), t.session.Results...)
+	}
+	if t.session.BestConfig != nil {
+		snapshot.BestConfig = cloneAnyMap(t.session.BestConfig)
+	}
+	return &snapshot
 }
 
 func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []map[string]any) {
 	defer func() {
 		t.mu.Lock()
 		if session.Status == "running" {
-			session.Status = "completed"
+			if len(session.Results) == 0 {
+				session.Status = "failed"
+				if strings.TrimSpace(session.Error) == "" {
+					session.Error = "no successful tuning benchmark results"
+				}
+			} else {
+				session.Status = "completed"
+			}
 		}
 		session.CompletedAt = time.Now()
 		t.mu.Unlock()
+		t.emitSink(context.Background(), session)
 	}()
 
 	var (
@@ -192,6 +270,7 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 
 		candidate = normalizeTuningCandidate(candidate, resolvedConfig)
 		if len(candidate) == 0 {
+			t.markProgress(session, i+1)
 			slog.Warn("tuning: candidate invalid after normalization, skipping", "progress", fmt.Sprintf("%d/%d", i+1, session.Total))
 			continue
 		}
@@ -220,14 +299,18 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 			err = toolResultError(deployResult)
 		}
 		if err != nil {
+			t.markProgress(session, i+1)
 			slog.Warn("tuning: deploy failed, skipping config", "error", err)
 			continue
 		}
 		var deploySummary struct {
 			Address string         `json:"address"`
 			Config  map[string]any `json:"config"`
+			Status  string         `json:"status"`
+			Message string         `json:"message"`
 		}
 		if err := json.Unmarshal([]byte(deployResult.Content), &deploySummary); err != nil {
+			t.markProgress(session, i+1)
 			slog.Warn("tuning: deploy result parse failed, skipping config", "error", err)
 			continue
 		}
@@ -238,7 +321,12 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 			endpoint = openAIChatCompletionsEndpoint(deploySummary.Address)
 		}
 		if endpoint == "" {
-			slog.Warn("tuning: deploy result missing ready endpoint, skipping config")
+			t.markProgress(session, i+1)
+			// Surface deploy status/message so timeout vs other empty-address
+			// causes are distinguishable without re-reading the deploy code.
+			slog.Warn("tuning: deploy result missing ready endpoint, skipping config",
+				"deploy_status", deploySummary.Status,
+				"deploy_message", deploySummary.Message)
 			continue
 		}
 		deployConfig := deploySummary.Config
@@ -255,20 +343,44 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 			"engine":        session.Config.Engine,
 			"deploy_config": deployConfig,
 		})
+		var benchPayload map[string]any
+		_ = json.Unmarshal(benchArgs, &benchPayload)
+		if session.Config.NumRequests > 0 {
+			benchPayload["num_requests"] = session.Config.NumRequests
+		}
+		if session.Config.InputTokens > 0 {
+			benchPayload["input_tokens"] = session.Config.InputTokens
+		}
+		if session.Config.MaxTokens > 0 {
+			benchPayload["max_tokens"] = session.Config.MaxTokens
+		}
+		if session.Config.WarmupCount > 0 {
+			benchPayload["warmup"] = session.Config.WarmupCount
+		}
+		if session.Config.Modality != "" {
+			benchPayload["modality"] = session.Config.Modality
+		}
+		benchArgs, _ = json.Marshal(benchPayload)
 		result, err := t.tools.ExecuteTool(ctx, "benchmark.run", benchArgs)
 		if err == nil {
 			err = toolResultError(result)
 		}
 		if err != nil {
+			t.markProgress(session, i+1)
 			slog.Warn("tuning: benchmark failed, skipping config", "error", err)
 			continue
 		}
 
 		// Parse benchmark result
 		var benchResult struct {
-			Result struct {
+			BenchmarkID string `json:"benchmark_id"`
+			ConfigID    string `json:"config_id"`
+			Result      struct {
 				ThroughputTPS   float64 `json:"throughput_tps"`
+				LatencyP50Ms    float64 `json:"latency_p50_ms"`
+				TTFTP50Ms       float64 `json:"ttft_p50_ms"`
 				TTFTP95Ms       float64 `json:"ttft_p95_ms"`
+				TPOTP50Ms       float64 `json:"tpot_p50_ms"`
 				TPOTP95Ms       float64 `json:"tpot_p95_ms"`
 				QPS             float64 `json:"qps"`
 				AvgInputTokens  int     `json:"avg_input_tokens"`
@@ -312,6 +424,7 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 			TTFTP95Ms     float64 `json:"ttft_p95_ms"`
 		}
 		if err := json.Unmarshal([]byte(result.Content), &benchResult); err != nil {
+			t.markProgress(session, i+1)
 			slog.Warn("tuning: benchmark result parse failed, skipping config", "error", err)
 			continue
 		}
@@ -326,10 +439,18 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 		}
 
 		score := throughput // simple scoring: maximize throughput
+		// Bug-6: record deploy-applied config (post safety cap), not planner-requested candidate.
+		appliedConfig := deployConfig
+		if len(appliedConfig) == 0 {
+			appliedConfig = candidate
+		}
 		tr := TuningResult{
-			ConfigOverrides: candidate,
+			ConfigOverrides: cloneAnyMap(appliedConfig),
 			ThroughputTPS:   throughput,
+			LatencyP50Ms:    benchResult.Result.LatencyP50Ms,
+			TTFTP50Ms:       benchResult.Result.TTFTP50Ms,
 			TTFTP95Ms:       ttftP95,
+			TPOTP50Ms:       benchResult.Result.TPOTP50Ms,
 			TPOTP95Ms:       benchResult.Result.TPOTP95Ms,
 			QPS:             benchResult.Result.QPS,
 			Concurrency:     firstPositiveInt(benchResult.BenchmarkProfile.Concurrency, benchResult.Result.Config.Concurrency),
@@ -345,19 +466,33 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 			CPUUsagePct:     firstPositiveFloat(benchResult.ResourceUsage.CPUUsagePct, benchResult.SavedBenchmark.CPUUsagePct),
 			GPUUtilPct:      firstPositiveFloat(benchResult.ResourceUsage.GPUUtilizationPct, benchResult.SavedBenchmark.GPUUtilPct),
 			PowerDrawWatts:  firstPositiveFloat(benchResult.ResourceUsage.PowerDrawWatts, benchResult.SavedBenchmark.PowerDrawWatts),
+			BenchmarkID:     benchResult.BenchmarkID,
+			ConfigID:        benchResult.ConfigID,
 			EngineVersion:   benchResult.EngineVersion,
 			EngineImage:     benchResult.EngineImage,
+			ResourceUsage:   tuningResourceUsageMap(benchResult.ResourceUsage, benchResult.SavedBenchmark),
 			Score:           score,
 		}
 
 		t.mu.Lock()
 		session.Results = append(session.Results, tr)
-		session.Progress = i + 1
 		if score > session.BestScore {
 			session.BestScore = score
-			session.BestConfig = candidate
+			session.BestConfig = cloneAnyMap(appliedConfig)
 		}
 		t.mu.Unlock()
+		t.markProgress(session, i+1)
+	}
+
+	// When called from the explorer, the caller runs its own task-boundary
+	// teardown; skip the final redeploy so we don't leave a GPU hot between
+	// tasks. Best config is still recorded on the session for knowledge.
+	if session.Config.CleanupAfter {
+		if lastDeployedConfig != nil {
+			deleteArgs, _ := json.Marshal(map[string]string{"name": session.Config.Model})
+			_, _ = t.tools.ExecuteTool(ctx, "deploy.delete", deleteArgs)
+		}
+		return
 	}
 
 	// Redeploy best config as final state
@@ -391,6 +526,50 @@ func (t *Tuner) run(ctx context.Context, session *TuningSession, candidates []ma
 			slog.Info("tuning: deployed best config", "score", session.BestScore, "config", session.BestConfig)
 		}
 	}
+}
+
+func (t *Tuner) markProgress(session *TuningSession, progress int) {
+	t.mu.Lock()
+	if session.Progress < progress {
+		session.Progress = progress
+	}
+	t.mu.Unlock()
+	t.emitSink(context.Background(), session)
+}
+
+func tuningResourceUsageMap(primary struct {
+	VRAMUsageMiB      float64 `json:"vram_usage_mib"`
+	RAMUsageMiB       float64 `json:"ram_usage_mib"`
+	CPUUsagePct       float64 `json:"cpu_usage_pct"`
+	GPUUtilizationPct float64 `json:"gpu_utilization_pct"`
+	PowerDrawWatts    float64 `json:"power_draw_watts"`
+}, saved struct {
+	VRAMUsageMiB   float64 `json:"vram_usage_mib"`
+	RAMUsageMiB    float64 `json:"ram_usage_mib"`
+	CPUUsagePct    float64 `json:"cpu_usage_pct"`
+	GPUUtilPct     float64 `json:"gpu_util_pct"`
+	PowerDrawWatts float64 `json:"power_draw_watts"`
+}) map[string]any {
+	usage := map[string]any{}
+	if v := firstPositiveFloat(primary.VRAMUsageMiB, saved.VRAMUsageMiB); v > 0 {
+		usage["vram_usage_mib"] = v
+	}
+	if v := firstPositiveFloat(primary.RAMUsageMiB, saved.RAMUsageMiB); v > 0 {
+		usage["ram_usage_mib"] = v
+	}
+	if v := firstPositiveFloat(primary.CPUUsagePct, saved.CPUUsagePct); v > 0 {
+		usage["cpu_usage_pct"] = v
+	}
+	if v := firstPositiveFloat(primary.GPUUtilizationPct, saved.GPUUtilPct); v > 0 {
+		usage["gpu_utilization_pct"] = v
+	}
+	if v := firstPositiveFloat(primary.PowerDrawWatts, saved.PowerDrawWatts); v > 0 {
+		usage["power_draw_watts"] = v
+	}
+	if len(usage) == 0 {
+		return nil
+	}
+	return usage
 }
 
 func normalizeTuningCandidate(candidate, resolvedConfig map[string]any) map[string]any {

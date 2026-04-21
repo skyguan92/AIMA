@@ -1,0 +1,32 @@
+llm.endpoint|https://api.kimi.com/coding/v1
+llm.model|kimi-for-coding
+---
+{
+  "active_exploration_runs": 0,
+  "agent_available": true,
+  "agent_tool_mode": "unknown",
+  "llm_route": {
+    "available": true,
+    "configured_endpoint": "https://api.kimi.com/coding/v1",
+    "configured_endpoint_is_loopback": false,
+    "configured_endpoint_probe": {
+      "available": true,
+      "base_url": "https://api.kimi.com/coding/v1",
+      "endpoint_is_loopback": false,
+      "models": [
+        {
+          "base_url": "https://api.kimi.com/coding/v1",
+          "endpoint_is_loopback": false,
+          "model": "kimi-for-coding"
+        }
+      ]
+    },
+    "configured_model": "kimi-for-coding",
+    "selected": {
+      "base_url": "https://api.kimi.com/coding/v1",
+      "endpoint_is_loopback": false,
+      "model": "kimi-for-coding"
+    },
+    "selection_reason": "configured_model_endpoint"
+  }
+}
