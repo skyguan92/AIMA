@@ -4881,6 +4881,23 @@ body {
           </div>
 
           <div class="modal-field">
+            <label x-text="t('explorer_trigger_model')"></label>
+            <template x-if="Array.isArray(models) && models.length > 0">
+              <select class="explorer-select" x-model="explorerTriggerForm.model">
+                <option value="" x-text="t('explorer_trigger_model_ph')"></option>
+                <template x-for="m in models" :key="m.name || m.id">
+                  <option :value="m.name || m.id" x-text="m.name || m.id"></option>
+                </template>
+              </select>
+            </template>
+            <template x-if="!Array.isArray(models) || models.length === 0">
+              <input type="text" class="explorer-select" x-model="explorerTriggerForm.model"
+                     :placeholder="t('explorer_trigger_model_ph')" />
+            </template>
+            <div class="modal-hint" x-text="t('explorer_trigger_model_hint')"></div>
+          </div>
+
+          <div class="modal-field">
             <label x-text="t('explorer_trigger_goal')"></label>
             <textarea x-model="explorerTriggerForm.goal"
                       :placeholder="t('explorer_trigger_goal_ph')"
@@ -4903,7 +4920,7 @@ body {
           <button class="modal-btn" @click="explorerTriggerOpen = false" x-text="t('cancel')"></button>
           <button class="modal-btn primary"
                   @click="submitExplorerTrigger()"
-                  :disabled="explorerTriggering || !explorerTriggerForm.goal.trim()"
+                  :disabled="explorerTriggering || !explorerTriggerForm.goal.trim() || !(explorerTriggerForm.model || '').trim()"
                   x-text="explorerTriggering ? t('saving') : t('explorer_trigger_submit')"></button>
         </div>
       </div>
@@ -5230,6 +5247,9 @@ var I18N = {
     explorer_refresh_btn: 'Refresh',
     explorer_trigger_title: 'Trigger Exploration Run',
     explorer_trigger_kind: 'Kind',
+    explorer_trigger_model: 'Model',
+    explorer_trigger_model_ph: 'Pick or type a locally available model name (required)',
+    explorer_trigger_model_hint: 'The Explorer needs a model to target. Hardware and engine are auto-detected.',
     explorer_trigger_goal: 'Goal',
     explorer_trigger_goal_ph: 'e.g. On RTX 4060, find the engine+params combo with highest throughput for Qwen3-30B',
     explorer_trigger_goal_hint: 'A one-line description of what you want to learn this run.',
@@ -5505,6 +5525,9 @@ var I18N = {
     explorer_refresh_btn: '刷新',
     explorer_trigger_title: '触发探索任务',
     explorer_trigger_kind: '类型',
+    explorer_trigger_model: '模型',
+    explorer_trigger_model_ph: '从本地可用模型里选一个，或手动输入模型名（必填）',
+    explorer_trigger_model_hint: 'Explorer 需要目标模型。硬件和引擎自动识别。',
     explorer_trigger_goal: '目标',
     explorer_trigger_goal_ph: '例：在 RTX 4060 上为 Qwen3-30B 找到 throughput 最高的 engine+params 组合',
     explorer_trigger_goal_hint: '一句话描述本轮探索要弄清楚的问题。',
@@ -6198,7 +6221,7 @@ function aimaApp() {
     explorerSummaryDoc: null,           // { doc, exists, content, mtime, size }
     explorerTriggerOpen: false,
     explorerTriggering: false,
-    explorerTriggerForm: { kind: 'validate', goal: '', approval_mode: 'auto' },
+    explorerTriggerForm: { kind: 'validate', model: '', goal: '', approval_mode: 'auto' },
     explorerTriggerFeedback: null,      // { type:'info'|'error', text }
     explorerFeedback: null,             // inline feedback on Overview
     _explorerTimer: null,
@@ -8561,14 +8584,18 @@ function aimaApp() {
 
     async submitExplorerTrigger() {
       const goal = this.explorerTriggerForm.goal.trim();
-      if (!goal) return;
+      const model = (this.explorerTriggerForm.model || '').trim();
+      if (!goal || !model) return;
       this.explorerTriggering = true;
       this.explorerTriggerFeedback = null;
 
+      // Backend requires target.model; optional target.hardware/engine are
+      // filled in by the planner from hal detect + default engine lookup.
       const params = {
         action: 'start',
         kind: this.explorerTriggerForm.kind,
         goal: goal,
+        target: { model },
         requested_by: 'ui',
         approval_mode: this.explorerTriggerForm.approval_mode,
       };
@@ -8581,6 +8608,7 @@ function aimaApp() {
       }
       this.explorerTriggerOpen = false;
       this.explorerTriggerForm.goal = '';
+      this.explorerTriggerForm.model = '';
       this.explorerFeedback = { type: 'info', text: this.t('explorer_trigger_started') };
       // Pull fresh status right away so the Overview chip flips to running.
       await this.explorerRefresh();
