@@ -18,7 +18,14 @@ func defaultVersion() string {
 
 // Version information is injected at build time via -ldflags.
 var (
-	Version   = defaultVersion()
+	// Keep Version as a plain string so `go build -ldflags -X` can override it.
+	Version   string
 	BuildTime = "unknown"
 	GitCommit = "none"
 )
+
+func init() {
+	if strings.TrimSpace(Version) == "" {
+		Version = defaultVersion()
+	}
+}
