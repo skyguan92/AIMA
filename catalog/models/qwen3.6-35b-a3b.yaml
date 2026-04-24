@@ -48,9 +48,13 @@ variants:
       tokens_per_second: [17, 27]
       tpot_ms: [37, 58]
       vram_mib: 66250
-      notes: "Validated 2026-04-21 on gb10-4t (Blackwell, 128GB unified). Official Qwen3.6 native context is 262144, and this AIMA path was validated up to actual_prompt_tokens=256024. Current stable GB10 baseline path is text-only vLLM with explicit TRITON_ATTN/TORCH_SDPA backends. For long-context analysis, use decode_tps=1000/tpot_ms; benchmark throughput_tps in SQLite is end-to-end output_tokens/total_duration and is heavily dominated by TTFT at 128K+. On 2026-04-22, speculative MTP and DFlash were additionally validated on the same host with AIMA benchmark.run under single-stream, output_tokens=512; see the dedicated speculative variants below."
+      notes: "Validated 2026-04-21 on gb10-4t (Blackwell, 128GB unified). Official Qwen3.6 native context is 262144, and this AIMA path was validated up to actual_prompt_tokens=256024. Current stable GB10 baseline path is text-only vLLM with explicit TRITON_ATTN/TORCH_SDPA backends. For long-context analysis, use TTFT, prefill_tok_s, and decode_tps=1000/tpot_ms before interpreting benchmark throughput_tps; throughput_tps is end-to-end output_tokens/total_duration and is heavily dominated by TTFT at 128K+. Baseline evidence is split across /home/qujing/aima-codex-qwen36/aima.db and /home/qujing/.aima/aima.db on gb10-4t: the current YAML context_scaling keeps exact prompt-token points, while baseline_measurements preserves the fuller DB records including short-context matrix rows and the 512-output 1K/32K smoke. On 2026-04-22/23, speculative MTP and DFlash were additionally validated on the same host with AIMA benchmark.run under single-stream; see the dedicated speculative variants below."
       context_scaling:
         # actual_prompt_tokens: [ttft_s, decode_tok_s, prefill_tok_s]
+        # Direct 512-output baseline points from /home/qujing/.aima/aima.db.
+        933:    [0.337, 28.5, 2765]
+        29149:  [9.047, 26.6, 3222]
+        # Calibrated long-context probes from /home/qujing/aima-codex-qwen36/aima.db.
         32791:  [10.378, 26.6, 3159]
         65558:  [27.822, 24.7, 2356]
         128024: [82.288, 21.5, 1556]
@@ -58,6 +62,41 @@ variants:
         192024: [165.922, 19.3, 1157]
         224024: [218.974, 18.2, 1023]
         256024: [282.643, 17.4, 906]
+      baseline_measurements:
+        host: gb10-4t
+        measured_at: "2026-04-21"
+        sources:
+          - db: /home/qujing/aima-codex-qwen36/aima.db
+            description: "baseline matrix and calibrated long-context probes"
+          - db: /home/qujing/.aima/aima.db
+            description: "baseline 512-output smoke points"
+        caveats:
+          - "No 4K baseline row was found in the checked AIMA DBs or artifacts."
+          - "The fuller baseline matrix is mostly output_tokens=128; do not compare it as a strict same-batch 512-output sweep against MTP/DFlash."
+          - "Rows with actual_prompt_tokens omitted only preserved AIMA's input_len_bucket label, not tokenizer-exact avg_input_tokens."
+        output_512:
+          # workload: [actual_prompt_tokens, ttft_s, tpot_ms, decode_tok_s, end_to_end_tps, sample_count]
+          1k-512:  [933,   0.337, 35.061, 28.5, 28.051, 4]
+          32k-512: [29149, 9.047, 37.624, 26.6, 18.107, 3]
+        matrix_128:
+          # input_target_tokens: [actual_prompt_bucket, ttft_s, tpot_ms, decode_tok_s, end_to_end_tps, sample_count]
+          128:    [136, 0.204, 34.979, 28.6, 27.367, 4]
+          1024:   [935, 0.338, 35.157, 28.4, 26.666, 4]
+          2048:   ["1K", 0.488, 35.191, 28.4, 25.822, 4]
+          8192:   ["7K", 1.877, 35.435, 28.2, 20.069, 1]
+          16384:  ["8K", 3.989, 36.052, 27.7, 14.939, 1]
+          32768:  ["8K", 9.137, 37.584, 26.6, 9.201, 1]
+          65536:  ["32K", 23.796, 40.049, 25.0, 4.432, 1]
+          131072: ["32K", 70.227, 44.923, 22.3, 1.686, 1]
+        calibrated_128:
+          # actual_prompt_tokens: [target_input_tokens, max_model_len, ttft_s, tpot_ms, decode_tok_s, end_to_end_tps]
+          32791:  [36864, 262144, 10.378, 37.577, 26.6, 8.448]
+          65558:  [73728, 262144, 27.822, 40.472, 24.7, 3.883]
+          128024: [144000, 262144, 82.288, 46.497, 21.5, 1.451]
+          160024: [180000, 262144, 120.431, 49.178, 20.3, 1.010]
+          192024: [216000, 262144, 165.922, 51.789, 19.3, 0.742]
+          224024: [252000, 262144, 218.974, 54.914, 18.2, 0.566]
+          256024: [288000, 262144, 282.643, 57.363, 17.4, 0.441]
 
   # --- GB10 speculative path: native MTP on patched GB10 vLLM image ---
   # Measured with AIMA benchmark.run, concurrency=1, num_requests=1,
