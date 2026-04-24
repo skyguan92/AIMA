@@ -126,7 +126,9 @@ aima serve
 
 - Add a first-run integration gate that runs the installed binary in a clean
   data directory and verifies `hal detect`, `onboarding`, `recommend`, and
-  `run --dry-run` style flows where available.
+  `deploy --dry-run` as the current non-mutating run-plan equivalent.
+  (Implemented via `scripts/first-run-smoke.sh`, `make first-run-smoke`, and
+  the `First Run Smoke` GitHub Actions workflow.)
 - Add a Web UI "Run recommended model" action that maps exactly to the CLI
   golden path. (Implemented after the initial remediation commit via
   `/ui/api/onboarding-start` + the existing deploy SSE flow.)

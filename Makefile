@@ -19,7 +19,7 @@ LDFLAGS := -s -w \
 
 BUILDDIR := build
 
-.PHONY: build all clean version-audit bundle-tag release-assets publish-release-assets icon-assets windows-syso
+.PHONY: build all clean first-run-smoke version-audit bundle-tag release-assets publish-release-assets icon-assets windows-syso
 
 ## build: Build for the current platform
 build:
@@ -51,6 +51,10 @@ publish-release-assets:
 ## clean: Remove build artifacts
 clean:
 	rm -rf $(BUILDDIR)/aima $(BUILDDIR)/aima.exe $(BUILDDIR)/aima-darwin-arm64 $(BUILDDIR)/aima-linux-arm64 $(BUILDDIR)/aima-linux-amd64
+
+## first-run-smoke: Verify the clean first-run path without live deployment
+first-run-smoke:
+	bash ./scripts/first-run-smoke.sh
 
 ## version-audit: Show product tags vs legacy product-like tags
 version-audit:
