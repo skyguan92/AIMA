@@ -135,4 +135,6 @@ aima serve
 - Add release-note examples for three personas: local Mac/Windows user, Linux
   workstation owner, and multi-node operator.
 - Add telemetry-free local diagnostics export so failed first runs are easy to
-  attach to support requests.
+  attach to support requests. (Implemented via `system.diagnostics` and
+  `aima diagnostics export`; bundles are local-only and redact secrets before
+  writing.)

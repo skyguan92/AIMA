@@ -1,10 +1,15 @@
 package onboarding
 
-import "gopkg.in/yaml.v3"
+import (
+	"fmt"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
 
 // FirstRunPolicy contains product policy for the read-only onboarding guide.
-// The factory policy is loaded from catalog/onboarding-policy.yaml by cmd/aima;
-// tests and alternate embeddings can inject a policy through Deps.
+// Production wiring loads it from catalog/onboarding-policy.yaml; tests and
+// alternate embeddings can inject a policy through Deps.
 type FirstRunPolicy struct {
 	NativeGuardrail NativeFirstRunGuardrail `yaml:"native_guardrail" json:"native_guardrail"`
 }
@@ -28,69 +33,66 @@ type ParameterPenalty struct {
 	Penalty      int     `yaml:"penalty" json:"penalty"`
 }
 
-func DefaultFirstRunPolicy() FirstRunPolicy {
-	return FirstRunPolicy{
-		NativeGuardrail: NativeFirstRunGuardrail{
-			WildcardGPUArch:          "*",
-			SkipDiscreteAccelerators: boolPtr(true),
-			RAMUtilizationPenalties: []UtilizationPenalty{
-				{Above: 1.00, Penalty: 35},
-				{Above: 0.85, Penalty: 25},
-				{Above: 0.70, Penalty: 15},
-				{Above: 0.55, Penalty: 8},
-			},
-			ParameterCountPenalties: []ParameterPenalty{
-				{AboveBillion: 32, Penalty: 20},
-				{AboveBillion: 14, Penalty: 12},
-				{AboveBillion: 8, Penalty: 6},
-			},
-			MaxPenalty: 45,
-		},
-	}
-}
-
 func ParseFirstRunPolicyYAML(data []byte) (*FirstRunPolicy, error) {
 	var doc struct {
-		Kind     string         `yaml:"kind"`
-		FirstRun FirstRunPolicy `yaml:"first_run"`
+		Kind     string          `yaml:"kind"`
+		FirstRun *FirstRunPolicy `yaml:"first_run"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	policy := doc.FirstRun.withDefaults()
+	if strings.TrimSpace(doc.Kind) != "onboarding_policy" {
+		return nil, fmt.Errorf("onboarding policy kind must be onboarding_policy")
+	}
+	if doc.FirstRun == nil {
+		return nil, fmt.Errorf("onboarding policy missing first_run")
+	}
+	policy := *doc.FirstRun
+	if err := policy.validate(); err != nil {
+		return nil, err
+	}
 	return &policy, nil
 }
 
 func effectiveFirstRunPolicy(deps *Deps) FirstRunPolicy {
 	if deps != nil && deps.FirstRunPolicy != nil {
-		return deps.FirstRunPolicy.withDefaults()
+		return *deps.FirstRunPolicy
 	}
-	return DefaultFirstRunPolicy()
+	return FirstRunPolicy{}
 }
 
-func (p FirstRunPolicy) withDefaults() FirstRunPolicy {
-	defaults := DefaultFirstRunPolicy()
-	if p.NativeGuardrail.Disabled {
-		defaults.NativeGuardrail.Disabled = true
+func (p FirstRunPolicy) validate() error {
+	guardrail := p.NativeGuardrail
+	if guardrail.Disabled {
+		return nil
 	}
-	if p.NativeGuardrail.WildcardGPUArch != "" {
-		defaults.NativeGuardrail.WildcardGPUArch = p.NativeGuardrail.WildcardGPUArch
+	if strings.TrimSpace(guardrail.WildcardGPUArch) == "" {
+		return fmt.Errorf("first_run.native_guardrail.wildcard_gpu_arch is required")
 	}
-	if p.NativeGuardrail.SkipDiscreteAccelerators != nil {
-		defaults.NativeGuardrail.SkipDiscreteAccelerators = p.NativeGuardrail.SkipDiscreteAccelerators
+	if guardrail.SkipDiscreteAccelerators == nil {
+		return fmt.Errorf("first_run.native_guardrail.skip_discrete_accelerators is required")
 	}
-	if len(p.NativeGuardrail.RAMUtilizationPenalties) > 0 {
-		defaults.NativeGuardrail.RAMUtilizationPenalties = p.NativeGuardrail.RAMUtilizationPenalties
+	if len(guardrail.RAMUtilizationPenalties) == 0 && len(guardrail.ParameterCountPenalties) == 0 {
+		return fmt.Errorf("first_run.native_guardrail must define at least one penalty list")
 	}
-	if len(p.NativeGuardrail.ParameterCountPenalties) > 0 {
-		defaults.NativeGuardrail.ParameterCountPenalties = p.NativeGuardrail.ParameterCountPenalties
+	if guardrail.MaxPenalty <= 0 {
+		return fmt.Errorf("first_run.native_guardrail.max_penalty must be positive")
 	}
-	if p.NativeGuardrail.MaxPenalty > 0 {
-		defaults.NativeGuardrail.MaxPenalty = p.NativeGuardrail.MaxPenalty
+	for i, threshold := range guardrail.RAMUtilizationPenalties {
+		if threshold.Above < 0 {
+			return fmt.Errorf("first_run.native_guardrail.ram_utilization_penalties[%d].above must be non-negative", i)
+		}
+		if threshold.Penalty <= 0 {
+			return fmt.Errorf("first_run.native_guardrail.ram_utilization_penalties[%d].penalty must be positive", i)
+		}
 	}
-	return defaults
-}
-
-func boolPtr(v bool) *bool {
-	return &v
+	for i, threshold := range guardrail.ParameterCountPenalties {
+		if threshold.AboveBillion < 0 {
+			return fmt.Errorf("first_run.native_guardrail.parameter_count_penalties[%d].above_billion must be non-negative", i)
+		}
+		if threshold.Penalty <= 0 {
+			return fmt.Errorf("first_run.native_guardrail.parameter_count_penalties[%d].penalty must be positive", i)
+		}
+	}
+	return nil
 }

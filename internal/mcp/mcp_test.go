@@ -519,7 +519,7 @@ func TestRegisterAllTools(t *testing.T) {
 		"fleet.info", "fleet.exec",
 		"scenario.show", "scenario.apply",
 		"openclaw", "stack",
-		"system.status", "system.config",
+		"system.status", "system.config", "system.diagnostics",
 		"agent.ask", "agent.status", "agent.rollback",
 		"support",
 	}
@@ -737,6 +737,48 @@ func TestSystemConfigTool(t *testing.T) {
 	}
 }
 
+func TestSystemDiagnosticsTool(t *testing.T) {
+	s := NewServer()
+	var gotParams map[string]any
+	deps := &ToolDeps{
+		DiagnosticsExport: func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+			if err := json.Unmarshal(params, &gotParams); err != nil {
+				t.Fatalf("unmarshal params: %v", err)
+			}
+			return json.RawMessage(`{"path":"/tmp/aima-diagnostics.json","telemetry_free":true}`), nil
+		},
+	}
+	RegisterAllTools(s, deps)
+
+	msg := `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"system.diagnostics","arguments":{"inline":false,"include_logs":true,"log_lines":5}}}`
+	resp, err := s.HandleMessage(context.Background(), []byte(msg))
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	var r jsonrpcResponse
+	if err := json.Unmarshal(resp, &r); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if r.Error != nil {
+		t.Fatalf("unexpected jsonrpc error: %+v", r.Error)
+	}
+	raw, _ := json.Marshal(r.Result)
+	var tr ToolResult
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		t.Fatalf("unmarshal ToolResult: %v", err)
+	}
+	if tr.IsError {
+		t.Fatalf("system.diagnostics returned error: %+v", tr)
+	}
+	if !strings.Contains(tr.Content[0].Text, `"telemetry_free":true`) {
+		t.Fatalf("unexpected diagnostics result: %s", tr.Content[0].Text)
+	}
+	if gotParams["log_lines"] != float64(5) || gotParams["include_logs"] != true {
+		t.Fatalf("params = %#v, want include_logs=true log_lines=5", gotParams)
+	}
+}
+
 func TestSupportAskForHelpTool(t *testing.T) {
 	s := NewServer()
 	deps := &ToolDeps{
@@ -811,6 +853,7 @@ func TestProfileMatches(t *testing.T) {
 		{ProfileOperator, "deploy.dry_run", true},
 		{ProfileOperator, "system.status", true},
 		{ProfileOperator, "system.config", true},
+		{ProfileOperator, "system.diagnostics", true},
 		{ProfileOperator, "fleet.info", true}, // fleet. prefix
 		{ProfileOperator, "fleet.exec", true}, // fleet. prefix
 		{ProfileOperator, "scenario.apply", true},

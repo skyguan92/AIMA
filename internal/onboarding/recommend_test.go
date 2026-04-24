@@ -39,6 +39,7 @@ func TestComputeFitScore(t *testing.T) {
 		modelAvailable bool
 		goldenExists   bool
 		maxFitBillion  float64
+		policy         FirstRunPolicy
 		wantMin        int
 		wantMax        int
 	}{
@@ -194,6 +195,7 @@ func TestComputeFitScore(t *testing.T) {
 				Adjustments: make(map[string]any),
 			},
 			maxFitBillion: 80,
+			policy:        testNativeFirstRunPolicy(),
 			wantMin:       0,
 			wantMax:       18,
 		},
@@ -228,7 +230,7 @@ func TestComputeFitScore(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			score := computeFitScore(tt.ma, tt.hw, tt.variant, tt.fit, tt.engineStatus, tt.modelAvailable, tt.goldenExists, tt.maxFitBillion, DefaultFirstRunPolicy())
+			score := computeFitScore(tt.ma, tt.hw, tt.variant, tt.fit, tt.engineStatus, tt.modelAvailable, tt.goldenExists, tt.maxFitBillion, tt.policy)
 			if score < tt.wantMin || score > tt.wantMax {
 				t.Errorf("computeFitScore() = %d, want [%d, %d]", score, tt.wantMin, tt.wantMax)
 			}
@@ -268,8 +270,10 @@ func TestNativeFirstRunRiskPenaltyKeepsSmallModelAboveOversized(t *testing.T) {
 		},
 	}
 
-	smallScore := computeFitScore(small, hw, smallVariant, fit, RecommendedEngineStatus{}, false, false, 80, DefaultFirstRunPolicy())
-	hugeScore := computeFitScore(huge, hw, hugeVariant, fit, RecommendedEngineStatus{}, false, false, 80, DefaultFirstRunPolicy())
+	policy := testNativeFirstRunPolicy()
+
+	smallScore := computeFitScore(small, hw, smallVariant, fit, RecommendedEngineStatus{}, false, false, 80, policy)
+	hugeScore := computeFitScore(huge, hw, hugeVariant, fit, RecommendedEngineStatus{}, false, false, 80, policy)
 
 	if smallScore <= hugeScore {
 		t.Fatalf("small native model score = %d, huge native model score = %d; want small higher", smallScore, hugeScore)
@@ -307,14 +311,30 @@ func TestNativeFirstRunRiskPenaltyCanBeDisabledByPolicy(t *testing.T) {
 			RAMMinMiB: 53248,
 		},
 	}
-	policy := DefaultFirstRunPolicy()
-	policy.NativeGuardrail.Disabled = true
+	policy := FirstRunPolicy{NativeGuardrail: NativeFirstRunGuardrail{Disabled: true}}
 
 	smallScore := computeFitScore(small, hw, smallVariant, fit, RecommendedEngineStatus{}, false, false, 80, policy)
 	hugeScore := computeFitScore(huge, hw, hugeVariant, fit, RecommendedEngineStatus{}, false, false, 80, policy)
 
 	if hugeScore <= smallScore {
 		t.Fatalf("small native model score = %d, huge native model score = %d; disabled guardrail should restore raw largest-model preference", smallScore, hugeScore)
+	}
+}
+
+func testNativeFirstRunPolicy() FirstRunPolicy {
+	skipDiscreteAccelerators := true
+	return FirstRunPolicy{
+		NativeGuardrail: NativeFirstRunGuardrail{
+			WildcardGPUArch:          "*",
+			SkipDiscreteAccelerators: &skipDiscreteAccelerators,
+			RAMUtilizationPenalties: []UtilizationPenalty{
+				{Above: 0.55, Penalty: 40},
+			},
+			ParameterCountPenalties: []ParameterPenalty{
+				{AboveBillion: 14, Penalty: 10},
+			},
+			MaxPenalty: 45,
+		},
 	}
 }
 

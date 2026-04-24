@@ -94,9 +94,10 @@ type ToolDeps struct {
 	DeviceReset    func(ctx context.Context, confirm bool) (json.RawMessage, error)
 
 	// System
-	SystemStatus func(ctx context.Context) (json.RawMessage, error)
-	GetConfig    func(ctx context.Context, key string) (string, error)
-	SetConfig    func(ctx context.Context, key, value string) error
+	SystemStatus      func(ctx context.Context) (json.RawMessage, error)
+	DiagnosticsExport func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
+	GetConfig         func(ctx context.Context, key string) (string, error)
+	SetConfig         func(ctx context.Context, key, value string) error
 
 	// Knowledge (summary)
 	ListKnowledgeSummary func(ctx context.Context) (json.RawMessage, error)

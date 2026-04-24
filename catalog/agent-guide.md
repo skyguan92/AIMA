@@ -278,6 +278,7 @@ deploy.apply("qwen3-0.6b")
 | `system.status` | (none) | full system state | Hardware + deployments + models + engines |
 | `system.config` (get) | `key` | value | Read persistent config (`api_key`/`llm.api_key` masked) |
 | `system.config` (set) | `key`, `value` | success | Write persistent config (`api_key` hot-reloads auth; `llm.*` hot-swaps Agent LLM client) |
+| `system.diagnostics` | `inline?`, `output_path?`, `include_logs?`, `log_lines?` | local path or JSON bundle | Export a telemetry-free local diagnostics bundle with secrets redacted |
 | `catalog.override` | `kind`, `name`, `content` | success | Override YAML asset at runtime |
 | `catalog.validate` | (none) | validation result | Validate engine catalog quality |
 

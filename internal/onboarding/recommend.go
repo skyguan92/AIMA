@@ -568,7 +568,7 @@ func nativeFirstRunRiskPenalty(ma *knowledge.ModelAsset, hw knowledge.HardwareIn
 	if variant == nil {
 		return 0
 	}
-	guardrail := policy.withDefaults().NativeGuardrail
+	guardrail := policy.NativeGuardrail
 	if guardrail.Disabled {
 		return 0
 	}

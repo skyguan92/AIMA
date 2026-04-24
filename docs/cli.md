@@ -89,6 +89,7 @@ aima onboarding                           # 首次使用向导：状态、扫描
 aima onboarding start                     # 显式启动首次使用向导
 aima onboarding recommend                 # 推荐适合当前硬件的模型/引擎组合
 aima onboarding deploy --model <model>    # 通过 onboarding 流程部署模型
+aima diagnostics export                   # 导出本地脱敏诊断包，不自动上传
 ```
 
 `aima askforhelp` 默认连接 `https://aimaserver.com`，运行时自动归一化为 `/api/v1` 支持接口。

@@ -26,7 +26,8 @@ type Deps struct {
 	DB     *state.DB
 	KStore *knowledge.Store
 
-	// FirstRunPolicy controls first-run recommendation guardrails. Nil uses
-	// the embedded factory default policy.
+	// FirstRunPolicy controls first-run recommendation guardrails. Production
+	// wiring loads catalog/onboarding-policy.yaml; nil disables policy
+	// guardrails for tests or custom embeddings that do not provide one.
 	FirstRunPolicy *FirstRunPolicy
 }

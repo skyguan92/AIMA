@@ -77,6 +77,7 @@ func NewRootCmd(app *App) *cobra.Command {
 		newDeviceCmd(app),
 		newAgentCmd(app),
 		newConfigCmd(app),
+		newDiagnosticsCmd(app),
 		newServeCmd(app),
 		newMCPCmd(app),
 		newFleetCmd(app),
