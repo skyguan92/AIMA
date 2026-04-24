@@ -88,47 +88,53 @@ aima hal detect
 
 Prints the detected GPU/NPU (NVIDIA, AMD, Ascend, DCU, Apple, Moore Threads, MetaX, or CPU-only), driver versions, and RAM. A quick way to sanity-check that the binary runs on this host.
 
-### 3. Initialize the server (Linux host)
-
-```bash
-sudo aima init
-```
-
-Installs K3S, HAMi (GPU virtualization, skipped on unsupported hardware), and `aima-serve` as systemd services. Airgap images are pre-pulled, so the host can serve inference offline right after boot. Once this returns, the API listens on `0.0.0.0:6188` and the Web UI is at `http://<server-ip>:6188/ui/`.
-
-On macOS or Windows you can skip `init` and run `aima serve` directly for local-only use.
-
-### 4. First deployment via the onboarding wizard
-
-The simplest path for a new host is the guided flow:
+### 3. Run the first-run guide
 
 ```bash
 aima onboarding
 ```
 
-The wizard walks through: detect hardware → scan existing models → recommend top models and engines for this silicon → deploy with live progress. The same flow is available in the Web UI under the Onboarding tab.
+The guide runs status, scan, and model recommendation checks, then prints the next concrete command. It is read-only by default and does not install system services or deploy a model without an explicit follow-up command.
 
-If you already know what you want:
+### 4. Run a safe starter model
 
 ```bash
-aima deploy apply --model qwen3.5-35b-a3b
-# AIMA picks the engine (vLLM / SGLang / llama.cpp) and config for your hardware.
-aima deploy list
+aima run qwen3-4b
 ```
 
-### 5. Call the OpenAI-compatible API
+`run` resolves the model, picks the engine and config for this host, pulls missing assets, deploys the model, and waits for readiness. You can replace `qwen3-4b` with a model from `aima onboarding recommend`.
+
+To keep the OpenAI-compatible API and Web UI open in this terminal:
 
 ```bash
-curl http://<server-ip>:6188/v1/chat/completions \
+aima serve
+```
+
+### 5. Linux shared server path
+
+For a Linux workstation or server that should serve other machines, initialize the infrastructure stack first:
+
+```bash
+sudo aima init
+aima deploy qwen3-4b
+aima serve
+```
+
+`init` installs the local infrastructure services AIMA needs on Linux. macOS and Windows users can skip it for local-only native use.
+
+### 6. Call the OpenAI-compatible API
+
+```bash
+curl http://127.0.0.1:6188/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.5-35b-a3b","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"qwen3-4b","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 Any OpenAI SDK client works against `http://<server-ip>:6188/v1`.
 
 ### Extras
 
-- For multi-host fleets, on a second machine with the AIMA binary (no `init` needed) run `aima discover` for mDNS LAN auto-discovery, then `aima fleet devices` to list peers and `aima fleet exec <id> hal.detect` to drive them remotely.
+- For multi-host fleets, run `aima fleet devices` to list mDNS-discovered AIMA peers, then `aima fleet exec <id> hal.detect` to drive them remotely.
 - AIMA is an MCP server, so any MCP-compatible agent runtime can drive it. See [Agent-native](#agent-native) above.
 - Enable API-key auth with `aima config set api_key <key>` (hot-reloads, see [Security](#security)).
 

@@ -1540,10 +1540,21 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	buildKnowledgeDeps(ac, deps)
 	buildBenchmarkDeps(ac, deps, resolveEndpoint)
 
-	// Onboarding (multi-action MCP tool). The 5 closures below wrap the
+	// Onboarding (multi-action MCP tool). The closures below wrap the
 	// internal/onboarding package entry points; scan/init/deploy collect
 	// Event slices into the response JSON so MCP callers receive the full
 	// progress log in a single request-response cycle.
+	deps.OnboardingStart = func(ctx context.Context, locale string) (json.RawMessage, error) {
+		obDeps := buildOnboardingDepsStruct(ac, deps)
+		if locale == "" {
+			locale = "en"
+		}
+		result, err := onboarding.RunStart(ctx, obDeps, locale, nil)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
 	deps.OnboardingStatus = func(ctx context.Context) (json.RawMessage, error) {
 		obDeps := buildOnboardingDepsStruct(ac, deps)
 		result, err := onboarding.BuildStatus(ctx, obDeps)

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"log/slog"
 
+	"github.com/jguan/aima/catalog"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/onboarding"
@@ -14,7 +16,8 @@ import (
 // internal/onboarding package (which cannot import cmd/aima).
 func buildOnboardingDepsStruct(ac *appContext, deps *mcp.ToolDeps) *onboarding.Deps {
 	obDeps := &onboarding.Deps{
-		ToolDeps: deps,
+		ToolDeps:       deps,
+		FirstRunPolicy: loadOnboardingFirstRunPolicy(),
 	}
 	if ac != nil {
 		obDeps.Cat = ac.cat
@@ -38,4 +41,17 @@ func buildOnboardingDepsStruct(ac *appContext, deps *mcp.ToolDeps) *onboarding.D
 		}
 	}
 	return obDeps
+}
+
+func loadOnboardingFirstRunPolicy() *onboarding.FirstRunPolicy {
+	raw, err := catalog.FS.ReadFile("onboarding-policy.yaml")
+	if err != nil {
+		return nil
+	}
+	policy, err := onboarding.ParseFirstRunPolicyYAML(raw)
+	if err != nil {
+		slog.Warn("failed to parse onboarding first-run policy", "error", err)
+		return nil
+	}
+	return policy
 }

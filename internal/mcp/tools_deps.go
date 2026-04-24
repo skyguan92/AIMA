@@ -155,6 +155,7 @@ type ToolDeps struct {
 	OpenClawClaim  func(ctx context.Context, sections []string, dryRun bool) (json.RawMessage, error)
 
 	// Onboarding wizard (multi-action)
+	OnboardingStart     func(ctx context.Context, locale string) (json.RawMessage, error)
 	OnboardingStatus    func(ctx context.Context) (json.RawMessage, error)
 	OnboardingScan      func(ctx context.Context) (json.RawMessage, error)
 	OnboardingRecommend func(ctx context.Context, locale string) (json.RawMessage, error)

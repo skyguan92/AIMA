@@ -44,7 +44,6 @@ aima model remove --delete-files <name>   # 删除模型记录并删除文件
 aima engine scan                          # 扫描本地引擎
 aima engine info <name>                   # 查看引擎详情
 aima engine list                          # 列出可用引擎
-aima engine plan                          # 结合当前硬件给出引擎推荐
 aima engine pull [engine]                 # 拉取引擎镜像
 aima engine import <path>                 # 从 OCI tar 导入
 aima engine remove <engine>               # 删除引擎镜像
@@ -86,6 +85,10 @@ aima app register                         # 注册应用依赖
 aima app provision [name]                 # 自动为应用补齐依赖服务
 aima openclaw sync                        # 同步已部署模型到 OpenClaw
 aima askforhelp [request]                 # 请求远程协助/支持服务
+aima onboarding                           # 首次使用向导：状态、扫描、推荐
+aima onboarding start                     # 显式启动首次使用向导
+aima onboarding recommend                 # 推荐适合当前硬件的模型/引擎组合
+aima onboarding deploy --model <model>    # 通过 onboarding 流程部署模型
 ```
 
 `aima askforhelp` 默认连接 `https://aimaserver.com`，运行时自动归一化为 `/api/v1` 支持接口。
@@ -96,7 +99,6 @@ aima askforhelp [request]                 # 请求远程协助/支持服务
 ```bash
 aima config get <key>                     # 读取配置
 aima config set <key> <value>             # 修改配置
-aima discover                             # 发现局域网中的 AIMA 服务
 aima fleet devices                        # 列出局域网设备
 aima fleet info <device-id>               # 查看远端设备详情
 aima fleet tools <device-id>              # 列出远端工具
@@ -184,4 +186,4 @@ aima ask "为什么我的模型推理很慢？"
 
 ---
 
-*最后更新：2026-04-01 (对齐当前命令面，移除已不存在的 start/stop/chat 示例)*
+*最后更新：2026-04-24 (对齐 onboarding 首次使用路径，移除不存在的 engine plan / discover 示例)*

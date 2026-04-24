@@ -82,6 +82,7 @@ func TestNewRootCmd(t *testing.T) {
 		"deploy", "undeploy", "status",
 		"model", "engine", "knowledge", "catalog",
 		"ask", "agent", "config", "serve", "mcp",
+		"onboarding",
 	}
 	cmds := make(map[string]bool)
 	for _, c := range root.Commands() {
@@ -244,6 +245,71 @@ func TestAgentSubcommands(t *testing.T) {
 		if !subs[name] {
 			t.Errorf("agent missing subcommand %q", name)
 		}
+	}
+}
+
+func TestOnboardingRootRunsGuidedStart(t *testing.T) {
+	app := testApp(t)
+	var startCalls int
+	var gotLocale string
+	app.ToolDeps.OnboardingStart = func(ctx context.Context, locale string) (json.RawMessage, error) {
+		startCalls++
+		gotLocale = locale
+		return json.RawMessage(`{"status":{"onboarding_completed":false,"hardware":{"profile_match":"apple-m4-16g","os":"darwin","arch":"arm64","ram_mib":16384,"gpu":[]},"stack_status":{"docker":"skipped","k3s":"skipped","needs_init":false,"init_tier_recommendation":"native","can_auto_init":false}},"scan":{"engines":[{"type":"llamacpp","runtime":"native"}],"models":[],"central_connected":false,"configs_pulled":0,"benchmarks_pulled":0},"recommend":{"hardware_profile":"apple-m4-16g","gpu_arch":"","gpu_vram_mib":0,"gpu_count":0,"total_models_evaluated":2,"recommendations":[{"model_name":"qwen3-4b","model_type":"llm","family":"qwen3","parameter_count":"4B","fit_score":72,"hardware_fit":true,"recommendation_reason":"safe first run","engine":{"type":"llamacpp","name":"llamacpp"},"model_status":{"local_available":false}}]},"next_model":"qwen3-4b","next_command":"aima run qwen3-4b"}`), nil
+	}
+
+	root := NewRootCmd(app)
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"onboarding", "--locale", "zh"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("onboarding failed: %v\n%s", err, buf.String())
+	}
+	if startCalls != 1 {
+		t.Fatalf("start calls = %d, want 1", startCalls)
+	}
+	if gotLocale != "zh" {
+		t.Fatalf("locale = %q, want zh", gotLocale)
+	}
+	output := buf.String()
+	for _, want := range []string{
+		"AIMA first-run guide",
+		"Stack: docker=skipped k3s=skipped needs_init=false",
+		"Next: aima run qwen3-4b",
+		"Keep the local API/UI open with: aima serve",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("onboarding output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestOnboardingStartAliasRunsGuidedStart(t *testing.T) {
+	app := testApp(t)
+	app.ToolDeps.OnboardingStart = func(ctx context.Context, locale string) (json.RawMessage, error) {
+		return json.RawMessage(`{"status":{"onboarding_completed":false,"hardware":{"profile_match":"","os":"linux","arch":"amd64","ram_mib":32768,"gpu":[]},"stack_status":{"docker":"not_installed","k3s":"not_installed","needs_init":true,"init_tier_recommendation":"docker","can_auto_init":false,"init_blocked_reason":"automatic init requires root"}},"scan":{"engines":[],"models":[],"central_connected":false},"recommend":{"total_models_evaluated":1,"recommendations":[{"model_name":"qwen3-4b","model_type":"llm","family":"qwen3","parameter_count":"4B","fit_score":68,"hardware_fit":true,"model_status":{"local_available":false}}]},"next_model":"qwen3-4b","next_command":"aima run qwen3-4b"}`), nil
+	}
+
+	root := NewRootCmd(app)
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"onboarding", "start"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("onboarding start failed: %v\n%s", err, buf.String())
+	}
+	output := buf.String()
+	if !strings.Contains(output, "Init blocked: automatic init requires root") {
+		t.Fatalf("onboarding start output missing blocked reason:\n%s", output)
+	}
+	if !strings.Contains(output, "Manual init: sudo aima onboarding init --tier docker --yes") {
+		t.Fatalf("onboarding start output missing manual init suggestion:\n%s", output)
+	}
+	if !strings.Contains(output, "Next: aima run qwen3-4b") {
+		t.Fatalf("onboarding start output missing next command:\n%s", output)
 	}
 }
 

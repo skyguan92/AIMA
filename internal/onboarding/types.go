@@ -184,6 +184,18 @@ type RecommendResult struct {
 	Recommendations []ModelRecommendation `json:"recommendations"`
 }
 
+// StartResult is the read-only first-run guide payload. It combines status,
+// scan, and recommend so CLI, MCP, and UI callers can share the same first-run
+// decision surface.
+type StartResult struct {
+	Status      StatusResult    `json:"status"`
+	Scan        ScanResult      `json:"scan"`
+	Events      []Event         `json:"events,omitempty"`
+	Recommend   RecommendResult `json:"recommend"`
+	NextModel   string          `json:"next_model,omitempty"`
+	NextCommand string          `json:"next_command,omitempty"`
+}
+
 // InitResult describes the final state after stack init finishes.
 type InitResult struct {
 	AllReady    bool            `json:"all_ready"`

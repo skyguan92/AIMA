@@ -88,47 +88,53 @@ aima hal detect
 
 打印识别到的 GPU / NPU（NVIDIA、AMD、昇腾、DCU、Apple、摩尔线程、沐曦，或者仅 CPU）、驱动版本和 RAM。这一步也是确认二进制能在这台机器上跑起来的快速方法。
 
-### 3. 初始化服务端（Linux 主机）
-
-```bash
-sudo aima init
-```
-
-安装 K3S、HAMi（GPU 虚拟化，不支持的硬件会跳过）、`aima-serve` 三个 systemd 服务。airgap 镜像预先拉好，新装机也能直接离线提供推理。执行完之后 API 监听 `0.0.0.0:6188`，Web UI 在 `http://<server-ip>:6188/ui/`。
-
-macOS 或 Windows 可以跳过 `init`，直接 `aima serve` 跑本地。
-
-### 4. 走 onboarding 向导做首次部署
-
-新机器最省事的路径是走向导：
+### 3. 运行首次使用向导
 
 ```bash
 aima onboarding
 ```
 
-向导依次做：检测硬件 → 扫描已有模型 → 推荐适合这块芯片的模型和引擎 → 带进度条部署。Web UI 的 Onboarding tab 是同一套流程。
+向导会依次做状态检查、资源扫描、模型推荐，并打印下一条可以直接执行的命令。默认是只读检查，不会自动安装系统服务，也不会在没有明确确认的情况下部署模型。
 
-如果你已经知道要跑什么：
+### 4. 跑一个安全的入门模型
 
 ```bash
-aima deploy apply --model qwen3.5-35b-a3b
-# AIMA 按硬件自动挑引擎（vLLM / SGLang / llama.cpp）和配置
-aima deploy list
+aima run qwen3-4b
 ```
 
-### 5. 调 OpenAI 兼容 API
+`run` 会解析模型、按当前硬件选择引擎和配置、拉取缺失资源、部署模型并等待就绪。你也可以把 `qwen3-4b` 换成 `aima onboarding recommend` 推荐的模型。
+
+如果需要在当前终端保持 OpenAI 兼容 API 和 Web UI 常驻：
 
 ```bash
-curl http://<server-ip>:6188/v1/chat/completions \
+aima serve
+```
+
+### 5. Linux 共享服务端路径
+
+如果这台 Linux 工作站或服务器要给其他机器提供推理服务，先初始化基础设施栈：
+
+```bash
+sudo aima init
+aima deploy qwen3-4b
+aima serve
+```
+
+`init` 会安装 Linux 本地服务栈。macOS 和 Windows 的本地 native 使用可以跳过这一步。
+
+### 6. 调 OpenAI 兼容 API
+
+```bash
+curl http://127.0.0.1:6188/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.5-35b-a3b","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"qwen3-4b","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 任何 OpenAI SDK 客户端都能连 `http://<server-ip>:6188/v1`。
 
 ### 其他
 
-- 多机 fleet：在另一台装了 AIMA 的机器上（不用 `init`）跑 `aima discover` 做 mDNS 局域网自动发现，然后 `aima fleet devices` 列节点，`aima fleet exec <id> hal.detect` 远程驱动。
+- 多机 fleet：运行 `aima fleet devices` 列出 mDNS 自动发现的 AIMA 节点，再用 `aima fleet exec <id> hal.detect` 远程驱动。
 - AIMA 是 MCP server，任何 MCP 兼容 agent runtime 都能驱动它。见上方 [Agent 原生](#agent-原生) 一段。
 - 启用 API Key 认证：`aima config set api_key <key>`（热更新，参见 [安全](#安全)）。
 

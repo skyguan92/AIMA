@@ -19,6 +19,11 @@ func TestComputeFitScore(t *testing.T) {
 	llmBigAsset.Metadata.Type = "llm"
 	llmBigAsset.Metadata.ParameterCount = "30B-A3B"
 
+	llmHugeAsset := &knowledge.ModelAsset{}
+	llmHugeAsset.Metadata.Name = "qwen3-coder-next"
+	llmHugeAsset.Metadata.Type = "llm"
+	llmHugeAsset.Metadata.ParameterCount = "80B"
+
 	asrAsset := &knowledge.ModelAsset{}
 	asrAsset.Metadata.Name = "qwen3-asr-1.7b"
 	asrAsset.Metadata.Type = "asr"
@@ -170,8 +175,9 @@ func TestComputeFitScore(t *testing.T) {
 			// llamacpp on 16GB M4 — 80B Q4 overflows RAM
 			// D1=30(LLM) + D2a=0(ram 53248/16384=325%!) + D2b=6(bw=0) + D2c=0(arch="*")
 			// + D3=0 + D4a=8(80/80) + D4b=0 + D5=10(single) = 54
+			// - first-run risk penalty=45 => 9
 			name: "llamacpp 80B on M4: RAM overflow penalized",
-			ma:   llmBigAsset,
+			ma:   llmHugeAsset,
 			hw: knowledge.HardwareInfo{
 				RAMTotalMiB: 16384,
 				GPUCount:    0,
@@ -188,8 +194,8 @@ func TestComputeFitScore(t *testing.T) {
 				Adjustments: make(map[string]any),
 			},
 			maxFitBillion: 80,
-			wantMin:       48,
-			wantMax:       60,
+			wantMin:       0,
+			wantMax:       18,
 		},
 		{
 			name: "fit=false returns zero",
@@ -222,11 +228,93 @@ func TestComputeFitScore(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			score := computeFitScore(tt.ma, tt.hw, tt.variant, tt.fit, tt.engineStatus, tt.modelAvailable, tt.goldenExists, tt.maxFitBillion)
+			score := computeFitScore(tt.ma, tt.hw, tt.variant, tt.fit, tt.engineStatus, tt.modelAvailable, tt.goldenExists, tt.maxFitBillion, DefaultFirstRunPolicy())
 			if score < tt.wantMin || score > tt.wantMax {
 				t.Errorf("computeFitScore() = %d, want [%d, %d]", score, tt.wantMin, tt.wantMax)
 			}
 		})
+	}
+}
+
+func TestNativeFirstRunRiskPenaltyKeepsSmallModelAboveOversized(t *testing.T) {
+	small := &knowledge.ModelAsset{}
+	small.Metadata.Name = "qwen3-8b"
+	small.Metadata.Type = "llm"
+	small.Metadata.ParameterCount = "8B"
+
+	huge := &knowledge.ModelAsset{}
+	huge.Metadata.Name = "qwen3-coder-next"
+	huge.Metadata.Type = "llm"
+	huge.Metadata.ParameterCount = "80B"
+
+	hw := knowledge.HardwareInfo{
+		RAMTotalMiB: 16384,
+		GPUCount:    0,
+	}
+	fit := &knowledge.FitReport{
+		Fit:         true,
+		Adjustments: make(map[string]any),
+	}
+	smallVariant := &knowledge.ModelVariant{
+		Hardware: knowledge.ModelVariantHardware{
+			GPUArch:   "*",
+			RAMMinMiB: 6144,
+		},
+	}
+	hugeVariant := &knowledge.ModelVariant{
+		Hardware: knowledge.ModelVariantHardware{
+			GPUArch:   "*",
+			RAMMinMiB: 53248,
+		},
+	}
+
+	smallScore := computeFitScore(small, hw, smallVariant, fit, RecommendedEngineStatus{}, false, false, 80, DefaultFirstRunPolicy())
+	hugeScore := computeFitScore(huge, hw, hugeVariant, fit, RecommendedEngineStatus{}, false, false, 80, DefaultFirstRunPolicy())
+
+	if smallScore <= hugeScore {
+		t.Fatalf("small native model score = %d, huge native model score = %d; want small higher", smallScore, hugeScore)
+	}
+}
+
+func TestNativeFirstRunRiskPenaltyCanBeDisabledByPolicy(t *testing.T) {
+	small := &knowledge.ModelAsset{}
+	small.Metadata.Name = "qwen3-8b"
+	small.Metadata.Type = "llm"
+	small.Metadata.ParameterCount = "8B"
+
+	huge := &knowledge.ModelAsset{}
+	huge.Metadata.Name = "qwen3-coder-next"
+	huge.Metadata.Type = "llm"
+	huge.Metadata.ParameterCount = "80B"
+
+	hw := knowledge.HardwareInfo{
+		RAMTotalMiB: 16384,
+		GPUCount:    0,
+	}
+	fit := &knowledge.FitReport{
+		Fit:         true,
+		Adjustments: make(map[string]any),
+	}
+	smallVariant := &knowledge.ModelVariant{
+		Hardware: knowledge.ModelVariantHardware{
+			GPUArch:   "*",
+			RAMMinMiB: 6144,
+		},
+	}
+	hugeVariant := &knowledge.ModelVariant{
+		Hardware: knowledge.ModelVariantHardware{
+			GPUArch:   "*",
+			RAMMinMiB: 53248,
+		},
+	}
+	policy := DefaultFirstRunPolicy()
+	policy.NativeGuardrail.Disabled = true
+
+	smallScore := computeFitScore(small, hw, smallVariant, fit, RecommendedEngineStatus{}, false, false, 80, policy)
+	hugeScore := computeFitScore(huge, hw, hugeVariant, fit, RecommendedEngineStatus{}, false, false, 80, policy)
+
+	if hugeScore <= smallScore {
+		t.Fatalf("small native model score = %d, huge native model score = %d; disabled guardrail should restore raw largest-model preference", smallScore, hugeScore)
 	}
 }
 
@@ -242,11 +330,11 @@ func TestBandwidthAffinity(t *testing.T) {
 	denseAsset.Metadata.ParameterCount = "8B"
 
 	tests := []struct {
-		name     string
-		hw       knowledge.HardwareInfo
-		ma       *knowledge.ModelAsset
-		wantMin  int
-		wantMax  int
+		name    string
+		hw      knowledge.HardwareInfo
+		ma      *knowledge.ModelAsset
+		wantMin int
+		wantMax int
 	}{
 		{
 			// GB10: 128GB unified / 273 GB/s → ratio=0.469 → VRAM-rich

@@ -218,6 +218,38 @@ func TestBuildStackStatus_ExposesAutoInitCapability(t *testing.T) {
 	}
 }
 
+func TestBuildStackStatus_NativeSkippedDoesNotNeedInit(t *testing.T) {
+	orig := DetectOnboardingInitCapability
+	initCapabilityCalled := false
+	DetectOnboardingInitCapability = func(deps *mcp.ToolDeps) (bool, string) {
+		initCapabilityCalled = true
+		return true, ""
+	}
+	defer func() { DetectOnboardingInitCapability = orig }()
+
+	deps := &Deps{
+		ToolDeps: &mcp.ToolDeps{
+			StackStatus: func(ctx context.Context) (json.RawMessage, error) {
+				return json.RawMessage(`{"components":[{"name":"docker","ready":false,"skipped":true},{"name":"k3s","ready":false,"skipped":true}],"all_ready":true}`), nil
+			},
+		},
+	}
+
+	status, err := BuildStackStatus(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("BuildStackStatus: %v", err)
+	}
+	if status.NeedsInit {
+		t.Fatal("expected native skipped stack to not need init")
+	}
+	if status.InitTierRecommendation != "native" {
+		t.Fatalf("tier = %q, want native", status.InitTierRecommendation)
+	}
+	if initCapabilityCalled {
+		t.Fatal("native skipped stack should not ask for auto-init capability")
+	}
+}
+
 func TestIsNewerVersion(t *testing.T) {
 	tests := []struct {
 		name    string

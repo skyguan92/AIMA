@@ -78,9 +78,9 @@ func isBlockedAgentTool(name string, arguments json.RawMessage) (bool, string) {
 		}
 	}
 
-	// onboarding is a merged action tool: status/scan/recommend are read-only
-	// and safe; init installs docker/k3s (infrastructure mutation) and deploy
-	// applies a deployment. Block both destructive actions for the Agent —
+	// onboarding is a merged action tool: start/status/scan/recommend are
+	// read-only and safe; init installs docker/k3s (infrastructure mutation)
+	// and deploy applies a deployment. Block both destructive actions for the Agent —
 	// operators should run them via CLI / UI wizard, and agents that truly
 	// need to deploy can call the confirmable deploy.apply tool instead.
 	if name == "onboarding" {

@@ -177,6 +177,14 @@ func BuildStackStatus(ctx context.Context, deps *Deps) (StackStatusInfo, error) 
 		}
 	}
 
+	// Native-only hosts (macOS/Windows/local llama.cpp paths) intentionally skip
+	// Docker/K3S. Treat that as a valid first-run state, not a broken stack.
+	if result.Docker == "skipped" && result.K3S == "skipped" {
+		result.NeedsInit = false
+		result.InitTierRecommendation = "native"
+		return result, nil
+	}
+
 	// Determine needs_init: true if neither docker nor k3s is ready
 	if result.Docker != "ready" && result.K3S != "ready" {
 		result.NeedsInit = true
