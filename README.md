@@ -213,7 +213,7 @@ Every AIMA release passes through The Forge — an end-to-end UAT matrix run on 
 - **16 UAT items** per release covering install / hardware detect / model deploy / API / MCP / fleet / onboarding wizard / failover
 - **1,200+ evidence files** and ~1,000 hours of logged runtime across the fleet
 
-The live registry of test machines, per-device UAT results, and reproducer commands live in `CLAUDE.md` under *Remote Test Lab*.
+Per-release UAT report lives in [`docs/uat/v0.4-release-uat.md`](docs/uat/v0.4-release-uat.md), with raw per-device evidence (logs, configs, reproducer commands) under [`artifacts/uat/v0.4/`](artifacts/uat/v0.4/) — `u1`…`u15` covering install, hardware detect, model deploy, API/MCP, fleet, onboarding, and failover on GB10, RTX 4090, AMD W7900D, Apple M4, and others.
 
 ## Agent-native
 
