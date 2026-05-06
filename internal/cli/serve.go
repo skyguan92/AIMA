@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -35,6 +36,7 @@ func newServeCmd(app *App) *cobra.Command {
 		mdnsEnabled     bool
 		discoverEnabled bool
 		allowInsecure   bool
+		staticBackends  []string
 	)
 
 	cmd := &cobra.Command{
@@ -81,6 +83,10 @@ func newServeCmd(app *App) *cobra.Command {
 					slog.Info("synced proxy API key to agent LLM client (local endpoint)")
 				}
 				slog.Info("API key authentication enabled")
+			}
+
+			if err := registerStaticBackends(app.Proxy, staticBackends); err != nil {
+				return err
 			}
 
 			// Start backend sync loop (reconcile proxy routes with deployments)
@@ -221,6 +227,7 @@ func newServeCmd(app *App) *cobra.Command {
 	cmd.Flags().BoolVar(&mdnsEnabled, "mdns", true, "Enable mDNS service broadcast")
 	cmd.Flags().BoolVar(&discoverEnabled, "discover", false, "Discover remote inference services via mDNS")
 	cmd.Flags().BoolVar(&allowInsecure, "allow-insecure-no-auth", false, "Allow non-loopback listen addresses without API key (NOT recommended)")
+	cmd.Flags().StringArrayVar(&staticBackends, "backend", nil, "Static backend registration: model=http://host:port[/base],engine=vllm,upstream=served,param=35B,context=32768")
 
 	return cmd
 }
@@ -250,6 +257,79 @@ func runStartupAssetReconcile(ctx context.Context, deps *mcp.ToolDeps) {
 			slog.Info("startup external service scan completed")
 		}
 	}
+}
+
+func registerStaticBackends(server *proxy.Server, specs []string) error {
+	for _, spec := range specs {
+		model, backend, err := parseStaticBackendSpec(spec)
+		if err != nil {
+			return err
+		}
+		server.RegisterBackend(model, backend)
+		slog.Info("static backend registered", "model", model, "addr", backend.Address, "engine", backend.EngineType)
+	}
+	return nil
+}
+
+func parseStaticBackendSpec(spec string) (string, *proxy.Backend, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", nil, fmt.Errorf("empty static backend spec")
+	}
+
+	parts := strings.Split(spec, ",")
+	model, rawTarget, ok := strings.Cut(strings.TrimSpace(parts[0]), "=")
+	if !ok || strings.TrimSpace(model) == "" || strings.TrimSpace(rawTarget) == "" {
+		return "", nil, fmt.Errorf("static backend %q must start with model=http://host:port[/base]", spec)
+	}
+	model = strings.TrimSpace(model)
+	target := strings.TrimSpace(rawTarget)
+	if !strings.Contains(target, "://") {
+		target = "http://" + target
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Host == "" {
+		return "", nil, fmt.Errorf("static backend %q has invalid target %q", spec, rawTarget)
+	}
+
+	basePath := strings.TrimRight(parsed.Path, "/")
+	backend := &proxy.Backend{
+		ModelName:     model,
+		UpstreamModel: model,
+		Address:       parsed.Host,
+		BasePath:      basePath,
+		Ready:         true,
+		Remote:        true,
+	}
+
+	for _, rawPart := range parts[1:] {
+		key, value, ok := strings.Cut(strings.TrimSpace(rawPart), "=")
+		if !ok {
+			return "", nil, fmt.Errorf("static backend %q has malformed option %q", spec, rawPart)
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		switch key {
+		case "engine":
+			backend.EngineType = value
+		case "upstream", "served_model", "served-model":
+			backend.UpstreamModel = value
+		case "base_path", "base-path":
+			backend.BasePath = strings.TrimRight(value, "/")
+		case "param", "params", "parameter_count", "parameter-count":
+			backend.ParameterCount = value
+		case "context", "context_window", "context-window":
+			contextWindow, err := strconv.Atoi(value)
+			if err != nil || contextWindow < 0 {
+				return "", nil, fmt.Errorf("static backend %q has invalid context value %q", spec, value)
+			}
+			backend.ContextWindowTokens = contextWindow
+		default:
+			return "", nil, fmt.Errorf("static backend %q has unknown option %q", spec, key)
+		}
+	}
+
+	return model, backend, nil
 }
 
 func resolveMCPProfile(mcpEnabled bool, profile string) (mcp.Profile, error) {

@@ -325,6 +325,11 @@ body {
   font-size: 11px;
   color: var(--text-tertiary);
 }
+.device-private {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
 
 .hardware-group {
   margin-top: 14px;
@@ -397,6 +402,89 @@ body {
   font-size: 11px;
   color: var(--text-tertiary);
   margin-left: auto;
+}
+.api-access-card,
+.api-access-inline {
+  margin-top: 10px;
+  padding: 10px;
+  border: 0.5px solid var(--border-medium);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+.api-access-card {
+  max-width: 620px;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: left;
+}
+.api-access-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+.api-access-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.api-access-desc {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.api-access-row {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+.api-access-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.api-access-value {
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.api-access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.api-copy-btn {
+  padding: 4px 8px;
+  border: 0.5px solid var(--border-medium);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.api-copy-btn:hover {
+  color: #fff;
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.api-public-note {
+  margin-top: 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
 }
 .model-list-item {
   display: flex;
@@ -3521,7 +3609,7 @@ body {
             <div class="wiz-scan-list">
               <template x-for="(item, i) in onboardingScanLog" :key="i">
                 <div class="wiz-scan-item">
-                  <span class="wiz-scan-icon" x-text="item.type === 'engine' ? '\u2699' : item.type === 'model' ? '\u25A0' : '\u2714'"></span>
+                  <span class="wiz-scan-icon" x-text="item.type === 'engine' ? '\u2699' : item.type === 'model' ? 'M' : '\u2714'"></span>
                   <span class="wiz-scan-type" x-text="item.type"></span>
                   <span x-text="item.name"></span>
                 </div>
@@ -3550,6 +3638,7 @@ body {
           </div>
           <div class="wiz-actions" style="margin-top:16px">
             <button class="wiz-btn wiz-btn-secondary" @click="onboardingPhase = 'detecting'" x-text="t('wiz_back')"></button>
+            <button class="wiz-btn wiz-btn-secondary" x-show="onboardingScanDone && onboardingScanResults.models.length > 0" @click="onboardingPhase = 'local'" x-text="t('wiz_choose_local')"></button>
             <template x-if="onboardingScanDone">
               <button class="wiz-btn wiz-btn-primary" @click="onboardingPhase = 'choosing'" x-text="t('wiz_continue')"></button>
             </template>
@@ -3560,6 +3649,23 @@ body {
         <div x-show="onboardingPhase === 'choosing'" x-cloak>
           <div class="wiz-card">
             <div class="wiz-card-title"><span class="wiz-icon">&#x1F914;</span> <span x-text="t('wiz_choosing')"></span></div>
+            <template x-if="wizHasExistingService()">
+              <div style="margin-bottom:14px;padding:14px;background:rgba(34,197,94,0.10);border:1px solid rgba(34,197,94,0.35);border-radius:var(--radius-sm)">
+                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+                  <div>
+                    <div style="font-size:12px;color:var(--success);font-weight:700;text-transform:uppercase" x-text="t('wiz_best_choice')"></div>
+                    <div style="font-size:15px;font-weight:700;color:var(--text);margin-top:4px" x-text="wizBestExistingService().model"></div>
+                    <div style="font-size:12px;color:var(--text-dim);margin-top:3px">
+                      <span x-text="wizBestExistingService().engine || 'OpenAI-compatible'"></span>
+                      <span x-show="wizBestExistingService().endpoint" x-text="' \u00B7 ' + wizBestExistingService().endpoint"></span>
+                    </div>
+                  </div>
+                  <button class="wiz-btn wiz-btn-primary" style="white-space:nowrap"
+                    @click="wizUseExistingService(wizBestExistingService())"
+                    x-text="t('wiz_choose_existing')"></button>
+                </div>
+              </div>
+            </template>
             <div class="wiz-choice-grid">
               <div class="wiz-choice-card" @click="wizGoRecommend()">
                 <div class="wiz-choice-icon">&#x2728;</div>
@@ -3717,7 +3823,27 @@ body {
               <div class="wiz-complete-icon">&#x2705;</div>
               <h3 x-text="t('wiz_complete_title')"></h3>
               <p x-text="t('wiz_model_ready') + ' ' + (onboardingDeployModel || '')"></p>
-              <div class="wiz-endpoint" x-show="onboardingDeployEndpoint" x-text="onboardingDeployEndpoint"></div>
+              <div class="api-access-card" x-show="onboardingDeployModel || onboardingDeployEndpoint">
+                <div class="api-access-head">
+                  <span class="api-access-title" x-text="t('api_access')"></span>
+                  <span class="api-access-desc" x-text="t('api_access_desc')"></span>
+                </div>
+                <div class="api-access-row">
+                  <span class="api-access-label" x-text="t('api_base_url')"></span>
+                  <code class="api-access-value" x-text="apiBaseDisplay()"></code>
+                  <button type="button" class="api-copy-btn" @click="copyCurrentAPIBaseURL($event)" x-text="t('wiz_copy')"></button>
+                </div>
+                <div class="api-access-row">
+                  <span class="api-access-label" x-text="t('api_model')"></span>
+                  <code class="api-access-value" x-text="apiModelName(onboardingDeployModel)"></code>
+                  <button type="button" class="api-copy-btn" @click="wizCopyText(apiModelName(onboardingDeployModel), $event)" x-text="t('wiz_copy')"></button>
+                </div>
+                <div class="api-access-actions">
+                  <button type="button" class="api-copy-btn" @click="copyAPICurl({ name: onboardingDeployModel, model: onboardingDeployModel }, $event)" x-text="t('api_copy_curl')"></button>
+                  <button type="button" class="api-copy-btn" @click="copyOpenAISDKExample({ name: onboardingDeployModel, model: onboardingDeployModel }, $event)" x-text="t('api_copy_openai')"></button>
+                </div>
+                <div class="api-public-note" x-text="t('api_public_unconfigured')"></div>
+              </div>
               <div style="margin-top:8px">
                 <button class="wiz-btn wiz-btn-primary wiz-btn-lg" @click="wizFinish()" x-text="t('wiz_start_chatting')"></button>
               </div>
@@ -3784,8 +3910,8 @@ body {
         <div class="panel-title">&#x25A0; <span x-text="t('hardware')"></span></div>
         <!-- Device identity -->
         <div class="device-identity">
-          <span class="device-name" x-text="hostname || selfIp || 'This Device'"></span>
-          <span class="device-ip" x-show="selfIp && selfIp !== 'localhost' && selfIp !== '127.0.0.1'" x-text="selfIp"></span>
+          <span class="device-name" x-text="hostname || 'This Device'"></span>
+          <span class="device-private" x-show="privateAddressLabel()" x-text="privateAddressLabel()"></span>
         </div>
         <div class="hardware-group">
           <div class="hardware-group-title" x-text="t('hardware_group_accelerator')"></div>
@@ -4468,7 +4594,30 @@ body {
                 <template x-if="dep.phase === 'running' && dep.ready && dep.address">
                   <div style="font-size:10px;color:var(--success);margin-top:2px;display:flex;align-items:center;gap:4px">
                     <span>●</span>
-                    <span x-text="'Ready: ' + dep.address"></span>
+                    <span x-text="t('backend_ready')"></span>
+                  </div>
+                </template>
+                <template x-if="dep.phase === 'running' && dep.ready">
+                  <div class="api-access-inline">
+                    <div class="api-access-head">
+                      <span class="api-access-title" x-text="t('api_access')"></span>
+                      <span class="api-access-desc" x-text="t('api_access_desc')"></span>
+                    </div>
+                    <div class="api-access-row">
+                      <span class="api-access-label" x-text="t('api_base_url')"></span>
+                      <code class="api-access-value" x-text="apiBaseDisplay()"></code>
+                      <button type="button" class="api-copy-btn" @click="copyCurrentAPIBaseURL($event)" x-text="t('wiz_copy')"></button>
+                    </div>
+                    <div class="api-access-row">
+                      <span class="api-access-label" x-text="t('api_model')"></span>
+                      <code class="api-access-value" x-text="apiDeploymentModel(dep)"></code>
+                      <button type="button" class="api-copy-btn" @click="wizCopyText(apiDeploymentModel(dep), $event)" x-text="t('wiz_copy')"></button>
+                    </div>
+                    <div class="api-access-actions">
+                      <button type="button" class="api-copy-btn" @click="copyAPICurl(dep, $event)" x-text="t('api_copy_curl')"></button>
+                      <button type="button" class="api-copy-btn" @click="copyOpenAISDKExample(dep, $event)" x-text="t('api_copy_openai')"></button>
+                    </div>
+                    <div class="api-public-note" x-text="t('api_public_unconfigured')"></div>
                   </div>
                 </template>
                 <!-- Error display -->
@@ -4582,7 +4731,30 @@ body {
                   <template x-if="dep.phase === 'running' && dep.ready && dep.address">
                     <div style="font-size:10px;color:var(--success);margin-top:2px;display:flex;align-items:center;gap:4px">
                       <span>●</span>
-                      <span x-text="'Ready: ' + dep.address"></span>
+                      <span x-text="t('backend_ready')"></span>
+                    </div>
+                  </template>
+                  <template x-if="dep.phase === 'running' && dep.ready">
+                    <div class="api-access-inline">
+                      <div class="api-access-head">
+                        <span class="api-access-title" x-text="t('api_access')"></span>
+                        <span class="api-access-desc" x-text="t('api_access_desc')"></span>
+                      </div>
+                      <div class="api-access-row">
+                        <span class="api-access-label" x-text="t('api_base_url')"></span>
+                        <code class="api-access-value" x-text="apiBaseDisplay()"></code>
+                        <button type="button" class="api-copy-btn" @click="copyCurrentAPIBaseURL($event)" x-text="t('wiz_copy')"></button>
+                      </div>
+                      <div class="api-access-row">
+                        <span class="api-access-label" x-text="t('api_model')"></span>
+                        <code class="api-access-value" x-text="apiDeploymentModel(dep)"></code>
+                        <button type="button" class="api-copy-btn" @click="wizCopyText(apiDeploymentModel(dep), $event)" x-text="t('wiz_copy')"></button>
+                      </div>
+                      <div class="api-access-actions">
+                        <button type="button" class="api-copy-btn" @click="copyAPICurl(dep, $event)" x-text="t('api_copy_curl')"></button>
+                        <button type="button" class="api-copy-btn" @click="copyOpenAISDKExample(dep, $event)" x-text="t('api_copy_openai')"></button>
+                      </div>
+                      <div class="api-public-note" x-text="t('api_public_unconfigured')"></div>
                     </div>
                   </template>
                   <template x-if="(dep.phase === 'starting' || dep.startup_progress > 0) && !dep.ready">
@@ -5265,6 +5437,15 @@ var I18N = {
     imported_label: 'Imported',
     no_fleet: 'No devices discovered',
     no_deployments: 'No active deployments',
+    private_address_hidden: 'Private address hidden',
+    backend_ready: 'Backend ready',
+    api_access: 'API Access',
+    api_access_desc: 'Call the model through the AIMA OpenAI-compatible proxy. Do not call the backend engine address directly.',
+    api_base_url: 'Base URL',
+    api_model: 'Model',
+    api_copy_curl: 'Copy curl',
+    api_copy_openai: 'Copy Python',
+    api_public_unconfigured: 'Public access: not configured. External users need a domain with HTTPS reverse proxy, VPN, or tunnel before they can call this service.',
     hardware_group_accelerator: 'Accelerator',
     hardware_group_host: 'Host',
     deploy_label: 'Deploy',
@@ -5463,6 +5644,8 @@ var I18N = {
     wiz_scan_central_offline: 'Offline',
     wiz_choose_recommended: 'View Recommended Models',
     wiz_choose_recommended_desc: 'AI-curated models optimized for your hardware',
+    wiz_best_choice: 'Best Choice',
+    wiz_choose_existing: 'Use Current Model',
     wiz_choose_local: 'Use Local Models',
     wiz_choose_local_desc: 'Deploy from models already on this device',
     wiz_no_local_models: 'No local models found',
@@ -5555,6 +5738,15 @@ var I18N = {
     imported_label: '\u5DF2\u5BFC\u5165',
     no_fleet: '\u672A\u53D1\u73B0\u8BBE\u5907',
     no_deployments: '\u65E0\u6D3B\u52A8\u90E8\u7F72',
+    private_address_hidden: '\u79C1\u7F51\u5730\u5740\u5DF2\u9690\u85CF',
+    backend_ready: '\u540E\u7AEF\u5DF2\u5C31\u7EEA',
+    api_access: 'API \u63A5\u5165',
+    api_access_desc: '\u901A\u8FC7 AIMA \u7684 OpenAI \u517C\u5BB9\u4EE3\u7406\u8C03\u7528\u6A21\u578B\uFF0C\u4E0D\u8981\u76F4\u63A5\u8C03\u7528\u540E\u7AEF\u5F15\u64CE\u5730\u5740\u3002',
+    api_base_url: 'Base URL',
+    api_model: '\u6A21\u578B',
+    api_copy_curl: '\u590D\u5236 curl',
+    api_copy_openai: '\u590D\u5236 Python',
+    api_public_unconfigured: '\u516C\u7F51\u8BBF\u95EE\uFF1A\u672A\u914D\u7F6E\u3002\u5916\u90E8\u7F51\u7EDC\u7528\u6237\u9700\u8981\u57DF\u540D + HTTPS \u53CD\u5411\u4EE3\u7406\u3001VPN \u6216\u96A7\u9053\u540E\u624D\u80FD\u8C03\u7528\u6B64\u670D\u52A1\u3002',
     hardware_group_accelerator: '\u52A0\u901F\u5668',
     hardware_group_host: '\u4E3B\u673A',
     deploy_label: '\u90E8\u7F72',
@@ -5752,6 +5944,8 @@ var I18N = {
     wiz_scan_central_offline: '\u79BB\u7EBF',
     wiz_choose_recommended: '\u67E5\u770B\u63A8\u8350\u6A21\u578B',
     wiz_choose_recommended_desc: '\u4E3A\u4F60\u7684\u786C\u4EF6\u4F18\u5316\u7684 AI \u63A8\u8350\u6A21\u578B',
+    wiz_best_choice: '\u6700\u4F18\u9009\u62E9',
+    wiz_choose_existing: '\u4F7F\u7528\u5F53\u524D\u6A21\u578B',
     wiz_choose_local: '\u4F7F\u7528\u672C\u5730\u6A21\u578B',
     wiz_choose_local_desc: '\u4ECE\u5DF2\u4E0B\u8F7D\u7684\u6A21\u578B\u4E2D\u90E8\u7F72',
     wiz_no_local_models: '\u672A\u53D1\u73B0\u672C\u5730\u6A21\u578B',
@@ -6978,6 +7172,47 @@ function aimaApp() {
       if (os.indexOf('windows') >= 0) return 'windows';
       return 'linux';
     },
+    wizRunningServices() {
+      if (!this.onboardingData || !Array.isArray(this.onboardingData.running_services)) return [];
+      return this.onboardingData.running_services;
+    },
+    wizBestExistingService() {
+      var services = this.wizRunningServices();
+      if (!services.length) return null;
+      var best = this.onboardingData && this.onboardingData.best_choice;
+      if (best && best.action === 'use_existing' && best.model) {
+        for (var i = 0; i < services.length; i++) {
+          if (services[i].model === best.model && services[i].endpoint) return services[i];
+        }
+        return { model: best.model, engine: best.engine || '', endpoint: best.endpoint || '', ready: true };
+      }
+      for (var j = 0; j < services.length; j++) {
+        if (services[j].ready && services[j].endpoint) return services[j];
+      }
+      return null;
+    },
+    wizHasExistingService() {
+      return !!this.wizBestExistingService();
+    },
+    async wizUseExistingService(service) {
+      service = service || this.wizBestExistingService();
+      if (!service) return;
+      try {
+        var headers = { 'Content-Type': 'application/json' };
+        if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
+        var resp = await fetch('/ui/api/onboarding-use-existing', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({ model: service.model || '', endpoint: service.endpoint || '' })
+        });
+        if (!resp.ok) throw new Error('use existing ' + resp.status);
+        this.onboardingDeployModel = service.model || '';
+        this.onboardingDeployEndpoint = service.endpoint || '';
+        this.onboardingPhase = 'done';
+      } catch (e) {
+        alert((e && e.message) ? e.message : this.t('settings_error'));
+      }
+    },
 
     wizSkip() {
       this.wizCleanup();
@@ -7280,7 +7515,8 @@ function aimaApp() {
         var engineStr = (rec.engine && typeof rec.engine === 'object')
           ? (rec.engine.name || rec.engine.type || '')
           : (rec.engine || '');
-        var body = { model: rec.model || rec.model_name || rec.name || '', engine: engineStr };
+        var noPull = !!(rec.no_pull || (rec.model_local && rec.engine_installed) || (rec.engine_status && rec.engine_status.installed && rec.model_status && rec.model_status.local_available));
+        var body = { model: rec.model || rec.model_name || rec.name || '', engine: engineStr, no_pull: noPull };
         var resp = await fetch('/ui/api/onboarding-deploy', {
           method: 'POST',
           headers: headers,
@@ -7319,7 +7555,7 @@ function aimaApp() {
     },
 
     wizDeployLocal(m) {
-      this.wizDeploy({ model: m.name || m.model, engine: m.engine || '', model_local: true, engine_installed: true });
+      this.wizDeploy({ model: m.name || m.model, engine: m.engine || '', model_local: true, engine_installed: true, no_pull: true });
     },
 
     wizHandleDeployEvent(event, data) {
@@ -7422,6 +7658,108 @@ function aimaApp() {
         document.execCommand('copy');
         document.body.removeChild(ta);
       }
+    },
+
+    isLoopbackHost(host) {
+      const h = String(host || '').toLowerCase().replace(/^\[|\]$/g, '');
+      return h === 'localhost' || h === '::1' || h.startsWith('127.');
+    },
+
+    isPrivateAddressHost(host) {
+      const h = String(host || '').toLowerCase().replace(/^\[|\]$/g, '');
+      if (!h) return false;
+      if (this.isLoopbackHost(h)) return true;
+      if (h.startsWith('10.') || h.startsWith('192.168.') || h.startsWith('169.254.')) return true;
+      const m = h.match(/^172\.(\d{1,3})\./);
+      if (m) {
+        const octet = Number(m[1]);
+        if (octet >= 16 && octet <= 31) return true;
+      }
+      return h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80:');
+    },
+
+    privateAddressLabel() {
+      if (!this.selfIp || this.isLoopbackHost(this.selfIp)) return '';
+      return this.t('private_address_hidden');
+    },
+
+    apiCurrentBaseURL() {
+      const loc = window.location || {};
+      let origin = loc.origin || '';
+      if (!origin || origin === 'null') {
+        const protocol = loc.protocol || 'http:';
+        const host = loc.host || '127.0.0.1:6188';
+        origin = protocol + '//' + host;
+      }
+      return origin.replace(/\/$/, '') + '/v1';
+    },
+
+    apiBaseDisplay() {
+      const host = window.location && window.location.hostname ? window.location.hostname : '';
+      if (this.isPrivateAddressHost(host) && !this.isLoopbackHost(host)) {
+        return (window.location && window.location.protocol === 'https:' ? 'https' : 'http') + '://<current-device>:6188/v1';
+      }
+      return this.apiCurrentBaseURL();
+    },
+
+    apiModelName(modelName) {
+      return modelName || this.agentInfo.llmModel || (this.models[0] && this.models[0].name) || 'model';
+    },
+
+    apiDeploymentModel(dep) {
+      if (dep && dep.model) return dep.model;
+      if (dep && dep.name) return dep.name;
+      return this.apiModelName(this.onboardingDeployModel);
+    },
+
+    apiShellSingleQuote(value) {
+      return "'" + String(value || '').replace(/'/g, "'\"'\"'") + "'";
+    },
+
+    apiCurlTemplate(dep) {
+      const model = this.apiDeploymentModel(dep);
+      const payload = JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'Hello AIMA' }],
+        stream: false
+      });
+      return [
+        'curl ' + JSON.stringify(this.apiCurrentBaseURL() + '/chat/completions') + ' \\',
+        '  -H "Content-Type: application/json" \\',
+        '  -H "Authorization: Bearer $AIMA_API_KEY" \\',
+        '  -d ' + this.apiShellSingleQuote(payload)
+      ].join('\n');
+    },
+
+    apiOpenAISDKTemplate(dep) {
+      const model = this.apiDeploymentModel(dep);
+      return [
+        'import os',
+        'from openai import OpenAI',
+        '',
+        'client = OpenAI(',
+        '    api_key=os.getenv("AIMA_API_KEY", "aima-local"),',
+        '    base_url=' + JSON.stringify(this.apiCurrentBaseURL()) + ',',
+        ')',
+        '',
+        'resp = client.chat.completions.create(',
+        '    model=' + JSON.stringify(model) + ',',
+        '    messages=[{"role": "user", "content": "Hello AIMA"}],',
+        ')',
+        'print(resp.choices[0].message.content)'
+      ].join('\n');
+    },
+
+    copyCurrentAPIBaseURL(event) {
+      return this.wizCopyText(this.apiCurrentBaseURL(), event);
+    },
+
+    copyAPICurl(dep, event) {
+      return this.wizCopyText(this.apiCurlTemplate(dep), event);
+    },
+
+    copyOpenAISDKExample(dep, event) {
+      return this.wizCopyText(this.apiOpenAISDKTemplate(dep), event);
     },
 
     // Helper to get a single config value (returns string or null)
@@ -8286,7 +8624,7 @@ function aimaApp() {
       if (!dep) return this.lang === 'zh' ? '仅本地资产' : 'Local only';
       if (dep.phase === 'failed') return dep.failure_detail || dep.detail || this.t('retry_label');
       if (dep.phase === 'running' && dep.ready) {
-        return dep.address ? (this.t('running_label') + ' · ' + dep.address) : this.t('running_label');
+        return this.t('running_label');
       }
       return dep.startup_message || dep.startup_phase || dep.phase || this.t('deploying_label');
     },
@@ -8308,7 +8646,7 @@ function aimaApp() {
         const address = data && data.address ? data.address : '';
         this.messages.push({
           role: 'system',
-          text: address ? ('Deploy ' + modelName + ' ready at ' + address + '.') : ('Deploy ' + modelName + ' started.')
+          text: address ? ('Deploy ' + modelName + ' ready. Use the API Access panel for calls.') : ('Deploy ' + modelName + ' started.')
         });
       } finally {
         const next = { ...this.modelDeploying };
@@ -8337,7 +8675,7 @@ function aimaApp() {
           phase: d.phase || 'unknown',
           ready: d.ready || false,
           address: d.address || '',
-          detail: [d.runtime, d.ready ? d.address : d.phase].filter(Boolean).join(' '),
+          detail: [d.runtime, d.ready ? this.t('running_label') : d.phase].filter(Boolean).join(' '),
           startup_phase: d.startup_phase || '',
           startup_progress: d.startup_progress || 0,
           startup_message: d.startup_message || '',

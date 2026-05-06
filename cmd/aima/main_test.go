@@ -1115,6 +1115,45 @@ func TestFindModelDirPreservesUnreadableExactDirectory(t *testing.T) {
 	}
 }
 
+func TestResolveLocalModelPathNoPullUsesSymlinkMirrorSource(t *testing.T) {
+	dataDir := t.TempDir()
+	sourceDir := filepath.Join(dataDir, "source", "qwen3-30b-a3b-2507-awq")
+	mirrorDir := filepath.Join(dataDir, "models", "qwen3-30b-a3b-2507-awq")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	if err := os.MkdirAll(mirrorDir, 0o755); err != nil {
+		t.Fatalf("mkdir mirror dir: %v", err)
+	}
+	for name, contents := range map[string]string{
+		"config.json":       `{"model_type":"qwen3_moe"}`,
+		"tokenizer.json":    `{"version":"1.0"}`,
+		"model.safetensors": "weights",
+	} {
+		if err := os.WriteFile(filepath.Join(sourceDir, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write source %s: %v", name, err)
+		}
+		if err := os.Symlink(filepath.Join(sourceDir, name), filepath.Join(mirrorDir, name)); err != nil {
+			t.Fatalf("symlink mirror %s: %v", name, err)
+		}
+	}
+
+	got, err := resolveLocalModelPathNoPull("qwen3-30b-a3b-2507-awq", &knowledge.ResolvedConfig{
+		ModelPath:   mirrorDir,
+		ModelFormat: "safetensors",
+	}, dataDir)
+	if err != nil {
+		t.Fatalf("resolveLocalModelPathNoPull: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(sourceDir)
+	if err != nil {
+		t.Fatalf("canonical source dir: %v", err)
+	}
+	if got != want {
+		t.Fatalf("resolveLocalModelPathNoPull() = %q, want symlink source %q", got, want)
+	}
+}
+
 func TestApplyScenarioSkipsRemainingDeploymentsAndPostDeployAfterWaitFailure(t *testing.T) {
 	cat := &knowledge.Catalog{
 		DeploymentScenarios: []knowledge.DeploymentScenario{{

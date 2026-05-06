@@ -126,6 +126,159 @@ func TestRegisterRoutes_IndexIncludesOnboardingDrawerShell(t *testing.T) {
 	}
 }
 
+func TestRegisterRoutes_IndexUsesConsolidatedPatrolTool(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "agent.patrol_config") {
+		t.Fatal("index still references removed agent.patrol_config tool")
+	}
+	for _, token := range []string{
+		`this.callTool('patrol', { action: 'config', config_action: 'get' })`,
+		`this.callTool('patrol', { action: 'config', config_action: 'set', key: pk.key, value: pk.value })`,
+		`this.callTool('patrol', { action: 'config', config_action: 'set', key: 'interval', value: '5m' })`,
+	} {
+		if !strings.Contains(body, token) {
+			t.Fatalf("body missing %q", token)
+		}
+	}
+}
+
+func TestRegisterRoutes_IndexScanResultsDoNotLookSelectable(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, `item.type === 'model' ? '\u25A0'`) {
+		t.Fatal("scan result model rows still use a checkbox-like square icon")
+	}
+	for _, token := range []string{
+		`item.type === 'model' ? 'M'`,
+		`x-show="onboardingScanDone && onboardingScanResults.models.length > 0"`,
+		`@click="onboardingPhase = 'local'" x-text="t('wiz_choose_local')"`,
+	} {
+		if !strings.Contains(body, token) {
+			t.Fatalf("body missing %q", token)
+		}
+	}
+}
+
+func TestRegisterRoutes_IndexLocalOnboardingDeploySkipsPull(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, token := range []string{
+		`rec.no_pull || (rec.model_local && rec.engine_installed)`,
+		`rec.engine_status && rec.engine_status.installed && rec.model_status && rec.model_status.local_available`,
+		`no_pull: noPull`,
+	} {
+		if !strings.Contains(body, token) {
+			t.Fatalf("onboarding deploy body missing %q", token)
+		}
+	}
+	if !strings.Contains(body, `this.wizDeploy({ model: m.name || m.model, engine: m.engine || '', model_local: true, engine_installed: true, no_pull: true })`) {
+		t.Fatal("local onboarding deploy does not request no_pull")
+	}
+}
+
+func TestRegisterRoutes_IndexOffersExistingRunningModelChoice(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, token := range []string{
+		`wizHasExistingService()`,
+		`wizBestExistingService()`,
+		`@click="wizUseExistingService(wizBestExistingService())"`,
+		`fetch('/ui/api/onboarding-use-existing'`,
+		`wiz_choose_existing`,
+		`wiz_best_choice`,
+	} {
+		if !strings.Contains(body, token) {
+			t.Fatalf("body missing existing-service onboarding token %q", token)
+		}
+	}
+}
+
+func TestRegisterRoutes_IndexShowsAPIAccessWithoutRenderingPrivateIP(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, token := range []string{
+		`api_access`,
+		`api_access_desc`,
+		`apiBaseDisplay()`,
+		`copyCurrentAPIBaseURL($event)`,
+		`copyAPICurl(dep, $event)`,
+		`apiCurlTemplate(dep)`,
+		`api_public_unconfigured`,
+	} {
+		if !strings.Contains(body, token) {
+			t.Fatalf("body missing API access token %q", token)
+		}
+	}
+	if strings.Contains(body, `x-text="apiCurrentBaseURL()"`) {
+		t.Fatal("API access UI renders the current browser origin directly")
+	}
+}
+
+func TestRegisterRoutes_IndexMasksDevicePrivateAddress(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, `class="device-ip" x-show="selfIp`) || strings.Contains(body, `x-text="selfIp"`) {
+		t.Fatal("device identity still renders selfIp directly")
+	}
+	for _, token := range []string{
+		`privateAddressLabel()`,
+		`private_address_hidden`,
+	} {
+		if !strings.Contains(body, token) {
+			t.Fatalf("body missing private-address masking token %q", token)
+		}
+	}
+}
+
 func TestRegisterRoutes_IndexIncludesOnboardingInteractionHelpers(t *testing.T) {
 	t.Parallel()
 

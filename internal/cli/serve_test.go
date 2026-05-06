@@ -127,6 +127,60 @@ func TestResolveMCPProfile(t *testing.T) {
 	}
 }
 
+func TestParseStaticBackendSpec(t *testing.T) {
+	model, backend, err := parseStaticBackendSpec("qwen3.6=http://127.0.0.1:18310/v1,engine=vllm,upstream=qwen3.6-served,param=35B,context=32768")
+	if err != nil {
+		t.Fatalf("parseStaticBackendSpec() error = %v", err)
+	}
+	if model != "qwen3.6" {
+		t.Fatalf("model = %q, want qwen3.6", model)
+	}
+	if backend.ModelName != "qwen3.6" {
+		t.Fatalf("backend.ModelName = %q, want qwen3.6", backend.ModelName)
+	}
+	if backend.Address != "127.0.0.1:18310" {
+		t.Fatalf("backend.Address = %q, want 127.0.0.1:18310", backend.Address)
+	}
+	if backend.BasePath != "/v1" {
+		t.Fatalf("backend.BasePath = %q, want /v1", backend.BasePath)
+	}
+	if backend.EngineType != "vllm" {
+		t.Fatalf("backend.EngineType = %q, want vllm", backend.EngineType)
+	}
+	if backend.UpstreamModel != "qwen3.6-served" {
+		t.Fatalf("backend.UpstreamModel = %q, want qwen3.6-served", backend.UpstreamModel)
+	}
+	if !backend.Ready {
+		t.Fatal("backend.Ready = false, want true")
+	}
+	if !backend.Remote {
+		t.Fatal("backend.Remote = false, want true")
+	}
+	if backend.ParameterCount != "35B" {
+		t.Fatalf("backend.ParameterCount = %q, want 35B", backend.ParameterCount)
+	}
+	if backend.ContextWindowTokens != 32768 {
+		t.Fatalf("backend.ContextWindowTokens = %d, want 32768", backend.ContextWindowTokens)
+	}
+}
+
+func TestParseStaticBackendSpecRejectsMissingAddress(t *testing.T) {
+	if _, _, err := parseStaticBackendSpec("qwen3.6,engine=vllm"); err == nil {
+		t.Fatal("parseStaticBackendSpec() error = nil, want error")
+	}
+}
+
+func TestBackendFlagPreservesCommaOptions(t *testing.T) {
+	cmd := newServeCmd(&App{})
+	flag := cmd.Flags().Lookup("backend")
+	if flag == nil {
+		t.Fatal("backend flag not registered")
+	}
+	if got := flag.Value.Type(); got != "stringArray" {
+		t.Fatalf("backend flag type = %q, want stringArray", got)
+	}
+}
+
 func TestRunStartupAssetReconcileScansEnginesAndModels(t *testing.T) {
 	t.Parallel()
 
