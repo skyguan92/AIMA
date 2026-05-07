@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,14 +60,6 @@ func registerCatalogLocalModel(ctx context.Context, ma *knowledge.ModelAsset, db
 	size, err := dirSizeBytes(localPath)
 	if err != nil {
 		return nil
-	}
-	if _, err := db.RawDB().ExecContext(ctx,
-		`DELETE FROM models WHERE LOWER(name) = LOWER(?) AND path <> ?`,
-		ma.Metadata.Name, localPath); err != nil {
-		slog.Warn("cleanup stale duplicate catalog-local model records failed",
-			"model", ma.Metadata.Name,
-			"path", localPath,
-			"error", err)
 	}
 	return db.UpsertScannedModel(ctx, &state.Model{
 		ID:           fmt.Sprintf("%x", sha256.Sum256([]byte(localPath+"|"+ma.Metadata.Name))),
@@ -179,7 +170,6 @@ func buildModelDeps(ac *appContext, deps *mcp.ToolDeps,
 	}
 
 	deps.ListModels = func(ctx context.Context) (json.RawMessage, error) {
-		_ = registerCatalogLocalModels(ctx, cat, db)
 		models, err := db.ListModels(ctx)
 		if err != nil {
 			return nil, err
