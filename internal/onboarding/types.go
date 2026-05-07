@@ -79,6 +79,7 @@ type RunningService struct {
 	UpstreamModel       string `json:"upstream_model,omitempty"`
 	Engine              string `json:"engine,omitempty"`
 	Endpoint            string `json:"endpoint"`
+	BackendEndpoint     string `json:"backend_endpoint,omitempty"`
 	Source              string `json:"source"` // "proxy_backend", "deployment", "container", "remote"
 	Status              string `json:"status"`
 	Ready               bool   `json:"ready"`

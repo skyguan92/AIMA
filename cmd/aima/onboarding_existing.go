@@ -46,9 +46,7 @@ func handleOnboardingUseExisting(ac *appContext, deps *mcp.ToolDeps) http.Handle
 			if model == "" {
 				model = strings.TrimSpace(b.ModelName)
 			}
-			if endpoint == "" {
-				endpoint = proxyBackendEndpoint(b.Address, b.BasePath)
-			}
+			endpoint = defaultLLMEndpoint()
 		}
 		if model == "" {
 			http.Error(w, "model is required", http.StatusBadRequest)

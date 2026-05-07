@@ -241,6 +241,8 @@ func TestRegisterRoutes_IndexShowsAPIAccessWithoutRenderingPrivateIP(t *testing.
 		`api_access`,
 		`api_access_desc`,
 		`apiBaseDisplay()`,
+		`apiDeploymentChatCapable(dep)`,
+		`api_non_chat_hint`,
 		`copyCurrentAPIBaseURL($event)`,
 		`copyAPICurl(dep, $event)`,
 		`apiCurlTemplate(dep)`,

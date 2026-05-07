@@ -113,6 +113,9 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 		if parameterCount := catalogModelParameterCount(cat, modelName); parameterCount != "" {
 			req.Labels[proxy.LabelParameterCount] = parameterCount
 		}
+		if modelType := catalogModelType(cat, modelName); modelType != "" {
+			req.Labels["aima.dev/model_type"] = modelType
+		}
 		if contextWindow := contextWindowFromResolvedConfig(resolved.Config); contextWindow > 0 {
 			req.Labels["aima.dev/context_window"] = strconv.Itoa(contextWindow)
 		}
@@ -538,7 +541,7 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 		statuses = filterDeploymentStatuses(statuses, suppressRecentlyDeleted)
 		overviews := make([]deploymentOverview, 0, len(statuses))
 		for _, status := range statuses {
-			overviews = append(overviews, deploymentOverviewFromStatus(status))
+			overviews = append(overviews, deploymentOverviewFromStatus(status, cat))
 		}
 		return json.Marshal(overviews)
 	}
@@ -583,6 +586,21 @@ func catalogModelParameterCount(cat *knowledge.Catalog, name string) string {
 		if strings.EqualFold(model.Metadata.Name, name) {
 			return strings.TrimSpace(model.Metadata.ParameterCount)
 		}
+	}
+	return ""
+}
+
+func catalogModelType(cat *knowledge.Catalog, name string) string {
+	if cat == nil {
+		return ""
+	}
+	for i := range cat.ModelAssets {
+		if strings.EqualFold(cat.ModelAssets[i].Metadata.Name, name) {
+			return strings.TrimSpace(cat.ModelAssets[i].Metadata.Type)
+		}
+	}
+	if ma, _ := findModelAssetOrVariant(cat, name); ma != nil {
+		return strings.TrimSpace(ma.Metadata.Type)
 	}
 	return ""
 }
@@ -636,11 +654,12 @@ type deploymentOverview struct {
 	EstimatedTotalS     int    `json:"estimated_total_s,omitempty"`
 	ErrorLines          string `json:"error_lines,omitempty"`
 	ServedModel         string `json:"served_model,omitempty"`
+	ModelType           string `json:"model_type,omitempty"`
 	ParameterCount      string `json:"parameter_count,omitempty"`
 	ContextWindowTokens int    `json:"context_window_tokens,omitempty"`
 }
 
-func deploymentOverviewFromStatus(status *runtime.DeploymentStatus) deploymentOverview {
+func deploymentOverviewFromStatus(status *runtime.DeploymentStatus, cat *knowledge.Catalog) deploymentOverview {
 	populateDeploymentOverviewFields(status)
 	if status == nil {
 		return deploymentOverview{}
@@ -666,6 +685,7 @@ func deploymentOverviewFromStatus(status *runtime.DeploymentStatus) deploymentOv
 		EstimatedTotalS:     status.EstimatedTotalS,
 		ErrorLines:          status.ErrorLines,
 		ServedModel:         deploymentUpstreamModel(status, ""),
+		ModelType:           firstNonEmpty(status.Labels["aima.dev/model_type"], catalogModelType(cat, status.Model)),
 		ParameterCount:      firstNonEmpty(status.Labels[proxy.LabelParameterCount]),
 		ContextWindowTokens: contextWindowFromStatus(status),
 	}

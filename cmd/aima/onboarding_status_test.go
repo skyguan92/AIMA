@@ -44,8 +44,11 @@ func TestBuildOnboardingStatusJSONIncludesRunningProxyBackends(t *testing.T) {
 	if got := svc["engine"]; got != "vllm" {
 		t.Fatalf("service engine = %#v", got)
 	}
-	if got := svc["endpoint"]; got != "http://127.0.0.1:18310/v1" {
+	if got := svc["endpoint"]; got != "http://localhost:6188/v1" {
 		t.Fatalf("service endpoint = %#v", got)
+	}
+	if got := svc["backend_endpoint"]; got != "http://127.0.0.1:18310/v1" {
+		t.Fatalf("service backend_endpoint = %#v", got)
 	}
 
 	best := body["best_choice"].(map[string]any)

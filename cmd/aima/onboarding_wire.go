@@ -61,12 +61,16 @@ func buildOnboardingDepsStruct(ac *appContext, deps *mcp.ToolDeps) *onboarding.D
 					if b.Remote {
 						source = "remote"
 					}
+					if b.External {
+						source = "external"
+					}
 					services = append(services, onboarding.RunningService{
 						Name:                model,
 						Model:               model,
 						UpstreamModel:       b.UpstreamModel,
 						Engine:              b.EngineType,
-						Endpoint:            proxyBackendEndpoint(b.Address, b.BasePath),
+						Endpoint:            defaultLLMEndpoint(),
+						BackendEndpoint:     proxyBackendEndpoint(b.Address, b.BasePath),
 						Source:              source,
 						Status:              status,
 						Ready:               b.Ready,

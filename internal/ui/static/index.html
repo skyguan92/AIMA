@@ -3838,10 +3838,11 @@ body {
                   <code class="api-access-value" x-text="apiModelName(onboardingDeployModel)"></code>
                   <button type="button" class="api-copy-btn" @click="wizCopyText(apiModelName(onboardingDeployModel), $event)" x-text="t('wiz_copy')"></button>
                 </div>
-                <div class="api-access-actions">
+                <div class="api-access-actions" x-show="apiDeploymentChatCapable({ name: onboardingDeployModel, model: onboardingDeployModel })">
                   <button type="button" class="api-copy-btn" @click="copyAPICurl({ name: onboardingDeployModel, model: onboardingDeployModel }, $event)" x-text="t('api_copy_curl')"></button>
                   <button type="button" class="api-copy-btn" @click="copyOpenAISDKExample({ name: onboardingDeployModel, model: onboardingDeployModel }, $event)" x-text="t('api_copy_openai')"></button>
                 </div>
+                <div class="api-public-note" x-show="!apiDeploymentChatCapable({ name: onboardingDeployModel, model: onboardingDeployModel })" x-text="apiNonChatHint({ name: onboardingDeployModel, model: onboardingDeployModel })"></div>
                 <div class="api-public-note" x-text="t('api_public_unconfigured')"></div>
               </div>
               <div style="margin-top:8px">
@@ -4613,10 +4614,11 @@ body {
                       <code class="api-access-value" x-text="apiDeploymentModel(dep)"></code>
                       <button type="button" class="api-copy-btn" @click="wizCopyText(apiDeploymentModel(dep), $event)" x-text="t('wiz_copy')"></button>
                     </div>
-                    <div class="api-access-actions">
+                    <div class="api-access-actions" x-show="apiDeploymentChatCapable(dep)">
                       <button type="button" class="api-copy-btn" @click="copyAPICurl(dep, $event)" x-text="t('api_copy_curl')"></button>
                       <button type="button" class="api-copy-btn" @click="copyOpenAISDKExample(dep, $event)" x-text="t('api_copy_openai')"></button>
                     </div>
+                    <div class="api-public-note" x-show="!apiDeploymentChatCapable(dep)" x-text="apiNonChatHint(dep)"></div>
                     <div class="api-public-note" x-text="t('api_public_unconfigured')"></div>
                   </div>
                 </template>
@@ -4750,10 +4752,11 @@ body {
                         <code class="api-access-value" x-text="apiDeploymentModel(dep)"></code>
                         <button type="button" class="api-copy-btn" @click="wizCopyText(apiDeploymentModel(dep), $event)" x-text="t('wiz_copy')"></button>
                       </div>
-                      <div class="api-access-actions">
+                      <div class="api-access-actions" x-show="apiDeploymentChatCapable(dep)">
                         <button type="button" class="api-copy-btn" @click="copyAPICurl(dep, $event)" x-text="t('api_copy_curl')"></button>
                         <button type="button" class="api-copy-btn" @click="copyOpenAISDKExample(dep, $event)" x-text="t('api_copy_openai')"></button>
                       </div>
+                      <div class="api-public-note" x-show="!apiDeploymentChatCapable(dep)" x-text="apiNonChatHint(dep)"></div>
                       <div class="api-public-note" x-text="t('api_public_unconfigured')"></div>
                     </div>
                   </template>
@@ -5445,6 +5448,7 @@ var I18N = {
     api_model: 'Model',
     api_copy_curl: 'Copy curl',
     api_copy_openai: 'Copy Python',
+    api_non_chat_hint: 'This model is not served through chat completions. Use the base URL, model name, and API key with its catalog protocol.',
     api_public_unconfigured: 'Public access: not configured. External users need a domain with HTTPS reverse proxy, VPN, or tunnel before they can call this service.',
     hardware_group_accelerator: 'Accelerator',
     hardware_group_host: 'Host',
@@ -5746,6 +5750,7 @@ var I18N = {
     api_model: '\u6A21\u578B',
     api_copy_curl: '\u590D\u5236 curl',
     api_copy_openai: '\u590D\u5236 Python',
+    api_non_chat_hint: '\u8BE5\u6A21\u578B\u4E0D\u901A\u8FC7 chat completions \u63A5\u53E3\u63D0\u4F9B\u670D\u52A1\u3002\u8BF7\u6309 catalog protocol \u4F7F\u7528 Base URL\u3001\u6A21\u578B\u540D\u548C API Key\u3002',
     api_public_unconfigured: '\u516C\u7F51\u8BBF\u95EE\uFF1A\u672A\u914D\u7F6E\u3002\u5916\u90E8\u7F51\u7EDC\u7528\u6237\u9700\u8981\u57DF\u540D + HTTPS \u53CD\u5411\u4EE3\u7406\u3001VPN \u6216\u96A7\u9053\u540E\u624D\u80FD\u8C03\u7528\u6B64\u670D\u52A1\u3002',
     hardware_group_accelerator: '\u52A0\u901F\u5668',
     hardware_group_host: '\u4E3B\u673A',
@@ -7712,12 +7717,37 @@ function aimaApp() {
       return this.apiModelName(this.onboardingDeployModel);
     },
 
+    apiModelKind(dep) {
+      if (!dep) return '';
+      const labels = dep.labels || {};
+      return String(dep.model_type || dep.modelType || dep.modality || labels['aima.dev/model_type'] || labels['aima.dev/modality'] || '').toLowerCase();
+    },
+
+    apiDeploymentChatCapable(dep) {
+      const kind = this.apiModelKind(dep);
+      if (!kind) return true;
+      return kind === 'llm' || kind === 'vlm' || kind === 'chat';
+    },
+
+    apiNonChatHint(dep) {
+      const kind = this.apiModelKind(dep);
+      return this.t('api_non_chat_hint') + (kind ? ' (' + kind + ')' : '');
+    },
+
     apiShellSingleQuote(value) {
       return "'" + String(value || '').replace(/'/g, "'\"'\"'") + "'";
     },
 
     apiCurlTemplate(dep) {
       const model = this.apiDeploymentModel(dep);
+      if (!this.apiDeploymentChatCapable(dep)) {
+        return [
+          'export AIMA_API_BASE=' + this.apiShellSingleQuote(this.apiCurrentBaseURL()),
+          'export AIMA_MODEL=' + this.apiShellSingleQuote(model),
+          'export AIMA_API_KEY="${AIMA_API_KEY:-aima-local}"',
+          '# ' + this.apiNonChatHint(dep)
+        ].join('\n');
+      }
       const payload = JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'Hello AIMA' }],
@@ -7733,6 +7763,20 @@ function aimaApp() {
 
     apiOpenAISDKTemplate(dep) {
       const model = this.apiDeploymentModel(dep);
+      if (!this.apiDeploymentChatCapable(dep)) {
+        return [
+          'import os',
+          'from openai import OpenAI',
+          '',
+          'client = OpenAI(',
+          '    api_key=os.getenv("AIMA_API_KEY", "aima-local"),',
+          '    base_url=' + JSON.stringify(this.apiCurrentBaseURL()) + ',',
+          ')',
+          '',
+          '# ' + this.apiNonChatHint(dep),
+          'model = ' + JSON.stringify(model)
+        ].join('\n');
+      }
       return [
         'import os',
         'from openai import OpenAI',
@@ -8672,6 +8716,7 @@ function aimaApp() {
         return {
           name: d.name || 'unknown',
           model: (d.labels && d.labels['aima.dev/model']) || '',
+          model_type: d.model_type || (d.labels && d.labels['aima.dev/model_type']) || '',
           phase: d.phase || 'unknown',
           ready: d.ready || false,
           address: d.address || '',

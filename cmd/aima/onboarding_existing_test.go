@@ -38,7 +38,7 @@ func TestHandleOnboardingUseExistingSetsLLMConfig(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if got := config["llm.endpoint"]; got != "http://127.0.0.1:18310/v1" {
+	if got := config["llm.endpoint"]; got != "http://localhost:6188/v1" {
 		t.Fatalf("llm.endpoint = %q", got)
 	}
 	if got := config["llm.model"]; got != "qwen3.6-35b-a3b-bf16" {
@@ -46,5 +46,28 @@ func TestHandleOnboardingUseExistingSetsLLMConfig(t *testing.T) {
 	}
 	if got := config["onboarding_completed"]; got != "true" {
 		t.Fatalf("onboarding_completed = %q", got)
+	}
+}
+
+func TestBuildOnboardingDepsRunningServicesSeparatesProxyEndpointFromBackendEndpoint(t *testing.T) {
+	proxyServer := proxy.NewServer()
+	proxyServer.RegisterBackend("qwen3.6-35b-a3b-bf16", &proxy.Backend{
+		ModelName:  "qwen3.6-35b-a3b-bf16",
+		EngineType: "vllm",
+		Address:    "127.0.0.1:18310",
+		BasePath:   "/v1",
+		Ready:      true,
+	})
+
+	deps := buildOnboardingDepsStruct(&appContext{proxy: proxyServer}, nil)
+	services := deps.ListRunningServices(context.Background())
+	if len(services) != 1 {
+		t.Fatalf("len(services) = %d, want 1", len(services))
+	}
+	if got := services[0].Endpoint; got != "http://localhost:6188/v1" {
+		t.Fatalf("Endpoint = %q, want AIMA proxy endpoint", got)
+	}
+	if got := services[0].BackendEndpoint; got != "http://127.0.0.1:18310/v1" {
+		t.Fatalf("BackendEndpoint = %q, want backend direct endpoint", got)
 	}
 }
