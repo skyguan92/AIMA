@@ -316,12 +316,14 @@ type PowerConstraints struct {
 // --- Model Asset ---
 
 type ModelAsset struct {
-	Kind      string         `yaml:"kind"`
-	Metadata  ModelMetadata  `yaml:"metadata"`
-	OpenClaw  *OpenClawHints `yaml:"openclaw,omitempty"`
-	Storage   ModelStorage   `yaml:"storage"`
-	Variants  []ModelVariant `yaml:"variants"`
-	synthetic bool
+	Kind         string            `yaml:"kind"`
+	Metadata     ModelMetadata     `yaml:"metadata"`
+	UI           ModelUI           `yaml:"ui,omitempty"`
+	Capabilities ModelCapabilities `yaml:"capabilities,omitempty"`
+	OpenClaw     *OpenClawHints    `yaml:"openclaw,omitempty"`
+	Storage      ModelStorage      `yaml:"storage"`
+	Variants     []ModelVariant    `yaml:"variants"`
+	synthetic    bool
 }
 
 type ModelMetadata struct {
@@ -329,6 +331,7 @@ type ModelMetadata struct {
 	Type           string `yaml:"type"`
 	Family         string `yaml:"family"`
 	ParameterCount string `yaml:"parameter_count"`
+	ModelClass     string `yaml:"model_class,omitempty"`
 	// ReleasedAt is the model's public release date in YYYY-MM or YYYY-MM-DD
 	// form. Optional; when populated it feeds the onboarding recommend recency
 	// bonus so newer models float to the top of the wizard's first-run list.
@@ -339,6 +342,16 @@ type ModelMetadata struct {
 	// "Qwen3-Embedding-0.6B" can hit the canonical "qwen3-emb-0.6b" without
 	// hardcoded mappings in Go.
 	Aliases []string `yaml:"aliases,omitempty"`
+}
+
+type ModelUI struct {
+	Role          string `yaml:"role,omitempty"`
+	DisplayNote   string `yaml:"display_note,omitempty"`
+	DisplayNoteZh string `yaml:"display_note_zh,omitempty"`
+}
+
+type ModelCapabilities struct {
+	StandaloneDeploy *bool `yaml:"standalone_deploy,omitempty"`
 }
 
 type OpenClawHints struct {

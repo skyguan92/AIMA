@@ -18,20 +18,6 @@ import (
 	state "github.com/jguan/aima/internal"
 )
 
-func dirSizeBytes(root string) (int64, error) {
-	var total int64
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			total += info.Size()
-		}
-		return nil
-	})
-	return total, err
-}
-
 func registerCatalogLocalModels(ctx context.Context, cat *knowledge.Catalog, db *state.DB) error {
 	if cat == nil {
 		return nil
@@ -49,7 +35,7 @@ func registerCatalogLocalModel(ctx context.Context, ma *knowledge.ModelAsset, db
 	if ma == nil {
 		return nil
 	}
-	localPath, detectedArch, modelClass, format := catalogLocalModelDescriptor(ma)
+	localPath, detectedArch, format := catalogLocalModelDescriptor(ma)
 	if localPath == "" {
 		return nil
 	}
@@ -57,36 +43,36 @@ func registerCatalogLocalModel(ctx context.Context, ma *knowledge.ModelAsset, db
 	if err != nil || !info.IsDir() {
 		return nil
 	}
-	size, err := dirSizeBytes(localPath)
-	if err != nil {
-		return nil
-	}
 	return db.UpsertScannedModel(ctx, &state.Model{
-		ID:           fmt.Sprintf("%x", sha256.Sum256([]byte(localPath+"|"+ma.Metadata.Name))),
-		Name:         ma.Metadata.Name,
-		Type:         ma.Metadata.Type,
-		Path:         localPath,
-		Format:       format,
-		SizeBytes:    size,
-		DetectedArch: detectedArch,
-		ModelClass:   modelClass,
-		Status:       "registered",
+		ID:               fmt.Sprintf("%x", sha256.Sum256([]byte(localPath+"|"+ma.Metadata.Name))),
+		Name:             ma.Metadata.Name,
+		Type:             ma.Metadata.Type,
+		Path:             localPath,
+		Format:           format,
+		SizeBytes:        info.Size(),
+		DetectedArch:     detectedArch,
+		ModelClass:       strings.TrimSpace(ma.Metadata.ModelClass),
+		UIRole:           strings.TrimSpace(ma.UI.Role),
+		UIDisplayNote:    strings.TrimSpace(ma.UI.DisplayNote),
+		UIDisplayNoteZh:  strings.TrimSpace(ma.UI.DisplayNoteZh),
+		StandaloneDeploy: ma.Capabilities.StandaloneDeploy,
+		Status:           "registered",
 	})
 }
 
-func catalogLocalModelDescriptor(ma *knowledge.ModelAsset) (localPath, detectedArch, modelClass, format string) {
+func catalogLocalModelDescriptor(ma *knowledge.ModelAsset) (localPath, detectedArch, format string) {
 	format = firstCatalogFormat(ma)
 	for _, variant := range ma.Variants {
 		if variant.Source != nil && variant.Source.Type == "local_path" && strings.TrimSpace(variant.Source.Path) != "" {
-			return strings.TrimSpace(variant.Source.Path), inferDetectedArch(ma), inferModelClass(ma, &variant), firstNonEmpty(strings.TrimSpace(variant.Format), format)
+			return strings.TrimSpace(variant.Source.Path), inferDetectedArch(ma), firstNonEmpty(strings.TrimSpace(variant.Format), format)
 		}
 	}
 	for _, src := range ma.Storage.Sources {
 		if src.Type == "local_path" && strings.TrimSpace(src.Path) != "" {
-			return strings.TrimSpace(src.Path), inferDetectedArch(ma), inferModelClass(ma, nil), firstNonEmpty(strings.TrimSpace(src.Format), format)
+			return strings.TrimSpace(src.Path), inferDetectedArch(ma), firstNonEmpty(strings.TrimSpace(src.Format), format)
 		}
 	}
-	return "", "", "", ""
+	return "", "", ""
 }
 
 func inferDetectedArch(ma *knowledge.ModelAsset) string {
@@ -100,23 +86,6 @@ func inferDetectedArch(ma *knowledge.ModelAsset) string {
 	return strings.TrimSpace(strings.ToLower(ma.Metadata.Name))
 }
 
-func inferModelClass(ma *knowledge.ModelAsset, variant *knowledge.ModelVariant) string {
-	if ma == nil {
-		return "unknown"
-	}
-	switch strings.ToLower(strings.TrimSpace(ma.Metadata.Type)) {
-	case "asr", "tts":
-		if variant != nil && strings.EqualFold(strings.TrimSpace(variant.Format), "onnx") {
-			return "pipeline"
-		}
-		return "pipeline"
-	case "llm", "embedding", "reranker":
-		return "dense"
-	default:
-		return "unknown"
-	}
-}
-
 func firstCatalogFormat(ma *knowledge.ModelAsset) string {
 	if ma == nil {
 		return ""
@@ -125,6 +94,44 @@ func firstCatalogFormat(ma *knowledge.ModelAsset) string {
 		return strings.TrimSpace(ma.Storage.Formats[0])
 	}
 	return ""
+}
+
+func annotateModelsFromCatalog(models []*state.Model, cat *knowledge.Catalog) {
+	if cat == nil {
+		return
+	}
+	assetsByName := make(map[string]*knowledge.ModelAsset)
+	for i := range cat.ModelAssets {
+		ma := &cat.ModelAssets[i]
+		assetsByName[strings.ToLower(strings.TrimSpace(ma.Metadata.Name))] = ma
+		for _, alias := range ma.Metadata.Aliases {
+			assetsByName[strings.ToLower(strings.TrimSpace(alias))] = ma
+		}
+	}
+	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		ma := assetsByName[strings.ToLower(strings.TrimSpace(m.Name))]
+		if ma == nil {
+			continue
+		}
+		if strings.TrimSpace(m.ModelClass) == "" {
+			m.ModelClass = strings.TrimSpace(ma.Metadata.ModelClass)
+		}
+		if strings.TrimSpace(m.UIRole) == "" {
+			m.UIRole = strings.TrimSpace(ma.UI.Role)
+		}
+		if strings.TrimSpace(m.UIDisplayNote) == "" {
+			m.UIDisplayNote = strings.TrimSpace(ma.UI.DisplayNote)
+		}
+		if strings.TrimSpace(m.UIDisplayNoteZh) == "" {
+			m.UIDisplayNoteZh = strings.TrimSpace(ma.UI.DisplayNoteZh)
+		}
+		if m.StandaloneDeploy == nil {
+			m.StandaloneDeploy = ma.Capabilities.StandaloneDeploy
+		}
+	}
 }
 
 // buildModelDeps wires model.scan, model.list, model.pull, model.import,
@@ -165,7 +172,9 @@ func buildModelDeps(ac *appContext, deps *mcp.ToolDeps,
 				eventBus.Publish(agent.ExplorerEvent{Type: agent.EventModelDiscovered, Model: m.Name})
 			}
 		}
-		_ = registerCatalogLocalModels(ctx, cat, db)
+		if err := registerCatalogLocalModels(ctx, cat, db); err != nil {
+			return nil, fmt.Errorf("register catalog local models: %w", err)
+		}
 		return json.Marshal(models)
 	}
 
@@ -174,6 +183,7 @@ func buildModelDeps(ac *appContext, deps *mcp.ToolDeps,
 		if err != nil {
 			return nil, err
 		}
+		annotateModelsFromCatalog(models, cat)
 		return json.Marshal(models)
 	}
 

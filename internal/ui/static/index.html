@@ -3903,7 +3903,7 @@ body {
         </ul>
         <template x-if="componentModels().length > 0">
           <div class="hardware-group" style="margin-top:14px">
-            <div class="hardware-group-title">语音组件</div>
+            <div class="hardware-group-title" x-text="t('model_components')"></div>
             <ul class="panel-list">
               <template x-for="(m, mi) in componentModels()" :key="'component-' + (m.name || mi)">
                 <li class="model-list-item">
@@ -4667,7 +4667,7 @@ body {
           </ul>
           <template x-if="componentModels().length > 0">
             <div class="hardware-group" style="margin-top:14px">
-              <div class="hardware-group-title">语音组件</div>
+              <div class="hardware-group-title" x-text="t('model_components')"></div>
               <ul class="panel-list">
                 <template x-for="(m, mi) in componentModels()" :key="'mobile-component-' + (m.name || mi)">
                   <li class="model-list-item">
@@ -5197,6 +5197,7 @@ var I18N = {
     hardware: 'Hardware',
     engines: 'Engines',
     models: 'Models',
+    model_components: 'Components',
     fleet: 'Fleet',
     deployments: 'Deployments',
     agent_status: 'Agent Status',
@@ -5481,6 +5482,7 @@ var I18N = {
     hardware: '\u786C\u4EF6',
     engines: '\u5F15\u64CE',
     models: '\u6A21\u578B',
+    model_components: '\u7EC4\u4EF6',
     fleet: '\u8BBE\u5907\u7FA4',
     deployments: '\u90E8\u7F72',
     agent_status: 'Agent \u72B6\u6001',
@@ -8185,22 +8187,19 @@ function aimaApp() {
         format: m.format || '',
         model_class: m.model_class || '',
         detected_arch: m.detected_arch || '',
+        ui_role: m.ui_role || '',
+        ui_display_note: m.ui_display_note || '',
+        ui_display_note_zh: m.ui_display_note_zh || '',
+        standalone_deploy: typeof m.standalone_deploy === 'boolean' ? m.standalone_deploy : null,
         size: this.fmtModelSize(m.size_bytes || 0, m.format || '')
       }));
     },
 
     isDeployableModel(model) {
       if (!model || !model.name) return false;
-      const type = String(model.type || '').toLowerCase();
-      const format = String(model.format || '').toLowerCase();
-      const modelClass = String(model.model_class || '').toLowerCase();
-      if (type === 'llm' || type === 'embedding') return true;
-      if ((type === 'asr' || type === 'tts') && modelClass === 'pipeline') return true;
-      if (format === 'gguf') return true;
-      if (format === 'safetensors' && (modelClass === 'dense' || modelClass === 'moe' || modelClass === 'hybrid')) return true;
-      if (format === 'onnx' && modelClass === 'pipeline') return true;
-      if (format === 'mnn' && modelClass === 'pipeline') return true;
-      return false;
+      if (model.standalone_deploy !== null) return model.standalone_deploy;
+      const role = String(model.ui_role || '').toLowerCase();
+      return role !== 'component';
     },
 
     deployableModels() {
@@ -8212,12 +8211,10 @@ function aimaApp() {
     },
 
     componentStatusNote(model) {
-      const type = String(model && model.type ? model.type : '').toLowerCase();
-      if (type === 'asr') return this.lang === 'zh' ? '语音识别组件，不作为独立大模型部署' : 'ASR component, not deployed as a standalone foundation model';
-      if (type === 'tts') return this.lang === 'zh' ? '语音合成流水线，可作为独立语音服务部署' : 'Speech synthesis pipeline that can be deployed as a standalone voice service';
-      if (type === 'vad') return this.lang === 'zh' ? '语音活动检测组件，用于语音流水线' : 'VAD component used by speech pipelines';
-      if (type === 'nlp') return this.lang === 'zh' ? '语音后处理/标点组件，用于语音流水线' : 'Speech post-processing / punctuation component for speech pipelines';
-      return this.lang === 'zh' ? '内部组件，不在这里单独一键部署' : 'Internal component, not intended for one-click standalone deployment here';
+      if (!model) return '';
+      if (this.lang === 'zh' && model.ui_display_note_zh) return model.ui_display_note_zh;
+      if (model.ui_display_note) return model.ui_display_note;
+      return this.lang === 'zh' ? '组件' : 'Component';
     },
 
     deploymentForModel(modelName) {
@@ -8249,17 +8246,6 @@ function aimaApp() {
     },
 
     modelStatusNote(modelName) {
-      if (modelName === 'funasr-paraformer-onnx') {
-        const dep = this.deploymentForModel(modelName);
-        if (dep) {
-          if (dep.phase === 'failed') return dep.failure_detail || dep.detail || this.t('retry_label');
-          if (dep.phase === 'running' && dep.ready) {
-            return dep.address ? (this.t('running_label') + ' · ' + dep.address) : this.t('running_label');
-          }
-          return dep.startup_message || dep.startup_phase || dep.phase || this.t('deploying_label');
-        }
-        return this.lang === 'zh' ? '语音识别流水线（FunASR）' : 'Speech recognition pipeline (FunASR)';
-      }
       if (this.modelDeploying[modelName]) return this.t('deploying_label');
       const dep = this.deploymentForModel(modelName);
       if (!dep) return this.lang === 'zh' ? '仅本地资产' : 'Local only';

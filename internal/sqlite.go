@@ -42,6 +42,10 @@ type Model struct {
 	DetectedArch     string    `json:"detected_arch"`
 	DetectedParams   string    `json:"detected_params"`
 	ModelClass       string    `json:"model_class"`
+	UIRole           string    `json:"ui_role"`
+	UIDisplayNote    string    `json:"ui_display_note"`
+	UIDisplayNoteZh  string    `json:"ui_display_note_zh"`
+	StandaloneDeploy *bool     `json:"standalone_deploy,omitempty"`
 	TotalParams      int64     `json:"total_params"`
 	ActiveParams     int64     `json:"active_params"`
 	Quantization     string    `json:"quantization"`
@@ -49,6 +53,35 @@ type Model struct {
 	Status           string    `json:"status"`
 	DownloadProgress float64   `json:"download_progress"`
 	CreatedAt        time.Time `json:"created_at"`
+}
+
+func boolPtrToNullBool(value *bool) sql.NullBool {
+	if value == nil {
+		return sql.NullBool{}
+	}
+	return sql.NullBool{Bool: *value, Valid: true}
+}
+
+func nullBoolPtrScanner(target **bool) interface{} {
+	var value sql.NullBool
+	return scanFunc(func(src interface{}) error {
+		if err := value.Scan(src); err != nil {
+			return err
+		}
+		if value.Valid {
+			copied := value.Bool
+			*target = &copied
+		} else {
+			*target = nil
+		}
+		return nil
+	})
+}
+
+type scanFunc func(src interface{}) error
+
+func (fn scanFunc) Scan(src interface{}) error {
+	return fn(src)
 }
 
 type Engine struct {
@@ -390,6 +423,10 @@ func (d *DB) migrate(ctx context.Context) error {
 	// v15: benchmark_results.advisory_id links validation benches to central advisory
 	if err := d.migrateV15(ctx); err != nil {
 		return fmt.Errorf("migrate v15: %w", err)
+	}
+	// v16: model UI/capability hints for catalog-driven local asset display
+	if err := d.migrateV16(ctx); err != nil {
+		return fmt.Errorf("migrate v16: %w", err)
 	}
 	if _, err := d.db.ExecContext(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
@@ -1218,6 +1255,45 @@ func (d *DB) migrateV15(ctx context.Context) error {
 	return nil
 }
 
+func (d *DB) addModelDisplayColumns(ctx context.Context) error {
+	for _, column := range []struct {
+		name string
+		ddl  string
+	}{
+		{name: "ui_role", ddl: `ALTER TABLE models ADD COLUMN ui_role TEXT DEFAULT ''`},
+		{name: "ui_display_note", ddl: `ALTER TABLE models ADD COLUMN ui_display_note TEXT DEFAULT ''`},
+		{name: "ui_display_note_zh", ddl: `ALTER TABLE models ADD COLUMN ui_display_note_zh TEXT DEFAULT ''`},
+		{name: "standalone_deploy", ddl: `ALTER TABLE models ADD COLUMN standalone_deploy BOOLEAN`},
+	} {
+		var count int
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('models') WHERE name=?`, column.name).Scan(&count); err != nil {
+			return fmt.Errorf("check models.%s column: %w", column.name, err)
+		}
+		if count == 0 {
+			if _, err := d.db.ExecContext(ctx, column.ddl); err != nil {
+				return fmt.Errorf("add models.%s: %w", column.name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (d *DB) migrateV16(ctx context.Context) error {
+	var version int
+	_ = d.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	if version >= 16 {
+		return nil
+	}
+	if err := d.addModelDisplayColumns(ctx); err != nil {
+		return err
+	}
+	if _, err := d.db.ExecContext(ctx, "PRAGMA user_version = 16"); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
+}
+
 func (d *DB) InsertExplorationPlan(ctx context.Context, plan *ExplorationPlanRow) error {
 	_, err := d.db.ExecContext(ctx,
 		`INSERT INTO exploration_plans (id, tier, trigger, status, plan_json, progress, total, created_at)
@@ -1532,10 +1608,12 @@ func (d *DB) Analyze(ctx context.Context) error {
 func (d *DB) InsertModel(ctx context.Context, m *Model) error {
 	_, err := d.db.ExecContext(ctx,
 		`INSERT INTO models (id, name, type, path, format, size_bytes, detected_arch, detected_params,
-		                    model_class, total_params, active_params, quantization, quant_src, status, download_progress)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                    model_class, ui_role, ui_display_note, ui_display_note_zh, standalone_deploy,
+		                    total_params, active_params, quantization, quant_src, status, download_progress)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.Name, m.Type, m.Path, m.Format, m.SizeBytes, m.DetectedArch, m.DetectedParams,
-		m.ModelClass, m.TotalParams, m.ActiveParams, m.Quantization, m.QuantSrc, m.Status, m.DownloadProgress)
+		m.ModelClass, m.UIRole, m.UIDisplayNote, m.UIDisplayNoteZh, boolPtrToNullBool(m.StandaloneDeploy),
+		m.TotalParams, m.ActiveParams, m.Quantization, m.QuantSrc, m.Status, m.DownloadProgress)
 	if err != nil {
 		return fmt.Errorf("insert model %s: %w", m.ID, err)
 	}
@@ -1569,17 +1647,21 @@ func (d *DB) UpsertScannedModel(ctx context.Context, m *Model) error {
 
 	_, err = d.db.ExecContext(ctx,
 		`INSERT INTO models (id, name, type, path, format, size_bytes, detected_arch, detected_params,
-		                    model_class, total_params, active_params, quantization, quant_src, status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                    model_class, ui_role, ui_display_note, ui_display_note_zh, standalone_deploy,
+		                    total_params, active_params, quantization, quant_src, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   name=excluded.name, type=excluded.type, path=excluded.path,
 		   format=excluded.format, size_bytes=excluded.size_bytes,
 		   detected_arch=excluded.detected_arch, detected_params=excluded.detected_params,
-		   model_class=excluded.model_class, total_params=excluded.total_params,
+		   model_class=excluded.model_class, ui_role=excluded.ui_role,
+		   ui_display_note=excluded.ui_display_note, ui_display_note_zh=excluded.ui_display_note_zh,
+		   standalone_deploy=excluded.standalone_deploy, total_params=excluded.total_params,
 		   active_params=excluded.active_params, quantization=excluded.quantization,
 		   quant_src=excluded.quant_src, status=excluded.status`,
 		m.ID, m.Name, m.Type, m.Path, m.Format, m.SizeBytes, m.DetectedArch, m.DetectedParams,
-		m.ModelClass, m.TotalParams, m.ActiveParams, m.Quantization, m.QuantSrc, m.Status)
+		m.ModelClass, m.UIRole, m.UIDisplayNote, m.UIDisplayNoteZh, boolPtrToNullBool(m.StandaloneDeploy),
+		m.TotalParams, m.ActiveParams, m.Quantization, m.QuantSrc, m.Status)
 	if err != nil {
 		return fmt.Errorf("upsert scanned model %s: %w", m.ID, err)
 	}
@@ -1591,14 +1673,17 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 	err := d.db.QueryRowContext(ctx,
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
-		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),
+		        COALESCE(model_class,''), COALESCE(ui_role,''), COALESCE(ui_display_note,''),
+		        COALESCE(ui_display_note_zh,''), standalone_deploy,
+		        COALESCE(total_params,0), COALESCE(active_params,0),
 		        COALESCE(quantization,''), COALESCE(quant_src,''),
 		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
 		 FROM models WHERE id = ? OR name = ?
 		 ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END
 		 LIMIT 1`, id, id, id).Scan(
 		&m.ID, &m.Name, &m.Type, &m.Path, &m.Format, &m.SizeBytes,
-		&m.DetectedArch, &m.DetectedParams, &m.ModelClass, &m.TotalParams, &m.ActiveParams,
+		&m.DetectedArch, &m.DetectedParams, &m.ModelClass, &m.UIRole, &m.UIDisplayNote,
+		&m.UIDisplayNoteZh, nullBoolPtrScanner(&m.StandaloneDeploy), &m.TotalParams, &m.ActiveParams,
 		&m.Quantization, &m.QuantSrc, &m.Status, &m.DownloadProgress, &m.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("model %s not found", id)
@@ -1613,7 +1698,9 @@ func (d *DB) ListModels(ctx context.Context) ([]*Model, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
-		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),
+		        COALESCE(model_class,''), COALESCE(ui_role,''), COALESCE(ui_display_note,''),
+		        COALESCE(ui_display_note_zh,''), standalone_deploy,
+		        COALESCE(total_params,0), COALESCE(active_params,0),
 		        COALESCE(quantization,''), COALESCE(quant_src,''),
 		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
 		 FROM models ORDER BY created_at DESC`)
@@ -1625,7 +1712,8 @@ func (d *DB) ListModels(ctx context.Context) ([]*Model, error) {
 	for rows.Next() {
 		m := &Model{}
 		if err := rows.Scan(&m.ID, &m.Name, &m.Type, &m.Path, &m.Format, &m.SizeBytes,
-			&m.DetectedArch, &m.DetectedParams, &m.ModelClass, &m.TotalParams, &m.ActiveParams,
+			&m.DetectedArch, &m.DetectedParams, &m.ModelClass, &m.UIRole, &m.UIDisplayNote,
+			&m.UIDisplayNoteZh, nullBoolPtrScanner(&m.StandaloneDeploy), &m.TotalParams, &m.ActiveParams,
 			&m.Quantization, &m.QuantSrc, &m.Status, &m.DownloadProgress, &m.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan model row: %w", err)
 		}
@@ -1652,13 +1740,17 @@ func (d *DB) FindModelByName(ctx context.Context, name string) (*Model, error) {
 	queries := []string{
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
-		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),
+		        COALESCE(model_class,''), COALESCE(ui_role,''), COALESCE(ui_display_note,''),
+		        COALESCE(ui_display_note_zh,''), standalone_deploy,
+		        COALESCE(total_params,0), COALESCE(active_params,0),
 		        COALESCE(quantization,''), COALESCE(quant_src,''),
 		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
 		 FROM models WHERE LOWER(name) = LOWER(?) ORDER BY created_at DESC LIMIT 1`,
 		`SELECT id, name, type, path, COALESCE(format,''), COALESCE(size_bytes,0),
 		        COALESCE(detected_arch,''), COALESCE(detected_params,''),
-		        COALESCE(model_class,''), COALESCE(total_params,0), COALESCE(active_params,0),
+		        COALESCE(model_class,''), COALESCE(ui_role,''), COALESCE(ui_display_note,''),
+		        COALESCE(ui_display_note_zh,''), standalone_deploy,
+		        COALESCE(total_params,0), COALESCE(active_params,0),
 		        COALESCE(quantization,''), COALESCE(quant_src,''),
 		        COALESCE(status,'registered'), COALESCE(download_progress,0), created_at
 		 FROM models WHERE LOWER(name) LIKE '%' || LOWER(?) || '%' ORDER BY created_at DESC LIMIT 1`,
@@ -1667,7 +1759,8 @@ func (d *DB) FindModelByName(ctx context.Context, name string) (*Model, error) {
 		m := &Model{}
 		err := d.db.QueryRowContext(ctx, q, name).Scan(
 			&m.ID, &m.Name, &m.Type, &m.Path, &m.Format, &m.SizeBytes,
-			&m.DetectedArch, &m.DetectedParams, &m.ModelClass, &m.TotalParams, &m.ActiveParams,
+			&m.DetectedArch, &m.DetectedParams, &m.ModelClass, &m.UIRole, &m.UIDisplayNote,
+			&m.UIDisplayNoteZh, nullBoolPtrScanner(&m.StandaloneDeploy), &m.TotalParams, &m.ActiveParams,
 			&m.Quantization, &m.QuantSrc, &m.Status, &m.DownloadProgress, &m.CreatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
