@@ -1556,6 +1556,68 @@ func TestResolveLeavesEngineImageEmptyForNativePreinstalledEngine(t *testing.T) 
 	}
 }
 
+func TestResolveKeepsBlackwellVariantOnVLLM(t *testing.T) {
+	unified := true
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{Name: "vllm-blackwell", Type: "vllm", Version: "0.9.2"},
+				Hardware: EngineHardware{GPUArch: "Blackwell"},
+				Image:    EngineImage{Name: "vllm/vllm-openai", Tag: "0.9.2"},
+				Startup:  EngineStartup{Command: []string{"vllm", "serve"}, DefaultArgs: map[string]any{}, HealthCheck: HealthCheck{Path: "/health", TimeoutS: 60}},
+			},
+			{
+				Metadata: EngineMetadata{Name: "vllm-musa", Type: "vllm", Version: "0.9.2"},
+				Hardware: EngineHardware{GPUArch: "MUSA"},
+				Source: &EngineSource{
+					InstallType: "preinstalled",
+					Probe: &EngineSourceProbe{
+						Paths: []string{"/opt/mt-ai/llm/venv/bin/vllm"},
+					},
+				},
+				Runtime: EngineRuntime{Default: "native"},
+				Startup: EngineStartup{Command: []string{"vllm", "serve"}, DefaultArgs: map[string]any{}, HealthCheck: HealthCheck{Path: "/health", TimeoutS: 60}},
+			},
+		},
+		ModelAssets: []ModelAsset{{
+			Kind:     "model_asset",
+			Metadata: ModelMetadata{Name: "qwen3-8b"},
+			Variants: []ModelVariant{
+				{
+					Name:   "qwen3-8b-blackwell-vllm-bf16",
+					Engine: "vllm",
+					Format: "safetensors",
+					Hardware: ModelVariantHardware{
+						GPUArch:       "Blackwell",
+						UnifiedMemory: &unified,
+					},
+				},
+				{
+					Name:   "qwen3-8b-musa-soc-vllm-gptq",
+					Engine: "vllm-musa",
+					Format: "safetensors",
+					Hardware: ModelVariantHardware{
+						GPUArch:       "MUSA",
+						UnifiedMemory: &unified,
+					},
+				},
+			},
+		}},
+	}
+
+	hw := HardwareInfo{GPUArch: "Blackwell", UnifiedMemory: true, Platform: "linux/arm64"}
+	resolved, err := cat.Resolve(hw, "qwen3-8b", "vllm", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.Engine != "vllm" {
+		t.Fatalf("Engine = %q, want vllm", resolved.Engine)
+	}
+	if resolved.EngineAssetName != "vllm-blackwell" {
+		t.Fatalf("EngineAssetName = %q, want vllm-blackwell", resolved.EngineAssetName)
+	}
+}
+
 func TestCheckFitPowerBudget(t *testing.T) {
 	tests := []struct {
 		name        string

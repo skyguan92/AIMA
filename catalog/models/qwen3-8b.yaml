@@ -34,7 +34,7 @@ variants:
       gpu_arch: Blackwell
       vram_min_mib: 6144
       unified_memory: true
-    engine: vllm-musa
+    engine: vllm
     format: safetensors
     default_config:
       gpu_memory_utilization: 0.30
