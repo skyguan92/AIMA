@@ -5,6 +5,11 @@ metadata:
   family: mooer
   parameter_count: "1.5B"
   released_at: "2024-10"
+openclaw:
+  chat_provider: false
+  adapters:
+    - path: /v1/audio/transcriptions
+      kind: mooer_grpc
 storage:
   formats: [safetensors]
   default_path_pattern: "{{.DataDir}}/models/{{.Name}}"

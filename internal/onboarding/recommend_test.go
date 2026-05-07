@@ -230,7 +230,11 @@ func TestComputeFitScore(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			score := computeFitScore(tt.ma, tt.hw, tt.variant, tt.fit, tt.engineStatus, tt.modelAvailable, tt.goldenExists, tt.maxFitBillion, tt.policy)
+			policy := tt.policy
+			if len(policy.ModalityScores) == 0 {
+				policy = testNativeFirstRunPolicy()
+			}
+			score := computeFitScore(tt.ma, tt.hw, tt.variant, tt.fit, tt.engineStatus, tt.modelAvailable, tt.goldenExists, tt.maxFitBillion, policy)
 			if score < tt.wantMin || score > tt.wantMax {
 				t.Errorf("computeFitScore() = %d, want [%d, %d]", score, tt.wantMin, tt.wantMax)
 			}
@@ -324,6 +328,17 @@ func TestNativeFirstRunRiskPenaltyCanBeDisabledByPolicy(t *testing.T) {
 func testNativeFirstRunPolicy() FirstRunPolicy {
 	skipDiscreteAccelerators := true
 	return FirstRunPolicy{
+		DefaultModalityScore: 2,
+		ModalityScores: map[string]int{
+			"llm":       30,
+			"vlm":       25,
+			"embedding": 8,
+			"rerank":    8,
+			"asr":       5,
+			"tts":       5,
+			"image_gen": 3,
+			"video_gen": 3,
+		},
 		NativeGuardrail: NativeFirstRunGuardrail{
 			WildcardGPUArch:          "*",
 			SkipDiscreteAccelerators: &skipDiscreteAccelerators,
@@ -488,6 +503,7 @@ func TestEffectiveVRAMMiB(t *testing.T) {
 }
 
 func TestModalityScore(t *testing.T) {
+	policy := testNativeFirstRunPolicy()
 	tests := []struct {
 		modelType string
 		want      int
@@ -505,7 +521,7 @@ func TestModalityScore(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.modelType, func(t *testing.T) {
-			if got := modalityScore(tt.modelType); got != tt.want {
+			if got := policy.modalityScore(tt.modelType); got != tt.want {
 				t.Errorf("modalityScore(%q) = %d, want %d", tt.modelType, got, tt.want)
 			}
 		})

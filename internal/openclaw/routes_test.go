@@ -27,6 +27,19 @@ func (s staticBackendLister) ListBackends() map[string]*Backend {
 	return out
 }
 
+type staticOpenClawCatalog struct {
+	adapters map[string][]Adapter
+}
+
+func (s staticOpenClawCatalog) ModelType(string) string                      { return "" }
+func (s staticOpenClawCatalog) ModelContextWindow(string) int                { return 0 }
+func (s staticOpenClawCatalog) ModelFamily(string) string                    { return "" }
+func (s staticOpenClawCatalog) ModelChatProvider(string) bool                { return true }
+func (s staticOpenClawCatalog) OpenClawRequestPatches(string) []RequestPatch { return nil }
+func (s staticOpenClawCatalog) OpenClawAdapters(name string) []Adapter {
+	return append([]Adapter(nil), s.adapters[name]...)
+}
+
 func TestHandleTTSLiteTTSRewrite(t *testing.T) {
 	var (
 		gotPath string
@@ -51,10 +64,13 @@ func TestHandleTTSLiteTTSRewrite(t *testing.T) {
 		Backends: staticBackendLister{backends: map[string]*Backend{
 			"litetts-mnn": {
 				ModelName:  "litetts-mnn",
-				EngineType: "litetts",
+				EngineType: "local-tts",
 				Address:    strings.TrimPrefix(backend.URL, "http://"),
 				Ready:      true,
 			},
+		}},
+		Catalog: staticOpenClawCatalog{adapters: map[string][]Adapter{
+			"litetts-mnn": []Adapter{{Path: "/v1/audio/speech", Kind: adapterLiteTTSHTTP}},
 		}},
 	}
 
@@ -110,10 +126,13 @@ func TestHandleTTSLiteTTSRewriteCustomPath(t *testing.T) {
 		Backends: staticBackendLister{backends: map[string]*Backend{
 			"litetts-mnn": {
 				ModelName:  "litetts-mnn",
-				EngineType: "litetts",
+				EngineType: "local-tts",
 				Address:    strings.TrimPrefix(backend.URL, "http://"),
 				Ready:      true,
 			},
+		}},
+		Catalog: staticOpenClawCatalog{adapters: map[string][]Adapter{
+			"litetts-mnn": []Adapter{{Path: "/v1/tts", Kind: adapterLiteTTSHTTP}},
 		}},
 	}
 
@@ -310,10 +329,13 @@ func TestHandleASRMooERRewrite(t *testing.T) {
 		Backends: staticBackendLister{backends: map[string]*Backend{
 			"mooer-asr-1.5b": {
 				ModelName:  "mooer-asr-1.5b",
-				EngineType: "mooer-asr-musa",
+				EngineType: "local-asr",
 				Address:    "127.0.0.1:32107",
 				Ready:      true,
 			},
+		}},
+		Catalog: staticOpenClawCatalog{adapters: map[string][]Adapter{
+			"mooer-asr-1.5b": []Adapter{{Path: "/v1/audio/transcriptions", Kind: adapterMooERGRPC}},
 		}},
 	}
 
@@ -381,10 +403,13 @@ func TestHandleASRMooERTextResponse(t *testing.T) {
 		Backends: staticBackendLister{backends: map[string]*Backend{
 			"mooer-asr-1.5b": {
 				ModelName:  "mooer-asr-1.5b",
-				EngineType: "mooer",
+				EngineType: "local-asr",
 				Address:    "127.0.0.1:32107",
 				Ready:      true,
 			},
+		}},
+		Catalog: staticOpenClawCatalog{adapters: map[string][]Adapter{
+			"mooer-asr-1.5b": []Adapter{{Path: "/v1/audio/transcriptions", Kind: adapterMooERGRPC}},
 		}},
 	}
 

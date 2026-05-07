@@ -361,8 +361,8 @@ func computeFitScore(
 
 	score := 0
 
-	// D1: Modality (0-30)
-	score += modalityScore(ma.Metadata.Type)
+	// D1: Modality
+	score += firstRunPolicy.modalityScore(ma.Metadata.Type)
 
 	// D2: Hardware match (0-25) = D2a + D2b + D2c
 	score += vramUtilizationScore(hw, variant)
@@ -492,26 +492,6 @@ func bandwidthAffinityScore(hw knowledge.HardwareInfo, ma *knowledge.ModelAsset)
 		if moe {
 			return 8
 		}
-		return 2
-	}
-}
-
-// modalityScore returns 0-30 for D1 modality priority. LLM dominates
-// the onboarding wizard; the gap to ASR/TTS (25 points) is impossible
-// to overcome through other dimensions alone.
-func modalityScore(modelType string) int {
-	switch strings.ToLower(strings.TrimSpace(modelType)) {
-	case "llm":
-		return 30
-	case "vlm":
-		return 25
-	case "embedding", "rerank":
-		return 8
-	case "asr", "tts":
-		return 5
-	case "image_gen", "video_gen":
-		return 3
-	default:
 		return 2
 	}
 }

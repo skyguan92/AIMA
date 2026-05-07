@@ -640,6 +640,23 @@ func (a catalogAdapter) ModelChatProvider(name string) bool {
 	return true
 }
 
+func (a catalogAdapter) OpenClawAdapters(name string) []openclaw.Adapter {
+	for _, m := range a.cat.ModelAssets {
+		if !strings.EqualFold(m.Metadata.Name, name) || m.OpenClaw == nil {
+			continue
+		}
+		out := make([]openclaw.Adapter, 0, len(m.OpenClaw.Adapters))
+		for _, adapter := range m.OpenClaw.Adapters {
+			out = append(out, openclaw.Adapter{
+				Path: adapter.Path,
+				Kind: adapter.Kind,
+			})
+		}
+		return out
+	}
+	return nil
+}
+
 func (a catalogAdapter) OpenClawRequestPatches(name string) []openclaw.RequestPatch {
 	for _, m := range a.cat.ModelAssets {
 		if !strings.EqualFold(m.Metadata.Name, name) || m.OpenClaw == nil {

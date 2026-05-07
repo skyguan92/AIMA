@@ -162,13 +162,6 @@ func parseASRUpload(r *http.Request, body []byte) (*asrUpload, error) {
 	return upload, nil
 }
 
-func isMooERBackend(backend *Backend) bool {
-	if backend == nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(backend.EngineType), "mooer")
-}
-
 func (d *Deps) handleMooERASR(w http.ResponseWriter, r *http.Request, backend *Backend, upload *asrUpload) {
 	if upload == nil || len(upload.AudioData) == 0 {
 		http.Error(w, `{"error":"missing file field"}`, http.StatusBadRequest)

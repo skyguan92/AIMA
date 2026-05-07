@@ -11,7 +11,9 @@ import (
 // Production wiring loads it from catalog/onboarding-policy.yaml; tests and
 // alternate embeddings can inject a policy through Deps.
 type FirstRunPolicy struct {
-	NativeGuardrail NativeFirstRunGuardrail `yaml:"native_guardrail" json:"native_guardrail"`
+	ModalityScores       map[string]int          `yaml:"modality_scores,omitempty" json:"modality_scores,omitempty"`
+	DefaultModalityScore int                     `yaml:"default_modality_score,omitempty" json:"default_modality_score,omitempty"`
+	NativeGuardrail      NativeFirstRunGuardrail `yaml:"native_guardrail" json:"native_guardrail"`
 }
 
 type NativeFirstRunGuardrail struct {
@@ -62,6 +64,21 @@ func effectiveFirstRunPolicy(deps *Deps) FirstRunPolicy {
 }
 
 func (p FirstRunPolicy) validate() error {
+	if len(p.ModalityScores) == 0 {
+		return fmt.Errorf("first_run.modality_scores is required")
+	}
+	if p.DefaultModalityScore < 0 {
+		return fmt.Errorf("first_run.default_modality_score must be non-negative")
+	}
+	for modality, score := range p.ModalityScores {
+		if strings.TrimSpace(modality) == "" {
+			return fmt.Errorf("first_run.modality_scores contains an empty modality")
+		}
+		if score < 0 {
+			return fmt.Errorf("first_run.modality_scores[%s] must be non-negative", modality)
+		}
+	}
+
 	guardrail := p.NativeGuardrail
 	if guardrail.Disabled {
 		return nil
@@ -95,4 +112,14 @@ func (p FirstRunPolicy) validate() error {
 		}
 	}
 	return nil
+}
+
+func (p FirstRunPolicy) modalityScore(modelType string) int {
+	key := strings.ToLower(strings.TrimSpace(modelType))
+	if key != "" {
+		if score, ok := p.ModalityScores[key]; ok {
+			return score
+		}
+	}
+	return p.DefaultModalityScore
 }

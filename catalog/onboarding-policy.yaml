@@ -4,6 +4,16 @@ metadata:
   description: First-run recommendation guardrails for local/native onboarding.
 
 first_run:
+  default_modality_score: 2
+  modality_scores:
+    llm: 30
+    vlm: 25
+    embedding: 8
+    rerank: 8
+    asr: 5
+    tts: 5
+    image_gen: 3
+    video_gen: 3
   native_guardrail:
     wildcard_gpu_arch: "*"
     skip_discrete_accelerators: true

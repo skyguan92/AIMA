@@ -63,6 +63,10 @@ func (m *mockCatalog) ModelChatProvider(name string) bool {
 	return name != "glm-4.1v-9b"
 }
 
+func (m *mockCatalog) OpenClawAdapters(name string) []Adapter {
+	return nil
+}
+
 func (m *mockCatalog) OpenClawRequestPatches(name string) []RequestPatch {
 	if name != "qwen3.5-9b" {
 		return nil

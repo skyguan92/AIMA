@@ -3412,18 +3412,18 @@ body {
               <p style="color:var(--text-dim);font-size:13px;margin-bottom:12px" x-text="t('wiz_gpu_occupied_desc')"></p>
               <div style="display:flex;flex-direction:column;gap:8px">
                 <template x-for="(proc, pi) in onboardingData.gpu_occupancy" :key="pi">
-                  <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-panel);border:var(--panel-border);border-radius:var(--radius-sm)">
-                    <div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 14px;background:var(--bg-panel);border:var(--panel-border);border-radius:var(--radius-sm)">
+                    <div style="min-width:0;flex:1">
                       <div style="font-size:14px;font-weight:600;color:var(--text)" x-text="proc.name"></div>
                       <div style="font-size:12px;color:var(--text-dim)">
                         <span x-text="proc.image"></span>
                         <span x-show="proc.gpu_mem_mib > 0" x-text="' \u00B7 GPU ' + (proc.gpu_mem_mib / 1024).toFixed(1) + ' GB'"></span>
                       </div>
                     </div>
-                    <button class="wiz-btn wiz-btn-secondary" style="font-size:12px;padding:6px 14px;white-space:nowrap"
-                      :style="proc._stopping ? 'opacity:0.5;pointer-events:none' : ''"
-                      @click="wizStopContainer(proc, pi)"
-                      x-text="proc._stopping ? t('wiz_stopping') : t('wiz_stop_container')"></button>
+                    <div class="wiz-cmd-box" style="padding:6px 8px;font-size:11px;min-width:220px;max-width:100%">
+                      <code x-text="wizStopContainerCommand(proc)"></code>
+                      <button class="wiz-copy-btn" @click="wizCopyText(wizStopContainerCommand(proc), $event)" x-text="t('wiz_copy')"></button>
+                    </div>
                   </div>
                 </template>
               </div>
@@ -3682,20 +3682,21 @@ body {
             </div>
             <!-- Error -->
             <div class="wiz-error" x-show="(onboardingDeployProgress || {}).error" x-text="(onboardingDeployProgress || {}).error"></div>
-            <!-- GPU Occupancy in deploy error state — let user stop services and retry -->
+            <!-- GPU Occupancy in deploy error state -->
             <template x-if="(onboardingDeployProgress || {}).error && onboardingData && onboardingData.gpu_occupancy && onboardingData.gpu_occupancy.length > 0">
               <div style="margin-top:12px;padding:14px;background:var(--bg-panel);border:1px solid var(--warning);border-radius:var(--radius-sm)">
                 <div style="font-size:13px;font-weight:600;color:var(--warning);margin-bottom:8px" x-text="t('wiz_gpu_occupied')"></div>
                 <div style="display:flex;flex-direction:column;gap:6px">
                   <template x-for="(proc, pi) in onboardingData.gpu_occupancy" :key="'deploy-'+pi">
-                    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg-primary);border-radius:var(--radius-sm)">
-                      <div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:8px 12px;background:var(--bg-primary);border-radius:var(--radius-sm)">
+                      <div style="min-width:0;flex:1">
                         <span style="font-size:13px;font-weight:600;color:var(--text)" x-text="proc.name"></span>
                         <span style="font-size:11px;color:var(--text-dim);margin-left:6px" x-text="proc.image"></span>
                       </div>
-                      <button class="wiz-btn wiz-btn-secondary" style="font-size:11px;padding:4px 12px"
-                        @click="wizStopContainer(proc, pi)"
-                        x-text="proc._stopping ? t('wiz_stopping') : t('wiz_stop_container')"></button>
+                      <div class="wiz-cmd-box" style="padding:5px 7px;font-size:11px;min-width:210px;max-width:100%">
+                        <code x-text="wizStopContainerCommand(proc)"></code>
+                        <button class="wiz-copy-btn" @click="wizCopyText(wizStopContainerCommand(proc), $event)" x-text="t('wiz_copy')"></button>
+                      </div>
                     </div>
                   </template>
                 </div>
@@ -5422,11 +5423,9 @@ var I18N = {
     wiz_loading: 'Checking system status...',
     wiz_no_recommendations: 'No recommendations available for this hardware configuration.',
     wiz_deploy_error: 'Deployment failed. Please check logs and try again.',
-    wiz_gpu_busy: 'GPU memory is occupied by other running services. Please stop existing deployments (e.g. via "docker stop") to free GPU memory, then try again.',
+    wiz_gpu_busy: 'GPU memory is occupied by other running services. Copy the command shown for the relevant container, run it outside AIMA if appropriate, then try again.',
     wiz_gpu_occupied: 'GPU is in use',
-    wiz_gpu_occupied_desc: 'The following services are currently using GPU resources. You can stop them to free GPU memory for new deployments, or continue with reduced capacity.',
-    wiz_stop_container: 'Stop',
-    wiz_stopping: 'Stopping...',
+    wiz_gpu_occupied_desc: 'The following services are currently using GPU resources. AIMA will not stop them automatically; copy a command and run it yourself only when appropriate.',
     wiz_retry_deploy: 'Retry Deploy',
     wiz_engine_blocked: 'This model cannot run on current hardware — the required engine is not available.',
   },
@@ -5707,11 +5706,9 @@ var I18N = {
     wiz_loading: '\u68C0\u67E5\u7CFB\u7EDF\u72B6\u6001...',
     wiz_no_recommendations: '\u65E0\u6CD5\u4E3A\u5F53\u524D\u786C\u4EF6\u914D\u7F6E\u63D0\u4F9B\u63A8\u8350\u3002',
     wiz_deploy_error: '\u90E8\u7F72\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u65E5\u5FD7\u5E76\u91CD\u8BD5\u3002',
-    wiz_gpu_busy: 'GPU \u663E\u5B58\u5DF2\u88AB\u5176\u4ED6\u8FD0\u884C\u4E2D\u7684\u670D\u52A1\u5360\u7528\u3002\u8BF7\u5148\u505C\u6B62\u5DF2\u6709\u7684\u90E8\u7F72\uFF08\u5982\u901A\u8FC7 docker stop\uFF09\u91CA\u653E GPU \u663E\u5B58\uFF0C\u7136\u540E\u518D\u8BD5\u3002',
+    wiz_gpu_busy: 'GPU \u663E\u5B58\u5DF2\u88AB\u5176\u4ED6\u8FD0\u884C\u4E2D\u7684\u670D\u52A1\u5360\u7528\u3002\u5982\u679C\u786E\u8BA4\u53EF\u4EE5\u505C\u6B62\uFF0C\u8BF7\u590D\u5236\u5BF9\u5E94\u547D\u4EE4\u5E76\u5728 AIMA \u5916\u90E8\u6267\u884C\uFF0C\u7136\u540E\u91CD\u8BD5\u3002',
     wiz_gpu_occupied: 'GPU \u6B63\u5728\u88AB\u5360\u7528',
-    wiz_gpu_occupied_desc: '\u4EE5\u4E0B\u670D\u52A1\u6B63\u5728\u4F7F\u7528 GPU \u8D44\u6E90\u3002\u60A8\u53EF\u4EE5\u505C\u6B62\u5B83\u4EEC\u4EE5\u91CA\u653E GPU \u663E\u5B58\u7528\u4E8E\u65B0\u90E8\u7F72\uFF0C\u6216\u7EE7\u7EED\u4F7F\u7528\u5269\u4F59\u5BB9\u91CF\u3002',
-    wiz_stop_container: '\u505C\u6B62',
-    wiz_stopping: '\u505C\u6B62\u4E2D...',
+    wiz_gpu_occupied_desc: '\u4EE5\u4E0B\u670D\u52A1\u6B63\u5728\u4F7F\u7528 GPU \u8D44\u6E90\u3002AIMA \u4E0D\u4F1A\u81EA\u52A8\u505C\u6B62\u5B83\u4EEC\uFF1B\u53EA\u5728\u786E\u8BA4\u540E\u624B\u52A8\u590D\u5236\u5E76\u6267\u884C\u547D\u4EE4\u3002',
     wiz_retry_deploy: '\u91CD\u8BD5\u90E8\u7F72',
     wiz_engine_blocked: '\u8BE5\u6A21\u578B\u65E0\u6CD5\u5728\u5F53\u524D\u786C\u4EF6\u4E0A\u8FD0\u884C\u2014\u2014\u6240\u9700\u5F15\u64CE\u4E0D\u53EF\u7528\u3002\u8BF7\u9009\u62E9\u5176\u4ED6\u6A21\u578B\u3002',
     cli_help_header: 'CLI \u6A21\u5F0F \u2014 \u53EF\u7528 MCP \u5DE5\u5177',
@@ -7073,34 +7070,6 @@ function aimaApp() {
       this.onboardingPhase = 'detecting';
     },
 
-    wizStopContainer(proc, index) {
-      if (proc._stopping) return;
-      var self = this;
-      // Use direct property set for Alpine reactivity
-      self.onboardingData.gpu_occupancy[index]._stopping = true;
-      var headers = { 'Content-Type': 'application/json' };
-      if (self.apiKey) headers['Authorization'] = 'Bearer ' + self.apiKey;
-      fetch('/ui/api/onboarding-stop-container', {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({ name: proc.name })
-      }).then(function(resp) {
-        if (resp.ok) {
-          self.onboardingData.gpu_occupancy.splice(index, 1);
-        } else {
-          return resp.json().catch(function() { return {}; }).then(function(err) {
-            alert(err.error || 'Failed to stop container');
-            self.onboardingData.gpu_occupancy[index]._stopping = false;
-          });
-        }
-      }).catch(function(e) {
-        alert('Failed to stop: ' + e.message);
-        if (self.onboardingData && self.onboardingData.gpu_occupancy && self.onboardingData.gpu_occupancy[index]) {
-          self.onboardingData.gpu_occupancy[index]._stopping = false;
-        }
-      });
-    },
-
     wizRetryDeploy() {
       // Re-run the same deploy with the current model
       if (this._lastDeployRequest) {
@@ -7337,6 +7306,16 @@ function aimaApp() {
       this.$nextTick(function() {
         if (this.$refs && this.$refs.chatInput) this.$refs.chatInput.focus();
       }.bind(this));
+    },
+
+    wizShellArg(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return "'<container>'";
+      return "'" + raw.replace(/'/g, "'\"'\"'") + "'";
+    },
+
+    wizStopContainerCommand(proc) {
+      return 'docker stop -- ' + this.wizShellArg(proc && proc.name);
     },
 
     async wizCopyText(text, event) {

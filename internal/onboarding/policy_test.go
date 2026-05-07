@@ -6,6 +6,9 @@ func TestParseFirstRunPolicyYAMLAllowsBooleanOverrides(t *testing.T) {
 	policy, err := ParseFirstRunPolicyYAML([]byte(`
 kind: onboarding_policy
 first_run:
+  default_modality_score: 2
+  modality_scores:
+    llm: 30
   native_guardrail:
     wildcard_gpu_arch: "*"
     skip_discrete_accelerators: false
@@ -42,6 +45,9 @@ func TestParseFirstRunPolicyYAMLRejectsMissingPolicyData(t *testing.T) {
 			raw: `
 kind: model_asset
 first_run:
+  default_modality_score: 2
+  modality_scores:
+    llm: 30
   native_guardrail:
     wildcard_gpu_arch: "*"
     skip_discrete_accelerators: true
@@ -56,6 +62,9 @@ first_run:
 			raw: `
 kind: onboarding_policy
 first_run:
+  default_modality_score: 2
+  modality_scores:
+    llm: 30
   native_guardrail:
     skip_discrete_accelerators: true
     max_penalty: 7
@@ -69,6 +78,9 @@ first_run:
 			raw: `
 kind: onboarding_policy
 first_run:
+  default_modality_score: 2
+  modality_scores:
+    llm: 30
   native_guardrail:
     wildcard_gpu_arch: "*"
     max_penalty: 7
@@ -82,6 +94,9 @@ first_run:
 			raw: `
 kind: onboarding_policy
 first_run:
+  default_modality_score: 2
+  modality_scores:
+    llm: 30
   native_guardrail:
     wildcard_gpu_arch: "*"
     skip_discrete_accelerators: true

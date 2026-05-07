@@ -15,6 +15,11 @@ import (
 
 const maxTTSRequestBody = 16 << 20
 
+const (
+	adapterLiteTTSHTTP = "litetts_http"
+	adapterMooERGRPC   = "mooer_grpc"
+)
+
 // RegisterRoutes returns a function that registers OpenClaw-specific proxy routes.
 // Pattern follows internal/fleet/handler.go.
 func RegisterRoutes(deps *Deps) func(*http.ServeMux) {
@@ -67,7 +72,7 @@ func (d *Deps) handleTTS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if backend.EngineType == "litetts" {
+	if d.adapterFor(model, r.URL.Path) == adapterLiteTTSHTTP {
 		d.handleLiteTTS(w, r, backend, raw)
 		return
 	}
@@ -150,7 +155,7 @@ func (d *Deps) handleASR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if isMooERBackend(backend) {
+	if d.adapterFor(model, r.URL.Path) == adapterMooERGRPC {
 		d.handleMooERASR(w, r, backend, upload)
 		return
 	}
@@ -262,6 +267,18 @@ func RequestBodyRewriter(cat CatalogReader) func(path, contentType, model, engin
 		body = stripOrphanedToolChoice(body)
 		return body
 	}
+}
+
+func (d *Deps) adapterFor(model, path string) string {
+	if d == nil || d.Catalog == nil {
+		return ""
+	}
+	for _, adapter := range d.Catalog.OpenClawAdapters(model) {
+		if strings.TrimSpace(adapter.Path) == path {
+			return strings.ToLower(strings.TrimSpace(adapter.Kind))
+		}
+	}
+	return ""
 }
 
 // stripOrphanedToolChoice removes tool_choice from JSON request bodies when

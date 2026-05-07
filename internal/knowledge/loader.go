@@ -343,7 +343,13 @@ type ModelMetadata struct {
 
 type OpenClawHints struct {
 	ChatProvider   *bool                  `yaml:"chat_provider,omitempty"` // register as LLM chat provider (default true)
+	Adapters       []OpenClawAdapter      `yaml:"adapters,omitempty"`
 	RequestPatches []OpenClawRequestPatch `yaml:"request_patches,omitempty"`
+}
+
+type OpenClawAdapter struct {
+	Path string `yaml:"path"`
+	Kind string `yaml:"kind"`
 }
 
 type OpenClawRequestPatch struct {
