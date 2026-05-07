@@ -463,7 +463,7 @@ func TestResolveCatalogModelName(t *testing.T) {
 			}},
 			{Metadata: ModelMetadata{
 				Name:    "qwen3-8b",
-				Aliases: []string{"Qwen3-8B-junhowie", "gptq-Qwen3-8B-junhowie"},
+				Aliases: []string{"Qwen3-8B-junhowie", "gptq-Qwen3-8B-junhowie", "gptq-Qwen3-8B"},
 			}},
 			{Metadata: ModelMetadata{Name: "llama-3.1-8b"}},
 		},
@@ -477,6 +477,7 @@ func TestResolveCatalogModelName(t *testing.T) {
 		{"alias exact case", "Qwen3-Embedding-0.6B", "qwen3-emb-0.6b"},
 		{"alias lowercase", "qwen3-embedding-0.6b", "qwen3-emb-0.6b"},
 		{"quant-prefixed alias", "gptq-Qwen3-8B-junhowie", "qwen3-8b"},
+		{"quant short alias", "gptq-Qwen3-8B", "qwen3-8b"},
 		{"canonical name passthrough", "qwen3-8b", "qwen3-8b"},
 		{"canonical name different case", "LLaMA-3.1-8B", "llama-3.1-8b"},
 		{"no match returns input", "some-unknown-model", "some-unknown-model"},
@@ -1546,6 +1547,74 @@ func TestResolveLeavesEngineImageEmptyForNativePreinstalledEngine(t *testing.T) 
 	}
 	if resolved.RuntimeRecommendation != "native" {
 		t.Fatalf("RuntimeRecommendation = %q, want native", resolved.RuntimeRecommendation)
+	}
+	if resolved.Engine != "vllm" {
+		t.Fatalf("Engine = %q, want vllm", resolved.Engine)
+	}
+	if resolved.EngineAssetName != "vllm-musa" {
+		t.Fatalf("EngineAssetName = %q, want vllm-musa", resolved.EngineAssetName)
+	}
+}
+
+func TestResolveKeepsBlackwellVariantOnVLLM(t *testing.T) {
+	unified := true
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{
+			{
+				Metadata: EngineMetadata{Name: "vllm-blackwell", Type: "vllm", Version: "0.9.2"},
+				Hardware: EngineHardware{GPUArch: "Blackwell"},
+				Image:    EngineImage{Name: "vllm/vllm-openai", Tag: "0.9.2"},
+				Startup:  EngineStartup{Command: []string{"vllm", "serve"}, DefaultArgs: map[string]any{}, HealthCheck: HealthCheck{Path: "/health", TimeoutS: 60}},
+			},
+			{
+				Metadata: EngineMetadata{Name: "vllm-musa", Type: "vllm", Version: "0.9.2"},
+				Hardware: EngineHardware{GPUArch: "MUSA"},
+				Source: &EngineSource{
+					InstallType: "preinstalled",
+					Probe: &EngineSourceProbe{
+						Paths: []string{"/opt/mt-ai/llm/venv/bin/vllm"},
+					},
+				},
+				Runtime: EngineRuntime{Default: "native"},
+				Startup: EngineStartup{Command: []string{"vllm", "serve"}, DefaultArgs: map[string]any{}, HealthCheck: HealthCheck{Path: "/health", TimeoutS: 60}},
+			},
+		},
+		ModelAssets: []ModelAsset{{
+			Kind:     "model_asset",
+			Metadata: ModelMetadata{Name: "qwen3-8b"},
+			Variants: []ModelVariant{
+				{
+					Name:   "qwen3-8b-blackwell-vllm-bf16",
+					Engine: "vllm",
+					Format: "safetensors",
+					Hardware: ModelVariantHardware{
+						GPUArch:       "Blackwell",
+						UnifiedMemory: &unified,
+					},
+				},
+				{
+					Name:   "qwen3-8b-musa-soc-vllm-gptq",
+					Engine: "vllm-musa",
+					Format: "safetensors",
+					Hardware: ModelVariantHardware{
+						GPUArch:       "MUSA",
+						UnifiedMemory: &unified,
+					},
+				},
+			},
+		}},
+	}
+
+	hw := HardwareInfo{GPUArch: "Blackwell", UnifiedMemory: true, Platform: "linux/arm64"}
+	resolved, err := cat.Resolve(hw, "qwen3-8b", "vllm", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.Engine != "vllm" {
+		t.Fatalf("Engine = %q, want vllm", resolved.Engine)
+	}
+	if resolved.EngineAssetName != "vllm-blackwell" {
+		t.Fatalf("EngineAssetName = %q, want vllm-blackwell", resolved.EngineAssetName)
 	}
 }
 
