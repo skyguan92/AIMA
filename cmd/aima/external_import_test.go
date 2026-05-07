@@ -38,12 +38,45 @@ func TestRegisterExternalServiceBackends(t *testing.T) {
 	if backend.BasePath != "" {
 		t.Fatalf("BasePath = %q, want empty", backend.BasePath)
 	}
+	if backend.Scheme != "http" {
+		t.Fatalf("Scheme = %q, want http", backend.Scheme)
+	}
 	if backend.UpstreamModel != "whisper-large-v3-hf" {
 		t.Fatalf("UpstreamModel = %q, want whisper-large-v3-hf", backend.UpstreamModel)
 	}
 }
 
-func TestRegisterExternalServiceBackendsImportsHealthzASRService(t *testing.T) {
+func TestRegisterExternalServiceBackendsPreservesHTTPSScheme(t *testing.T) {
+	proxyServer := proxy.NewServer()
+	service := externalServiceOverview{
+		BaseURL: "https://example.com/v1",
+		Kind:    "openai",
+		Models:  []string{"secure-model"},
+	}
+
+	imported, err := registerExternalServiceBackends(proxyServer, service, nil)
+	if err != nil {
+		t.Fatalf("registerExternalServiceBackends: %v", err)
+	}
+	if imported != 1 {
+		t.Fatalf("imported = %d, want 1", imported)
+	}
+	backend := proxyServer.ListBackends()["secure-model"]
+	if backend == nil {
+		t.Fatal("secure-model backend missing")
+	}
+	if backend.Scheme != "https" {
+		t.Fatalf("Scheme = %q, want https", backend.Scheme)
+	}
+	if backend.Address != "example.com" {
+		t.Fatalf("Address = %q, want example.com", backend.Address)
+	}
+	if backend.BasePath != "" {
+		t.Fatalf("BasePath = %q, want empty for /v1 base URL", backend.BasePath)
+	}
+}
+
+func TestRegisterExternalServiceBackendsRejectsHealthzService(t *testing.T) {
 	proxyServer := proxy.NewServer()
 	service := externalServiceOverview{
 		BaseURL: "http://127.0.0.1:8009",
@@ -51,22 +84,11 @@ func TestRegisterExternalServiceBackendsImportsHealthzASRService(t *testing.T) {
 		Models:  []string{"SenseVoiceSmall", "pyannote"},
 	}
 
-	imported, err := registerExternalServiceBackends(proxyServer, service, []string{"local-stt"})
-	if err != nil {
-		t.Fatalf("registerExternalServiceBackends: %v", err)
+	if _, err := registerExternalServiceBackends(proxyServer, service, []string{"local-stt"}); err == nil {
+		t.Fatal("registerExternalServiceBackends returned nil, want unsupported service error")
 	}
-	if imported != 1 {
-		t.Fatalf("imported = %d, want 1", imported)
-	}
-	backend := proxyServer.ListBackends()["local-stt"]
-	if backend == nil {
-		t.Fatal("local-stt backend missing")
-	}
-	if backend.EngineType != "external-asr" {
-		t.Fatalf("EngineType = %q, want external-asr", backend.EngineType)
-	}
-	if got := backend.PathOverrides["/v1/audio/transcriptions"]; got != "/v1/asr" {
-		t.Fatalf("transcriptions override = %q, want /v1/asr", got)
+	if backend := proxyServer.ListBackends()["local-stt"]; backend != nil {
+		t.Fatalf("local-stt backend should not be registered for healthz service: %+v", backend)
 	}
 }
 
@@ -105,6 +127,18 @@ func TestRestoreImportedExternalServicesOnlyRestoresReachableScanResults(t *test
 	}
 
 	proxyServer := proxy.NewServer()
+	proxyServer.RegisterBackend("stale-model", &proxy.Backend{
+		ModelName: "stale-model",
+		Scheme:    "http",
+		Address:   "127.0.0.1:8011",
+		Ready:     true,
+		External:  true,
+	})
+	proxyServer.RegisterBackend("local-model", &proxy.Backend{
+		ModelName: "local-model",
+		Address:   "10.42.0.8:8000",
+		Ready:     true,
+	})
 	err = restoreImportedExternalServices(ctx, db, proxyServer, map[string]struct{}{
 		"http://127.0.0.1:8004": {},
 	})
@@ -118,5 +152,17 @@ func TestRestoreImportedExternalServicesOnlyRestoresReachableScanResults(t *test
 	}
 	if backends["stale-model"] != nil {
 		t.Fatal("stale-model backend should not be restored")
+	}
+	if backends["local-model"] == nil {
+		t.Fatal("local-model backend should not be removed by external stale cleanup")
+	}
+	services, err := db.ListExternalServices(ctx)
+	if err != nil {
+		t.Fatalf("ListExternalServices: %v", err)
+	}
+	for _, svc := range services {
+		if svc.BaseURL == "http://127.0.0.1:8011" && svc.Status != "unreachable" {
+			t.Fatalf("stale service status = %q, want unreachable", svc.Status)
+		}
 	}
 }

@@ -303,6 +303,37 @@ func TestChatCompletions_RoutesToCorrectBackend(t *testing.T) {
 	}
 }
 
+func TestChatCompletions_UsesBackendScheme(t *testing.T) {
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("backend path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"chatcmpl-1","choices":[{"message":{"content":"hello"}}]}`)
+	}))
+	defer backend.Close()
+
+	s := NewServer(WithTransport(backend.Client().Transport))
+	addr := strings.TrimPrefix(backend.URL, "https://")
+	s.RegisterBackend("secure-model", &Backend{
+		ModelName:  "secure-model",
+		EngineType: "external-openai",
+		Scheme:     "https",
+		Address:    addr,
+		Ready:      true,
+		External:   true,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"secure-model","messages":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
 func TestChatCompletions_AppliesRequestRewriter(t *testing.T) {
 	var receivedBody map[string]any
 	backend := newTestBackend(t, func(w http.ResponseWriter, r *http.Request) {

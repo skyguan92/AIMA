@@ -1984,6 +1984,23 @@ func (d *DB) SetExternalServiceImported(ctx context.Context, idOrBaseURL string,
 	return nil
 }
 
+func (d *DB) SetExternalServiceStatus(ctx context.Context, idOrBaseURL, status, lastError string) error {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return fmt.Errorf("external service status is required")
+	}
+	res, err := d.db.ExecContext(ctx,
+		`UPDATE external_services SET status = ?, last_error = ? WHERE id = ? OR base_url = ?`,
+		status, strings.TrimSpace(lastError), idOrBaseURL, idOrBaseURL)
+	if err != nil {
+		return fmt.Errorf("set external service status %s: %w", idOrBaseURL, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("external service %s not found", idOrBaseURL)
+	}
+	return nil
+}
+
 func (d *DB) ListExternalServices(ctx context.Context) ([]*ExternalService, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, base_url, kind, status, source,

@@ -1771,12 +1771,16 @@ func restoreImportedExternalServices(ctx context.Context, db *state.DB, proxySer
 		if !row.Imported {
 			continue
 		}
+		overview := externalServiceOverviewFromRecord(row)
 		if reachable != nil {
 			if _, ok := reachable[row.BaseURL]; !ok {
+				cleanupExternalServiceBackends(proxyServer, overview)
+				if err := db.SetExternalServiceStatus(ctx, row.BaseURL, "unreachable", "last scan did not reach this imported service"); err != nil {
+					slog.Warn("external service restore: failed to mark service unreachable", "base_url", row.BaseURL, "error", err)
+				}
 				continue
 			}
 		}
-		overview := externalServiceOverviewFromRecord(row)
 		if _, err := registerExternalServiceBackends(proxyServer, overview, nil); err != nil {
 			slog.Warn("external service restore: failed to register backend", "base_url", overview.BaseURL, "error", err)
 		}
@@ -1788,7 +1792,10 @@ func registerExternalServiceBackends(proxyServer *proxy.Server, service external
 	if proxyServer == nil {
 		return 0, fmt.Errorf("proxy server is nil")
 	}
-	address, basePath, err := proxyRouteTarget(service.BaseURL)
+	if strings.TrimSpace(service.Kind) != "openai" {
+		return 0, fmt.Errorf("external service %s is %q, not importable", service.BaseURL, service.Kind)
+	}
+	scheme, address, basePath, err := proxyRouteTarget(service.BaseURL)
 	if err != nil {
 		return 0, err
 	}
@@ -1808,22 +1815,15 @@ func registerExternalServiceBackends(proxyServer *proxy.Server, service external
 		}
 		seen[strings.ToLower(model)] = struct{}{}
 		engineType := "external-openai"
-		pathOverrides := map[string]string(nil)
-		if service.Kind == "healthz" {
-			engineType = "external-asr"
-			pathOverrides = map[string]string{"/v1/audio/transcriptions": "/v1/asr"}
-		} else if service.Kind != "openai" {
-			return 0, fmt.Errorf("external service %s is %q, not importable", service.BaseURL, service.Kind)
-		}
 		proxyServer.RegisterBackend(model, &proxy.Backend{
 			ModelName:     model,
 			UpstreamModel: model,
 			EngineType:    engineType,
+			Scheme:        scheme,
 			Address:       address,
 			BasePath:      basePath,
 			Ready:         true,
 			External:      true,
-			PathOverrides: pathOverrides,
 		})
 		imported++
 	}
@@ -1833,24 +1833,59 @@ func registerExternalServiceBackends(proxyServer *proxy.Server, service external
 	return imported, nil
 }
 
-func proxyRouteTarget(baseURL string) (address, basePath string, err error) {
+func cleanupExternalServiceBackends(proxyServer *proxy.Server, service externalServiceOverview) {
+	if proxyServer == nil {
+		return
+	}
+	scheme, address, basePath, err := proxyRouteTarget(service.BaseURL)
+	if err != nil {
+		return
+	}
+	for _, model := range service.Models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		backend := proxyServer.ListBackends()[strings.ToLower(model)]
+		if backend == nil || !backend.External {
+			continue
+		}
+		if backend.Address != address || backend.BasePath != basePath {
+			continue
+		}
+		backendScheme := strings.TrimSpace(strings.ToLower(backend.Scheme))
+		if backendScheme != "" && backendScheme != scheme {
+			continue
+		}
+		proxyServer.RemoveBackend(model)
+	}
+}
+
+func proxyRouteTarget(baseURL string) (scheme, address, basePath string, err error) {
 	raw := strings.TrimSpace(baseURL)
 	if raw == "" {
-		return "", "", fmt.Errorf("base_url is required")
+		return "", "", "", fmt.Errorf("base_url is required")
 	}
 	if !strings.Contains(raw, "://") {
 		raw = "http://" + raw
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("parse base_url %q: %w", baseURL, err)
+		return "", "", "", fmt.Errorf("parse base_url %q: %w", baseURL, err)
 	}
 	if u.Host == "" {
-		return "", "", fmt.Errorf("base_url %q has no host", baseURL)
+		return "", "", "", fmt.Errorf("base_url %q has no host", baseURL)
+	}
+	scheme = strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme == "" {
+		scheme = "http"
+	}
+	if scheme != "http" && scheme != "https" {
+		return "", "", "", fmt.Errorf("base_url %q has unsupported scheme %q", baseURL, u.Scheme)
 	}
 	basePath = strings.TrimRight(u.Path, "/")
 	if basePath == "/v1" {
 		basePath = ""
 	}
-	return u.Host, basePath, nil
+	return scheme, u.Host, basePath, nil
 }
