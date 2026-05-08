@@ -3361,7 +3361,7 @@ body {
               </div>
               <!-- VRAM -->
               <div class="wiz-hw-item">
-                <div class="label" x-text="t('wiz_vram')"></div>
+                <div class="label" x-text="wizHwVramLabel()"></div>
                 <div class="value" x-text="wizHwVram()"></div>
               </div>
               <!-- CPU -->
@@ -3370,7 +3370,7 @@ body {
                 <div class="value" x-text="wizHwCpu()"></div>
               </div>
               <!-- RAM -->
-              <div class="wiz-hw-item">
+              <div class="wiz-hw-item" x-show="!wizHwUnifiedMemory()">
                 <div class="label" x-text="t('wiz_ram')"></div>
                 <div class="value" x-text="wizHwRam()"></div>
               </div>
@@ -3802,7 +3802,7 @@ body {
               </div>
               <div class="gauge">
                 <div class="gauge-label">
-                  <span x-text="'VRAM ' + hw.gpu.vramSummary"></span>
+                  <span x-text="hwGpuLabel() + ' ' + hw.gpu.vramSummary"></span>
                   <span x-text="hw.gpu.memUsed + '/' + hw.gpu.memTotal"></span>
                 </div>
                 <div class="gauge-bar">
@@ -3861,9 +3861,9 @@ body {
             <span x-text="hw.cpu.model"></span>
             <span x-show="hw.cpu.coreInfo" x-text="' · ' + hw.cpu.coreInfo"></span>
           </div>
-          <div class="gauge" style="margin-top:6px">
+          <div class="gauge" style="margin-top:6px" x-show="hwShowSeparateRam()">
             <div class="gauge-label">
-              <span>RAM</span>
+              <span x-text="hwHostMemoryLabel()"></span>
               <span x-text="hw.mem.used + '/' + hw.mem.total"></span>
             </div>
             <div class="gauge-bar">
@@ -4592,7 +4592,7 @@ body {
             <template x-if="hw.gpu">
               <div>
                 <div class="gauge"><div class="gauge-label"><span x-text="hw.gpu.countLabel + ' ' + hw.gpu.name"></span><span x-text="hw.gpu.util + '%'"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.gpu.util > 90 ? 'crit' : hw.gpu.util > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.util + '%'"></div></div></div>
-                <div class="gauge"><div class="gauge-label"><span x-text="'VRAM ' + hw.gpu.vramSummary"></span><span x-text="hw.gpu.memUsed + '/' + hw.gpu.memTotal"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.gpu.memPct > 90 ? 'crit' : hw.gpu.memPct > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.memPct + '%'"></div></div></div>
+                <div class="gauge"><div class="gauge-label"><span x-text="hwGpuLabel() + ' ' + hw.gpu.vramSummary"></span><span x-text="hw.gpu.memUsed + '/' + hw.gpu.memTotal"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.gpu.memPct > 90 ? 'crit' : hw.gpu.memPct > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.memPct + '%'"></div></div></div>
                 <div style="font-size:11px;color:var(--text-dim);margin-top:2px" x-show="hw.gpu.temp">
                   <span x-text="hw.gpu.temp + '\u00B0C'"></span>
                   <span x-show="hw.gpu.power" x-text="' / ' + hw.gpu.power + 'W'"></span>
@@ -4635,7 +4635,7 @@ body {
               <span x-text="hw.cpu.model"></span>
               <span x-show="hw.cpu.coreInfo" x-text="' \u00B7 ' + hw.cpu.coreInfo"></span>
             </div>
-            <div class="gauge" style="margin-top:6px"><div class="gauge-label"><span>RAM</span><span x-text="hw.mem.used + '/' + hw.mem.total"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.mem.pct > 90 ? 'crit' : hw.mem.pct > 70 ? 'warn' : ''" :style="'width:' + hw.mem.pct + '%'"></div></div></div>
+            <div class="gauge" style="margin-top:6px" x-show="hwShowSeparateRam()"><div class="gauge-label"><span x-text="hwHostMemoryLabel()"></span><span x-text="hw.mem.used + '/' + hw.mem.total"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.mem.pct > 90 ? 'crit' : hw.mem.pct > 70 ? 'warn' : ''" :style="'width:' + hw.mem.pct + '%'"></div></div></div>
           </div>
         </div>
         <div class="panel">
@@ -6878,15 +6878,52 @@ function aimaApp() {
       var g = gpus[0];
       var txt = g.name || 'GPU';
       if (g.count && g.count > 1) txt = g.count + 'x ' + txt;
+      if (this.wizHwUnifiedMemory() && !/\bSoC\b/i.test(txt)) txt += ' SoC';
       return txt;
+    },
+    wizHwUnifiedMemory() {
+      if (!this.onboardingData || !this.onboardingData.hardware) return false;
+      var hw = this.onboardingData.hardware;
+      if (hw.unified_memory) return true;
+      var gpus = hw.gpu;
+      return !!(gpus && gpus.length && gpus[0] && gpus[0].unified_memory);
+    },
+    wizHwVramLabel() {
+      return this.wizHwUnifiedMemory() ? (this.lang === 'zh' ? '统一内存' : 'Unified Memory') : this.t('wiz_vram');
     },
     wizHwVram() {
       if (!this.onboardingData || !this.onboardingData.hardware) return '-';
       var gpus = this.onboardingData.hardware.gpu;
       if (!gpus || !gpus.length) return '-';
-      var mib = gpus[0].vram_mib || 0;
+      var hw = this.onboardingData.hardware;
+      var mib = this.wizHwUnifiedMemory()
+        ? this.normalizeInstalledMemoryMiB(hw.ram_mib || gpus[0].vram_mib || 0)
+        : (gpus[0].vram_mib || 0);
       if (mib <= 0) return '-';
       return (mib / 1024).toFixed(1) + ' GB';
+    },
+    hwGpuLabel() {
+      return (this.hw && this.hw.gpu && this.hw.gpu.unifiedMemory) ? (this.lang === 'zh' ? '统一内存' : 'Unified Memory') : 'VRAM';
+    },
+    hwHostMemoryLabel() {
+      if (this.hw && this.hw.gpu && this.hw.gpu.unifiedMemory) {
+        return this.lang === 'zh' ? '统一内存' : 'Unified Memory';
+      }
+      return 'RAM';
+    },
+    normalizeInstalledMemoryMiB(mib) {
+      if (!mib || mib <= 0) return 0;
+      const gib = mib / 1024;
+      const candidates = [4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512];
+      for (const candidate of candidates) {
+        if (gib >= candidate * 0.9 && gib <= candidate * 1.05) {
+          return candidate * 1024;
+        }
+      }
+      return mib;
+    },
+    hwShowSeparateRam() {
+      return !(this.hw && this.hw.gpu && this.hw.gpu.unifiedMemory);
     },
     wizHwCpu() {
       if (!this.onboardingData || !this.onboardingData.hardware) return '-';
@@ -7437,7 +7474,11 @@ function aimaApp() {
         const memPct = totalVram > 0 ? Math.round(totalUsed / totalVram * 100) : 0;
         const perCardVram = g.vram_mib || (count > 0 ? Math.round(totalVram / count) : 0);
         const countLabel = count > 1 ? (count + '\u00D7') : '';
-        const vramSummary = count > 1 ? ('(' + this.fmtMiB(perCardVram) + ' \u00D7 ' + count + ')') : '';
+        const unifiedMemory = !!(hw.unified_memory || g.unified_memory);
+        const unifiedTotalMiB = this.normalizeInstalledMemoryMiB(hw.ram_total_mib || hw.ram_mib || totalVram || g.vram_mib || 0);
+        const vramSummary = unifiedMemory
+          ? this.fmtMiB(unifiedTotalMiB)
+          : (count > 1 ? ('(' + this.fmtMiB(perCardVram) + ' \u00D7 ' + count + ')') : this.fmtMiB(perCardVram));
         // Build per-card array from metrics.gpu.cards
         const rawCards = (gm.cards || []);
         const cards = rawCards.map((c, i) => ({
@@ -7450,13 +7491,14 @@ function aimaApp() {
           power: c.power_draw_watts || 0
         }));
         this.hw.gpu = {
-          name: g.name || 'GPU',
+          name: (g.name || 'GPU') + (unifiedMemory && !/\bSoC\b/i.test(g.name || 'GPU') ? ' SoC' : ''),
           count: count,
           countLabel: countLabel,
           vramSummary: vramSummary,
           computeId: g.compute_id || '',
           util: gm.utilization_percent || 0,
-          memTotal: this.fmtMiB(totalVram),
+          unifiedMemory: unifiedMemory,
+          memTotal: this.fmtMiB(unifiedMemory ? unifiedTotalMiB : totalVram),
           memUsed: this.fmtMiB(totalUsed),
           memPct: memPct,
           temp: gm.temperature_celsius || g.temperature_celsius || 0,
@@ -7483,7 +7525,7 @@ function aimaApp() {
         this.hw.mem = {
           pct: mt > 0 ? Math.round(mu / mt * 100) : 0,
           used: this.fmtMiB(mu),
-          total: this.fmtMiB(mt)
+          total: this.fmtMiB(this.normalizeInstalledMemoryMiB(mt))
         };
       } else if (hw && hw.ram) {
         const mt = hw.ram.total_mib || 0;
@@ -7492,7 +7534,7 @@ function aimaApp() {
         this.hw.mem = {
           pct: mt > 0 ? Math.round(mu / mt * 100) : 0,
           used: this.fmtMiB(mu),
-          total: this.fmtMiB(mt)
+          total: this.fmtMiB(this.normalizeInstalledMemoryMiB(mt))
         };
       }
       this.handleSupportStatus(data.support);
