@@ -3838,6 +3838,11 @@ body {
                   <code class="api-access-value" x-text="apiModelName(onboardingDeployModel)"></code>
                   <button type="button" class="api-copy-btn" @click="wizCopyText(apiModelName(onboardingDeployModel), $event)" x-text="t('wiz_copy')"></button>
                 </div>
+                <div class="api-access-row">
+                  <span class="api-access-label" x-text="t('api_key')"></span>
+                  <code class="api-access-value" x-text="apiKeyDisplay()"></code>
+                  <button type="button" class="api-copy-btn" @click="copyCurrentAPIKey($event)" x-text="t('wiz_copy')"></button>
+                </div>
                 <div class="api-access-actions" x-show="apiDeploymentChatCapable({ name: onboardingDeployModel, model: onboardingDeployModel })">
                   <button type="button" class="api-copy-btn" @click="copyAPICurl({ name: onboardingDeployModel, model: onboardingDeployModel }, $event)" x-text="t('api_copy_curl')"></button>
                   <button type="button" class="api-copy-btn" @click="copyOpenAISDKExample({ name: onboardingDeployModel, model: onboardingDeployModel }, $event)" x-text="t('api_copy_openai')"></button>
@@ -4614,6 +4619,11 @@ body {
                       <code class="api-access-value" x-text="apiDeploymentModel(dep)"></code>
                       <button type="button" class="api-copy-btn" @click="wizCopyText(apiDeploymentModel(dep), $event)" x-text="t('wiz_copy')"></button>
                     </div>
+                    <div class="api-access-row">
+                      <span class="api-access-label" x-text="t('api_key')"></span>
+                      <code class="api-access-value" x-text="apiKeyDisplay()"></code>
+                      <button type="button" class="api-copy-btn" @click="copyCurrentAPIKey($event)" x-text="t('wiz_copy')"></button>
+                    </div>
                     <div class="api-access-actions" x-show="apiDeploymentChatCapable(dep)">
                       <button type="button" class="api-copy-btn" @click="copyAPICurl(dep, $event)" x-text="t('api_copy_curl')"></button>
                       <button type="button" class="api-copy-btn" @click="copyOpenAISDKExample(dep, $event)" x-text="t('api_copy_openai')"></button>
@@ -4751,6 +4761,11 @@ body {
                         <span class="api-access-label" x-text="t('api_model')"></span>
                         <code class="api-access-value" x-text="apiDeploymentModel(dep)"></code>
                         <button type="button" class="api-copy-btn" @click="wizCopyText(apiDeploymentModel(dep), $event)" x-text="t('wiz_copy')"></button>
+                      </div>
+                      <div class="api-access-row">
+                        <span class="api-access-label" x-text="t('api_key')"></span>
+                        <code class="api-access-value" x-text="apiKeyDisplay()"></code>
+                        <button type="button" class="api-copy-btn" @click="copyCurrentAPIKey($event)" x-text="t('wiz_copy')"></button>
                       </div>
                       <div class="api-access-actions" x-show="apiDeploymentChatCapable(dep)">
                         <button type="button" class="api-copy-btn" @click="copyAPICurl(dep, $event)" x-text="t('api_copy_curl')"></button>
@@ -5449,6 +5464,7 @@ var I18N = {
     api_copy_curl: 'Copy curl',
     api_copy_openai: 'Copy Python',
     api_non_chat_hint: 'This model is not served through chat completions. Use the base URL, model name, and API key with its catalog protocol.',
+    api_unknown_type_hint: 'No chat example is shown because this model type is unknown. Use the base URL, model name, and API key with the protocol shown by the catalog.',
     api_public_unconfigured: 'Public access: not configured. External users need a domain with HTTPS reverse proxy, VPN, or tunnel before they can call this service.',
     hardware_group_accelerator: 'Accelerator',
     hardware_group_host: 'Host',
@@ -5751,6 +5767,7 @@ var I18N = {
     api_copy_curl: '\u590D\u5236 curl',
     api_copy_openai: '\u590D\u5236 Python',
     api_non_chat_hint: '\u8BE5\u6A21\u578B\u4E0D\u901A\u8FC7 chat completions \u63A5\u53E3\u63D0\u4F9B\u670D\u52A1\u3002\u8BF7\u6309 catalog protocol \u4F7F\u7528 Base URL\u3001\u6A21\u578B\u540D\u548C API Key\u3002',
+    api_unknown_type_hint: '\u6A21\u578B\u7C7B\u578B\u672A\u77E5\uFF0C\u4E0D\u663E\u793A chat \u793A\u4F8B\u3002\u8BF7\u7ED3\u5408 catalog \u4E2D\u7684\u534F\u8BAE\u4F7F\u7528 Base URL\u3001\u6A21\u578B\u540D\u548C API Key\u3002',
     api_public_unconfigured: '\u516C\u7F51\u8BBF\u95EE\uFF1A\u672A\u914D\u7F6E\u3002\u5916\u90E8\u7F51\u7EDC\u7528\u6237\u9700\u8981\u57DF\u540D + HTTPS \u53CD\u5411\u4EE3\u7406\u3001VPN \u6216\u96A7\u9053\u540E\u624D\u80FD\u8C03\u7528\u6B64\u670D\u52A1\u3002',
     hardware_group_accelerator: '\u52A0\u901F\u5668',
     hardware_group_host: '\u4E3B\u673A',
@@ -7707,6 +7724,10 @@ function aimaApp() {
       return this.apiCurrentBaseURL();
     },
 
+    apiKeyDisplay() {
+      return this.apiKey || 'aima-local';
+    },
+
     apiModelName(modelName) {
       return modelName || this.agentInfo.llmModel || (this.models[0] && this.models[0].name) || 'model';
     },
@@ -7725,12 +7746,13 @@ function aimaApp() {
 
     apiDeploymentChatCapable(dep) {
       const kind = this.apiModelKind(dep);
-      if (!kind) return true;
+      if (!kind) return false;
       return kind === 'llm' || kind === 'vlm' || kind === 'chat';
     },
 
     apiNonChatHint(dep) {
       const kind = this.apiModelKind(dep);
+      if (!kind) return this.t('api_unknown_type_hint');
       return this.t('api_non_chat_hint') + (kind ? ' (' + kind + ')' : '');
     },
 
@@ -7796,6 +7818,10 @@ function aimaApp() {
 
     copyCurrentAPIBaseURL(event) {
       return this.wizCopyText(this.apiCurrentBaseURL(), event);
+    },
+
+    copyCurrentAPIKey(event) {
+      return this.wizCopyText(this.apiKeyDisplay(), event);
     },
 
     copyAPICurl(dep, event) {

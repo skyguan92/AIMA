@@ -49,6 +49,48 @@ func TestHandleOnboardingUseExistingSetsLLMConfig(t *testing.T) {
 	}
 }
 
+func TestHandleOnboardingUseExistingRejectsExplicitUnreadyBackend(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		ready   bool
+		address string
+	}{
+		{name: "not ready", ready: false, address: "127.0.0.1:18310"},
+		{name: "missing address", ready: true, address: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proxyServer := proxy.NewServer()
+			proxyServer.RegisterBackend("qwen3.6-35b-a3b-bf16", &proxy.Backend{
+				ModelName:  "qwen3.6-35b-a3b-bf16",
+				EngineType: "vllm",
+				Address:    tc.address,
+				BasePath:   "/v1",
+				Ready:      tc.ready,
+			})
+
+			config := map[string]string{}
+			handler := handleOnboardingUseExisting(&appContext{proxy: proxyServer}, &mcp.ToolDeps{
+				SetConfig: func(ctx context.Context, key, value string) error {
+					config[key] = value
+					return nil
+				},
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/ui/api/onboarding-use-existing", strings.NewReader(`{"model":"qwen3.6-35b-a3b-bf16"}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusConflict, rec.Body.String())
+			}
+			if len(config) != 0 {
+				t.Fatalf("config should not be written for unready backend: %#v", config)
+			}
+		})
+	}
+}
+
 func TestBuildOnboardingDepsRunningServicesSeparatesProxyEndpointFromBackendEndpoint(t *testing.T) {
 	proxyServer := proxy.NewServer()
 	proxyServer.RegisterBackend("qwen3.6-35b-a3b-bf16", &proxy.Backend{

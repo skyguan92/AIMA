@@ -257,6 +257,34 @@ func TestRegisterRoutes_IndexShowsAPIAccessWithoutRenderingPrivateIP(t *testing.
 	}
 }
 
+func TestRegisterRoutes_IndexDoesNotShowChatExamplesForUnknownModelType(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	start := strings.Index(body, "apiDeploymentChatCapable(dep) {")
+	if start == -1 {
+		t.Fatal("apiDeploymentChatCapable not found")
+	}
+	end := strings.Index(body[start:], "\n    }")
+	if end == -1 {
+		t.Fatal("could not isolate apiDeploymentChatCapable body")
+	}
+	fnBody := body[start : start+end]
+	if strings.Contains(fnBody, "if (!kind) return true") {
+		t.Fatalf("unknown model type should not default to chat-capable, body=%s", fnBody)
+	}
+	if !strings.Contains(fnBody, "if (!kind) return false") {
+		t.Fatalf("unknown model type should return false, body=%s", fnBody)
+	}
+}
+
 func TestRegisterRoutes_IndexMasksDevicePrivateAddress(t *testing.T) {
 	t.Parallel()
 
