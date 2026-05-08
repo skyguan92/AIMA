@@ -186,6 +186,95 @@ func TestRegisterCatalogLocalModelsRegistersLocalPathAssets(t *testing.T) {
 	if model.StandaloneDeploy == nil || !*model.StandaloneDeploy {
 		t.Fatalf("StandaloneDeploy = %v, want true", model.StandaloneDeploy)
 	}
+	if model.SizeBytes != 0 {
+		t.Fatalf("SizeBytes = %d, want 0 for catalog-local directory with unknown scanned size", model.SizeBytes)
+	}
+}
+
+func TestRegisterCatalogLocalModelsUsesFirstExistingLocalPathCandidate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := mustOpenTooldepsDB(t)
+	root := t.TempDir()
+	missingDir := filepath.Join(root, "missing")
+	modelDir := filepath.Join(root, "existing")
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll modelDir: %v", err)
+	}
+
+	cat := &knowledge.Catalog{
+		ModelAssets: []knowledge.ModelAsset{{
+			Metadata: knowledge.ModelMetadata{Name: "catalog-local-model", Type: "asr", Family: "funasr"},
+			Storage: knowledge.ModelStorage{
+				Formats: []string{"onnx"},
+				Sources: []knowledge.ModelSource{
+					{Type: "local_path", Path: missingDir},
+					{Type: "local_path", Path: modelDir},
+				},
+			},
+		}},
+	}
+
+	if err := registerCatalogLocalModels(ctx, cat, db); err != nil {
+		t.Fatalf("registerCatalogLocalModels: %v", err)
+	}
+
+	model, err := db.GetModel(ctx, "catalog-local-model")
+	if err != nil {
+		t.Fatalf("GetModel: %v", err)
+	}
+	if model.Path != modelDir {
+		t.Fatalf("Path = %q, want first existing candidate %q", model.Path, modelDir)
+	}
+}
+
+func TestRegisterCatalogLocalModelsPreservesExistingScannedSize(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := mustOpenTooldepsDB(t)
+	modelDir := filepath.Join(t.TempDir(), "catalog-model")
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll modelDir: %v", err)
+	}
+	if err := db.UpsertScannedModel(ctx, &state.Model{
+		ID:        "existing-catalog-model",
+		Name:      "catalog-local-model",
+		Type:      "asr",
+		Path:      modelDir,
+		Format:    "onnx",
+		SizeBytes: 12345,
+		Status:    "registered",
+	}); err != nil {
+		t.Fatalf("UpsertScannedModel(existing): %v", err)
+	}
+
+	cat := &knowledge.Catalog{
+		ModelAssets: []knowledge.ModelAsset{{
+			Metadata: knowledge.ModelMetadata{Name: "catalog-local-model", Type: "asr", Family: "funasr"},
+			UI:       knowledge.ModelUI{Role: "deployable"},
+			Storage: knowledge.ModelStorage{
+				Formats: []string{"onnx"},
+				Sources: []knowledge.ModelSource{{Type: "local_path", Path: modelDir}},
+			},
+		}},
+	}
+
+	if err := registerCatalogLocalModels(ctx, cat, db); err != nil {
+		t.Fatalf("registerCatalogLocalModels: %v", err)
+	}
+
+	model, err := db.GetModel(ctx, "catalog-local-model")
+	if err != nil {
+		t.Fatalf("GetModel: %v", err)
+	}
+	if model.SizeBytes != 12345 {
+		t.Fatalf("SizeBytes = %d, want preserved scanned size 12345", model.SizeBytes)
+	}
+	if model.UIRole != "deployable" {
+		t.Fatalf("UIRole = %q, want deployable", model.UIRole)
+	}
 }
 
 func TestListModelsDoesNotRegisterCatalogLocalModels(t *testing.T) {
