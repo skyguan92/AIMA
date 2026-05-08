@@ -22,57 +22,102 @@ func registerCatalogLocalModels(ctx context.Context, cat *knowledge.Catalog, db 
 	if cat == nil {
 		return nil
 	}
+	existingSizes, err := modelSizesByPath(ctx, db)
+	if err != nil {
+		return err
+	}
 	for i := range cat.ModelAssets {
 		ma := &cat.ModelAssets[i]
-		if err := registerCatalogLocalModel(ctx, ma, db); err != nil {
+		if err := registerCatalogLocalModel(ctx, ma, db, existingSizes); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func registerCatalogLocalModel(ctx context.Context, ma *knowledge.ModelAsset, db *state.DB) error {
+func modelSizesByPath(ctx context.Context, db *state.DB) (map[string]int64, error) {
+	models, err := db.ListModels(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list existing model sizes: %w", err)
+	}
+	sizes := make(map[string]int64, len(models))
+	for _, m := range models {
+		if m == nil || strings.TrimSpace(m.Path) == "" || m.SizeBytes <= 0 {
+			continue
+		}
+		sizes[m.Path] = m.SizeBytes
+	}
+	return sizes, nil
+}
+
+func registerCatalogLocalModel(ctx context.Context, ma *knowledge.ModelAsset, db *state.DB, existingSizes map[string]int64) error {
 	if ma == nil {
 		return nil
 	}
-	localPath, detectedArch, format := catalogLocalModelDescriptor(ma)
-	if localPath == "" {
-		return nil
+	for _, candidate := range catalogLocalModelCandidates(ma) {
+		info, err := os.Stat(candidate.path)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		return db.UpsertScannedModel(ctx, &state.Model{
+			ID:               fmt.Sprintf("%x", sha256.Sum256([]byte(candidate.path+"|"+ma.Metadata.Name))),
+			Name:             ma.Metadata.Name,
+			Type:             ma.Metadata.Type,
+			Path:             candidate.path,
+			Format:           candidate.format,
+			SizeBytes:        existingSizes[candidate.path],
+			DetectedArch:     candidate.detectedArch,
+			ModelClass:       strings.TrimSpace(ma.Metadata.ModelClass),
+			UIRole:           strings.TrimSpace(ma.UI.Role),
+			UIDisplayNote:    strings.TrimSpace(ma.UI.DisplayNote),
+			UIDisplayNoteZh:  strings.TrimSpace(ma.UI.DisplayNoteZh),
+			StandaloneDeploy: ma.Capabilities.StandaloneDeploy,
+			Status:           "registered",
+		})
 	}
-	info, err := os.Stat(localPath)
-	if err != nil || !info.IsDir() {
-		return nil
-	}
-	return db.UpsertScannedModel(ctx, &state.Model{
-		ID:               fmt.Sprintf("%x", sha256.Sum256([]byte(localPath+"|"+ma.Metadata.Name))),
-		Name:             ma.Metadata.Name,
-		Type:             ma.Metadata.Type,
-		Path:             localPath,
-		Format:           format,
-		SizeBytes:        info.Size(),
-		DetectedArch:     detectedArch,
-		ModelClass:       strings.TrimSpace(ma.Metadata.ModelClass),
-		UIRole:           strings.TrimSpace(ma.UI.Role),
-		UIDisplayNote:    strings.TrimSpace(ma.UI.DisplayNote),
-		UIDisplayNoteZh:  strings.TrimSpace(ma.UI.DisplayNoteZh),
-		StandaloneDeploy: ma.Capabilities.StandaloneDeploy,
-		Status:           "registered",
-	})
+	return nil
 }
 
-func catalogLocalModelDescriptor(ma *knowledge.ModelAsset) (localPath, detectedArch, format string) {
-	format = firstCatalogFormat(ma)
+type catalogLocalModelCandidate struct {
+	path         string
+	detectedArch string
+	format       string
+}
+
+func catalogLocalModelCandidates(ma *knowledge.ModelAsset) []catalogLocalModelCandidate {
+	if ma == nil {
+		return nil
+	}
+	defaultFormat := firstCatalogFormat(ma)
+	detectedArch := inferDetectedArch(ma)
+	seen := make(map[string]struct{})
+	var candidates []catalogLocalModelCandidate
+	add := func(path, candidateFormat string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		candidates = append(candidates, catalogLocalModelCandidate{
+			path:         path,
+			detectedArch: detectedArch,
+			format:       firstNonEmpty(strings.TrimSpace(candidateFormat), defaultFormat),
+		})
+	}
 	for _, variant := range ma.Variants {
 		if variant.Source != nil && variant.Source.Type == "local_path" && strings.TrimSpace(variant.Source.Path) != "" {
-			return strings.TrimSpace(variant.Source.Path), inferDetectedArch(ma), firstNonEmpty(strings.TrimSpace(variant.Format), format)
+			add(variant.Source.Path, variant.Format)
 		}
 	}
 	for _, src := range ma.Storage.Sources {
 		if src.Type == "local_path" && strings.TrimSpace(src.Path) != "" {
-			return strings.TrimSpace(src.Path), inferDetectedArch(ma), firstNonEmpty(strings.TrimSpace(src.Format), format)
+			add(src.Path, src.Format)
 		}
 	}
-	return "", "", ""
+	return candidates
 }
 
 func inferDetectedArch(ma *knowledge.ModelAsset) string {
