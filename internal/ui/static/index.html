@@ -3876,11 +3876,11 @@ body {
       <!-- Models Panel -->
       <div class="panel">
         <div class="panel-title">&#x25C6; <span x-text="t('models')"></span></div>
-        <template x-if="models.length === 0">
+        <template x-if="deployableModels().length === 0">
           <div class="empty" x-text="t('no_models')"></div>
         </template>
         <ul class="panel-list">
-          <template x-for="(m, mi) in models" :key="m.name || mi">
+          <template x-for="(m, mi) in deployableModels()" :key="m.name || mi">
             <li class="model-list-item">
               <span class="dot" :class="modelDotClass(m.name)"></span>
               <div class="model-entry">
@@ -3901,6 +3901,27 @@ body {
             </li>
           </template>
         </ul>
+        <template x-if="componentModels().length > 0">
+          <div class="hardware-group" style="margin-top:14px">
+            <div class="hardware-group-title" x-text="t('model_components')"></div>
+            <ul class="panel-list">
+              <template x-for="(m, mi) in componentModels()" :key="'component-' + (m.name || mi)">
+                <li class="model-list-item">
+                  <span class="dot dot-dim"></span>
+                  <div class="model-entry">
+                    <div class="model-entry-top">
+                      <span class="model-name" x-text="m.name" :title="m.name"></span>
+                      <span class="model-size" x-text="m.size || ''" :title="m.size || ''"></span>
+                    </div>
+                    <div class="model-entry-meta">
+                      <span class="model-status-note" x-text="componentStatusNote(m)" :title="componentStatusNote(m)"></span>
+                    </div>
+                  </div>
+                </li>
+              </template>
+            </ul>
+          </div>
+        </template>
       </div>
 
       <!-- Engines Panel -->
@@ -4619,8 +4640,11 @@ body {
         </div>
         <div class="panel">
           <div class="panel-title">&#x25C6; <span x-text="t('models')"></span></div>
+          <template x-if="deployableModels().length === 0">
+            <div class="empty" x-text="t('no_models')"></div>
+          </template>
           <ul class="panel-list">
-            <template x-for="(m, mi) in models" :key="m.name || mi">
+            <template x-for="(m, mi) in deployableModels()" :key="m.name || mi">
               <li class="model-list-item">
                 <span class="dot" :class="modelDotClass(m.name)"></span>
                 <div class="model-entry">
@@ -4641,6 +4665,27 @@ body {
               </li>
             </template>
           </ul>
+          <template x-if="componentModels().length > 0">
+            <div class="hardware-group" style="margin-top:14px">
+              <div class="hardware-group-title" x-text="t('model_components')"></div>
+              <ul class="panel-list">
+                <template x-for="(m, mi) in componentModels()" :key="'mobile-component-' + (m.name || mi)">
+                  <li class="model-list-item">
+                    <span class="dot dot-dim"></span>
+                    <div class="model-entry">
+                      <div class="model-entry-top">
+                        <span class="model-name" x-text="m.name" :title="m.name"></span>
+                        <span class="model-size" x-text="m.size || ''" :title="m.size || ''"></span>
+                      </div>
+                      <div class="model-entry-meta">
+                        <span class="model-status-note" x-text="componentStatusNote(m)" :title="componentStatusNote(m)"></span>
+                      </div>
+                    </div>
+                  </li>
+                </template>
+              </ul>
+            </div>
+          </template>
         </div>
         <div class="panel">
           <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span></div>
@@ -4658,7 +4703,7 @@ body {
         </div>
         <div class="panel">
           <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
-          <ul class="panel-list"><template x-for="(dep, di) in deployments" :key="di"><li style="flex-wrap:wrap"><span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span><span x-text="dep.name"></span><span class="item-detail" x-text="dep.phase === 'failed' ? (dep.failure_detail || dep.detail) : (dep.startup_message || dep.phase)"></span><template x-if="dep.startup_progress > 0 && dep.startup_progress < 100"><div style="width:100%;margin-top:2px"><div class="deploy-progress"><div class="deploy-progress-fill" :style="'width:' + dep.startup_progress + '%'"></div></div></div></template></li></template></ul>
+          <ul class="panel-list"><template x-for="dep in deployments" :key="dep.name || dep.model || dep.address || dep.detail"><li style="flex-wrap:wrap"><span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span><span x-text="dep.name"></span><span class="item-detail" x-text="dep.phase === 'failed' ? (dep.failure_detail || dep.detail) : (dep.startup_message || dep.phase)"></span><template x-if="dep.startup_progress > 0 && dep.startup_progress < 100"><div style="width:100%;margin-top:2px"><div class="deploy-progress"><div class="deploy-progress-fill" :style="'width:' + dep.startup_progress + '%'"></div></div></div></template></li></template></ul>
         </div>
       </div>
     </template>
@@ -5152,6 +5197,7 @@ var I18N = {
     hardware: 'Hardware',
     engines: 'Engines',
     models: 'Models',
+    model_components: 'Components',
     fleet: 'Fleet',
     deployments: 'Deployments',
     agent_status: 'Agent Status',
@@ -5436,6 +5482,7 @@ var I18N = {
     hardware: '\u786C\u4EF6',
     engines: '\u5F15\u64CE',
     models: '\u6A21\u578B',
+    model_components: '\u7EC4\u4EF6',
     fleet: '\u8BBE\u5907\u7FA4',
     deployments: '\u90E8\u7F72',
     agent_status: 'Agent \u72B6\u6001',
@@ -7195,7 +7242,9 @@ function aimaApp() {
         this._wizDeployAbort = abort;
         var headers = { 'Content-Type': 'application/json' };
         if (this.apiKey) headers['Authorization'] = 'Bearer ' + this.apiKey;
-        var engineStr = (rec.engine && typeof rec.engine === 'object') ? (rec.engine.type || '') : (rec.engine || '');
+        var engineStr = (rec.engine && typeof rec.engine === 'object')
+          ? (rec.engine.name || rec.engine.type || '')
+          : (rec.engine || '');
         var body = { model: rec.model || rec.model_name || rec.name || '', engine: engineStr };
         var resp = await fetch('/ui/api/onboarding-deploy', {
           method: 'POST',
@@ -8134,8 +8183,38 @@ function aimaApp() {
         return true;
       }).map(m => ({
         name: m.name || 'unknown',
+        type: m.type || 'unknown',
+        format: m.format || '',
+        model_class: m.model_class || '',
+        detected_arch: m.detected_arch || '',
+        ui_role: m.ui_role || '',
+        ui_display_note: m.ui_display_note || '',
+        ui_display_note_zh: m.ui_display_note_zh || '',
+        standalone_deploy: typeof m.standalone_deploy === 'boolean' ? m.standalone_deploy : null,
         size: this.fmtModelSize(m.size_bytes || 0, m.format || '')
       }));
+    },
+
+    isDeployableModel(model) {
+      if (!model || !model.name) return false;
+      if (model.standalone_deploy !== null) return model.standalone_deploy;
+      const role = String(model.ui_role || '').toLowerCase();
+      return role !== 'component';
+    },
+
+    deployableModels() {
+      return this.models.filter(m => this.isDeployableModel(m));
+    },
+
+    componentModels() {
+      return this.models.filter(m => !this.isDeployableModel(m));
+    },
+
+    componentStatusNote(model) {
+      if (!model) return '';
+      if (this.lang === 'zh' && model.ui_display_note_zh) return model.ui_display_note_zh;
+      if (model.ui_display_note) return model.ui_display_note;
+      return this.lang === 'zh' ? '组件' : 'Component';
     },
 
     deploymentForModel(modelName) {

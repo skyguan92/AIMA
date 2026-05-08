@@ -2,18 +2,137 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jguan/aima/internal/agent"
+	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/model"
 
 	state "github.com/jguan/aima/internal"
 )
+
+func registerCatalogLocalModels(ctx context.Context, cat *knowledge.Catalog, db *state.DB) error {
+	if cat == nil {
+		return nil
+	}
+	for i := range cat.ModelAssets {
+		ma := &cat.ModelAssets[i]
+		if err := registerCatalogLocalModel(ctx, ma, db); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func registerCatalogLocalModel(ctx context.Context, ma *knowledge.ModelAsset, db *state.DB) error {
+	if ma == nil {
+		return nil
+	}
+	localPath, detectedArch, format := catalogLocalModelDescriptor(ma)
+	if localPath == "" {
+		return nil
+	}
+	info, err := os.Stat(localPath)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+	return db.UpsertScannedModel(ctx, &state.Model{
+		ID:               fmt.Sprintf("%x", sha256.Sum256([]byte(localPath+"|"+ma.Metadata.Name))),
+		Name:             ma.Metadata.Name,
+		Type:             ma.Metadata.Type,
+		Path:             localPath,
+		Format:           format,
+		SizeBytes:        info.Size(),
+		DetectedArch:     detectedArch,
+		ModelClass:       strings.TrimSpace(ma.Metadata.ModelClass),
+		UIRole:           strings.TrimSpace(ma.UI.Role),
+		UIDisplayNote:    strings.TrimSpace(ma.UI.DisplayNote),
+		UIDisplayNoteZh:  strings.TrimSpace(ma.UI.DisplayNoteZh),
+		StandaloneDeploy: ma.Capabilities.StandaloneDeploy,
+		Status:           "registered",
+	})
+}
+
+func catalogLocalModelDescriptor(ma *knowledge.ModelAsset) (localPath, detectedArch, format string) {
+	format = firstCatalogFormat(ma)
+	for _, variant := range ma.Variants {
+		if variant.Source != nil && variant.Source.Type == "local_path" && strings.TrimSpace(variant.Source.Path) != "" {
+			return strings.TrimSpace(variant.Source.Path), inferDetectedArch(ma), firstNonEmpty(strings.TrimSpace(variant.Format), format)
+		}
+	}
+	for _, src := range ma.Storage.Sources {
+		if src.Type == "local_path" && strings.TrimSpace(src.Path) != "" {
+			return strings.TrimSpace(src.Path), inferDetectedArch(ma), firstNonEmpty(strings.TrimSpace(src.Format), format)
+		}
+	}
+	return "", "", ""
+}
+
+func inferDetectedArch(ma *knowledge.ModelAsset) string {
+	if ma == nil {
+		return ""
+	}
+	family := strings.TrimSpace(strings.ToLower(ma.Metadata.Family))
+	if family != "" {
+		return family
+	}
+	return strings.TrimSpace(strings.ToLower(ma.Metadata.Name))
+}
+
+func firstCatalogFormat(ma *knowledge.ModelAsset) string {
+	if ma == nil {
+		return ""
+	}
+	if len(ma.Storage.Formats) > 0 {
+		return strings.TrimSpace(ma.Storage.Formats[0])
+	}
+	return ""
+}
+
+func annotateModelsFromCatalog(models []*state.Model, cat *knowledge.Catalog) {
+	if cat == nil {
+		return
+	}
+	assetsByName := make(map[string]*knowledge.ModelAsset)
+	for i := range cat.ModelAssets {
+		ma := &cat.ModelAssets[i]
+		assetsByName[strings.ToLower(strings.TrimSpace(ma.Metadata.Name))] = ma
+		for _, alias := range ma.Metadata.Aliases {
+			assetsByName[strings.ToLower(strings.TrimSpace(alias))] = ma
+		}
+	}
+	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		ma := assetsByName[strings.ToLower(strings.TrimSpace(m.Name))]
+		if ma == nil {
+			continue
+		}
+		if strings.TrimSpace(m.ModelClass) == "" {
+			m.ModelClass = strings.TrimSpace(ma.Metadata.ModelClass)
+		}
+		if strings.TrimSpace(m.UIRole) == "" {
+			m.UIRole = strings.TrimSpace(ma.UI.Role)
+		}
+		if strings.TrimSpace(m.UIDisplayNote) == "" {
+			m.UIDisplayNote = strings.TrimSpace(ma.UI.DisplayNote)
+		}
+		if strings.TrimSpace(m.UIDisplayNoteZh) == "" {
+			m.UIDisplayNoteZh = strings.TrimSpace(ma.UI.DisplayNoteZh)
+		}
+		if m.StandaloneDeploy == nil {
+			m.StandaloneDeploy = ma.Capabilities.StandaloneDeploy
+		}
+	}
+}
 
 // buildModelDeps wires model.scan, model.list, model.pull, model.import,
 // model.info, and model.remove tools.
@@ -53,6 +172,9 @@ func buildModelDeps(ac *appContext, deps *mcp.ToolDeps,
 				eventBus.Publish(agent.ExplorerEvent{Type: agent.EventModelDiscovered, Model: m.Name})
 			}
 		}
+		if err := registerCatalogLocalModels(ctx, cat, db); err != nil {
+			return nil, fmt.Errorf("register catalog local models: %w", err)
+		}
 		return json.Marshal(models)
 	}
 
@@ -61,6 +183,7 @@ func buildModelDeps(ac *appContext, deps *mcp.ToolDeps,
 		if err != nil {
 			return nil, err
 		}
+		annotateModelsFromCatalog(models, cat)
 		return json.Marshal(models)
 	}
 
