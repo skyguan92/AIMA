@@ -44,6 +44,33 @@ func TestProbeOpenAIModelsEndpoint(t *testing.T) {
 	}
 }
 
+func TestProbeOpenAIModelsEndpointPreservesNestedV1BasePath(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data":   []map[string]any{{"id": "nested-model"}},
+		})
+	}))
+	defer server.Close()
+
+	svc, err := Probe(context.Background(), server.URL+"/api/v1/models", server.Client())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if svc.BaseURL != server.URL+"/api/v1" {
+		t.Fatalf("BaseURL = %q, want %q", svc.BaseURL, server.URL+"/api/v1")
+	}
+	if got := svc.Models; len(got) != 1 || got[0] != "nested-model" {
+		t.Fatalf("Models = %#v, want nested-model", got)
+	}
+}
+
 func TestProbeHealthzServiceWithModels(t *testing.T) {
 	t.Parallel()
 

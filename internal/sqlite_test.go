@@ -113,6 +113,44 @@ func TestExternalServiceImportedFlagPersistsAcrossScanUpserts(t *testing.T) {
 	}
 }
 
+func TestExternalServiceImportedModelsPersistAcrossScanUpserts(t *testing.T) {
+	db := mustOpen(t)
+	ctx := context.Background()
+
+	svc := &ExternalService{
+		ID:         "external-3",
+		BaseURL:    "http://127.0.0.1:8005",
+		Kind:       "openai",
+		Status:     "reachable",
+		Source:     "scan",
+		ModelsJSON: `["old-model","new-model"]`,
+	}
+	if err := db.UpsertExternalService(ctx, svc); err != nil {
+		t.Fatalf("UpsertExternalService: %v", err)
+	}
+	if err := db.SetExternalServiceImportedModels(ctx, svc.BaseURL, true, []string{"new-model"}); err != nil {
+		t.Fatalf("SetExternalServiceImportedModels: %v", err)
+	}
+	svc.ModelsJSON = `["old-model","new-model","later-model"]`
+	if err := db.UpsertExternalService(ctx, svc); err != nil {
+		t.Fatalf("second UpsertExternalService: %v", err)
+	}
+
+	services, err := db.ListExternalServices(ctx)
+	if err != nil {
+		t.Fatalf("ListExternalServices: %v", err)
+	}
+	if len(services) != 1 {
+		t.Fatalf("len = %d, want 1", len(services))
+	}
+	if !services[0].Imported {
+		t.Fatal("Imported = false, want true after selected import")
+	}
+	if services[0].ImportedModelsJSON != `["new-model"]` {
+		t.Fatalf("ImportedModelsJSON = %s, want selected model subset", services[0].ImportedModelsJSON)
+	}
+}
+
 func TestSchemaIncludesModelVariantGPUCountMin(t *testing.T) {
 	db := mustOpen(t)
 	ctx := context.Background()

@@ -56,17 +56,21 @@ func Probe(ctx context.Context, rawBaseURL string, client *http.Client) (*Servic
 		client = &http.Client{Timeout: 1200 * time.Millisecond}
 	}
 
-	if payload, statusCode, err := getJSON(ctx, client, baseURL+"/v1/models"); err == nil && statusCode >= 200 && statusCode < 300 {
+	for _, candidate := range openAIProbeCandidates(baseURL) {
+		payload, statusCode, err := getJSON(ctx, client, candidate.modelsEndpoint)
+		if err != nil || statusCode < 200 || statusCode >= 300 {
+			continue
+		}
 		models := extractModels(payload)
 		if len(models) > 0 {
 			return &Service{
-				ID:       serviceID(baseURL),
-				BaseURL:  baseURL,
+				ID:       serviceID(candidate.baseURL),
+				BaseURL:  candidate.baseURL,
 				Kind:     "openai",
 				Status:   "reachable",
 				Source:   "scan",
 				Models:   models,
-				Metadata: map[string]any{"models_endpoint": "/v1/models"},
+				Metadata: map[string]any{"models_endpoint": candidate.modelsPath},
 			}, nil
 		}
 	}
@@ -84,6 +88,38 @@ func Probe(ctx context.Context, rawBaseURL string, client *http.Client) (*Servic
 	}
 
 	return nil, fmt.Errorf("no supported probe endpoint at %s", baseURL)
+}
+
+type openAIProbeCandidate struct {
+	baseURL        string
+	modelsEndpoint string
+	modelsPath     string
+}
+
+func openAIProbeCandidates(baseURL string) []openAIProbeCandidate {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil
+	}
+	path := strings.TrimRight(u.Path, "/")
+	if strings.HasSuffix(path, "/v1") {
+		return []openAIProbeCandidate{{
+			baseURL:        baseURL,
+			modelsEndpoint: baseURL + "/models",
+			modelsPath:     path + "/models",
+		}}
+	}
+	serviceBaseURL := baseURL
+	modelsPath := "/v1/models"
+	if path != "" {
+		serviceBaseURL = strings.TrimRight(baseURL, "/") + "/v1"
+		modelsPath = path + "/v1/models"
+	}
+	return []openAIProbeCandidate{{
+		baseURL:        serviceBaseURL,
+		modelsEndpoint: strings.TrimRight(baseURL, "/") + "/v1/models",
+		modelsPath:     modelsPath,
+	}}
 }
 
 func scanEndpoints(opts ScanOptions) []string {
@@ -143,11 +179,11 @@ func normalizeBaseURL(raw string) (string, error) {
 	u.RawQuery = ""
 	u.Fragment = ""
 	u.Path = strings.TrimRight(u.Path, "/")
-	if strings.HasSuffix(u.Path, "/v1/models") {
-		u.Path = strings.TrimSuffix(u.Path, "/v1/models")
-	}
-	if strings.HasSuffix(u.Path, "/v1") {
-		u.Path = strings.TrimSuffix(u.Path, "/v1")
+	switch {
+	case u.Path == "/v1/models":
+		u.Path = "/v1"
+	case strings.HasSuffix(u.Path, "/v1/models"):
+		u.Path = strings.TrimSuffix(u.Path, "/models")
 	}
 	return strings.TrimRight(u.String(), "/"), nil
 }

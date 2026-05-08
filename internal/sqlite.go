@@ -98,17 +98,18 @@ type Engine struct {
 }
 
 type ExternalService struct {
-	ID           string    `json:"id"`
-	BaseURL      string    `json:"base_url"`
-	Kind         string    `json:"kind"`
-	Status       string    `json:"status"`
-	Source       string    `json:"source"`
-	ModelsJSON   string    `json:"models_json"`
-	MetadataJSON string    `json:"metadata_json"`
-	LastError    string    `json:"last_error"`
-	Imported     bool      `json:"imported"`
-	FirstSeenAt  time.Time `json:"first_seen_at"`
-	LastSeenAt   time.Time `json:"last_seen_at"`
+	ID                 string    `json:"id"`
+	BaseURL            string    `json:"base_url"`
+	Kind               string    `json:"kind"`
+	Status             string    `json:"status"`
+	Source             string    `json:"source"`
+	ModelsJSON         string    `json:"models_json"`
+	MetadataJSON       string    `json:"metadata_json"`
+	LastError          string    `json:"last_error"`
+	Imported           bool      `json:"imported"`
+	ImportedModelsJSON string    `json:"imported_models_json"`
+	FirstSeenAt        time.Time `json:"first_seen_at"`
+	LastSeenAt         time.Time `json:"last_seen_at"`
 }
 
 type KnowledgeNote struct {
@@ -449,6 +450,10 @@ func (d *DB) migrate(ctx context.Context) error {
 	// v18: imported flag for externally discovered services routed via proxy
 	if err := d.migrateV18(ctx); err != nil {
 		return fmt.Errorf("migrate v18: %w", err)
+	}
+	// v19: selected imported model subset for external OpenAI services
+	if err := d.migrateV19(ctx); err != nil {
+		return fmt.Errorf("migrate v19: %w", err)
 	}
 	if _, err := d.db.ExecContext(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
@@ -1369,6 +1374,36 @@ func (d *DB) migrateV18(ctx context.Context) error {
 	return nil
 }
 
+func (d *DB) migrateV19(ctx context.Context) error {
+	var version int
+	_ = d.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	if version >= 19 {
+		return nil
+	}
+	var count int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('external_services') WHERE name='imported_models_json'`).Scan(&count); err != nil {
+		return fmt.Errorf("check external_services.imported_models_json column: %w", err)
+	}
+	if count == 0 {
+		if _, err := d.db.ExecContext(ctx,
+			`ALTER TABLE external_services ADD COLUMN imported_models_json TEXT DEFAULT '[]'`); err != nil {
+			return fmt.Errorf("add external_services.imported_models_json: %w", err)
+		}
+	}
+	if _, err := d.db.ExecContext(ctx,
+		`UPDATE external_services
+		    SET imported_models_json = COALESCE(NULLIF(models_json, ''), '[]')
+		  WHERE COALESCE(imported, 0) = 1
+		    AND (imported_models_json IS NULL OR imported_models_json = '' OR imported_models_json = '[]')`); err != nil {
+		return fmt.Errorf("backfill external_services.imported_models_json: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, "PRAGMA user_version = 19"); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
+}
+
 func (d *DB) InsertExplorationPlan(ctx context.Context, plan *ExplorationPlanRow) error {
 	_, err := d.db.ExecContext(ctx,
 		`INSERT INTO exploration_plans (id, tier, trigger, status, plan_json, progress, total, created_at)
@@ -1944,13 +1979,20 @@ func (d *DB) UpsertExternalService(ctx context.Context, s *ExternalService) erro
 	if s.ModelsJSON == "" {
 		s.ModelsJSON = "[]"
 	}
+	if s.ImportedModelsJSON == "" {
+		s.ImportedModelsJSON = "[]"
+	}
 	if s.MetadataJSON == "" {
 		s.MetadataJSON = "{}"
 	}
+	imported := 0
+	if s.Imported {
+		imported = 1
+	}
 	_, err := d.db.ExecContext(ctx,
 		`INSERT INTO external_services
-		   (id, base_url, kind, status, source, models_json, metadata_json, last_error, first_seen_at, last_seen_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   (id, base_url, kind, status, source, models_json, metadata_json, last_error, imported, imported_models_json, first_seen_at, last_seen_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(base_url) DO UPDATE SET
 		   id=excluded.id,
 		   kind=excluded.kind,
@@ -1960,7 +2002,7 @@ func (d *DB) UpsertExternalService(ctx context.Context, s *ExternalService) erro
 		   metadata_json=excluded.metadata_json,
 		   last_error=excluded.last_error,
 		   last_seen_at=excluded.last_seen_at`,
-		s.ID, s.BaseURL, s.Kind, s.Status, s.Source, s.ModelsJSON, s.MetadataJSON, s.LastError, now, now)
+		s.ID, s.BaseURL, s.Kind, s.Status, s.Source, s.ModelsJSON, s.MetadataJSON, s.LastError, imported, s.ImportedModelsJSON, now, now)
 	if err != nil {
 		return fmt.Errorf("upsert external service %s: %w", s.BaseURL, err)
 	}
@@ -1984,6 +2026,49 @@ func (d *DB) SetExternalServiceImported(ctx context.Context, idOrBaseURL string,
 	return nil
 }
 
+func (d *DB) SetExternalServiceImportedModels(ctx context.Context, idOrBaseURL string, imported bool, models []string) error {
+	value := 0
+	if imported {
+		value = 1
+	}
+	modelsJSON, err := marshalStringList(models)
+	if err != nil {
+		return fmt.Errorf("marshal imported models for %s: %w", idOrBaseURL, err)
+	}
+	res, err := d.db.ExecContext(ctx,
+		`UPDATE external_services SET imported = ?, imported_models_json = ? WHERE id = ? OR base_url = ?`,
+		value, modelsJSON, idOrBaseURL, idOrBaseURL)
+	if err != nil {
+		return fmt.Errorf("set external service imported models %s: %w", idOrBaseURL, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("external service %s not found", idOrBaseURL)
+	}
+	return nil
+}
+
+func marshalStringList(values []string) (string, error) {
+	cleaned := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		cleaned = append(cleaned, value)
+	}
+	data, err := json.Marshal(cleaned)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 func (d *DB) SetExternalServiceStatus(ctx context.Context, idOrBaseURL, status, lastError string) error {
 	status = strings.TrimSpace(status)
 	if status == "" {
@@ -2005,6 +2090,7 @@ func (d *DB) ListExternalServices(ctx context.Context) ([]*ExternalService, erro
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, base_url, kind, status, source,
 		        COALESCE(models_json,'[]'), COALESCE(metadata_json,'{}'), COALESCE(last_error,''), COALESCE(imported,0),
+		        COALESCE(imported_models_json,'[]'),
 		        first_seen_at, last_seen_at
 		   FROM external_services
 		  ORDER BY last_seen_at DESC, base_url ASC`)
@@ -2016,7 +2102,7 @@ func (d *DB) ListExternalServices(ctx context.Context) ([]*ExternalService, erro
 	for rows.Next() {
 		s := &ExternalService{}
 		if err := rows.Scan(&s.ID, &s.BaseURL, &s.Kind, &s.Status, &s.Source,
-			&s.ModelsJSON, &s.MetadataJSON, &s.LastError, &s.Imported, &s.FirstSeenAt, &s.LastSeenAt); err != nil {
+			&s.ModelsJSON, &s.MetadataJSON, &s.LastError, &s.Imported, &s.ImportedModelsJSON, &s.FirstSeenAt, &s.LastSeenAt); err != nil {
 			return nil, fmt.Errorf("scan external service row: %w", err)
 		}
 		services = append(services, s)

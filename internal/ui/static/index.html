@@ -8402,7 +8402,7 @@ function aimaApp() {
     },
 
     externalServiceImportable(service) {
-      return !!service && (service.kind === 'openai' || service.kind === 'healthz');
+      return !!service && service.kind === 'openai';
     },
 
     _adjustDeployPoll(fast) {
