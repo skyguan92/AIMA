@@ -2,7 +2,12 @@ package external
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	state "github.com/jguan/aima/internal"
 	"github.com/jguan/aima/internal/proxy"
@@ -73,6 +78,112 @@ func TestReconcileBackendsPreservesHTTPSScheme(t *testing.T) {
 	}
 	if backend.BasePath != "" {
 		t.Fatalf("BasePath = %q, want empty for /v1 base URL", backend.BasePath)
+	}
+}
+
+func TestReconciledNestedV1BasePathForwardsThroughProxy(t *testing.T) {
+	type chatRequest struct {
+		Path  string
+		Model string
+	}
+
+	chatRequests := make(chan chatRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"object": "list",
+				"data":   []map[string]any{{"id": "nested-model"}},
+			})
+		case "/api/v1/chat/completions":
+			var req struct {
+				Model string `json:"model"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			chatRequests <- chatRequest{Path: r.URL.Path, Model: req.Model}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "chatcmpl-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	ctx := context.Background()
+	svc, err := Probe(ctx, upstream.URL+"/api/v1/models", upstream.Client())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if svc.BaseURL != upstream.URL+"/api/v1" {
+		t.Fatalf("BaseURL = %q, want %q", svc.BaseURL, upstream.URL+"/api/v1")
+	}
+
+	proxyServer := proxy.NewServer(proxy.WithAddr("127.0.0.1:0"))
+	imported, err := ReconcileBackends(proxyServer, OverviewFromScan(svc), svc.Models)
+	if err != nil {
+		t.Fatalf("ReconcileBackends: %v", err)
+	}
+	if imported != 1 {
+		t.Fatalf("imported = %d, want 1", imported)
+	}
+
+	proxyCtx, cancelProxy := context.WithCancel(context.Background())
+	ready := make(chan string, 1)
+	proxyErr := make(chan error, 1)
+	proxyServer.SetOnReady(func(addr string) {
+		ready <- addr
+	})
+	go func() {
+		proxyErr <- proxyServer.Start(proxyCtx)
+	}()
+	defer func() {
+		cancelProxy()
+		select {
+		case err := <-proxyErr:
+			if err != nil {
+				t.Errorf("proxy Start: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("proxy did not stop after context cancellation")
+		}
+	}()
+
+	var proxyAddr string
+	select {
+	case proxyAddr = <-ready:
+	case err := <-proxyErr:
+		t.Fatalf("proxy stopped before ready: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not become ready")
+	}
+
+	body := `{"model":"nested-model","messages":[{"role":"user","content":"hi"}]}`
+	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelRequest()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, "http://"+proxyAddr+"/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	select {
+	case got := <-chatRequests:
+		if got.Path != "/api/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /api/v1/chat/completions", got.Path)
+		}
+		if got.Model != "nested-model" {
+			t.Fatalf("upstream model = %q, want nested-model", got.Model)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not receive chat request")
 	}
 }
 
