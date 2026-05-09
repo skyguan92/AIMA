@@ -3943,8 +3943,11 @@ body {
         </ul>
         <template x-if="componentModels().length > 0">
           <div class="hardware-group" style="margin-top:14px">
-            <div class="hardware-group-title" x-text="t('model_components')"></div>
-            <ul class="panel-list">
+            <div class="hardware-group-title" @click="componentSectionExpanded = !componentSectionExpanded" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none">
+              <span x-text="t('model_components')"></span>
+              <span style="font-size:11px;color:var(--text-dim)" x-text="componentSectionExpanded ? '▼ ' + (lang === 'zh' ? '收起' : 'Collapse') : '▶ ' + (lang === 'zh' ? '展开' : 'Expand')"></span>
+            </div>
+            <ul class="panel-list" x-show="componentSectionExpanded" x-transition.duration.150ms>
               <template x-for="(m, mi) in componentModels()" :key="'component-' + (m.name || mi)">
                 <li class="model-list-item">
                   <span class="dot dot-dim"></span>
@@ -4725,8 +4728,11 @@ body {
           </ul>
           <template x-if="componentModels().length > 0">
             <div class="hardware-group" style="margin-top:14px">
-              <div class="hardware-group-title" x-text="t('model_components')"></div>
-              <ul class="panel-list">
+              <div class="hardware-group-title" @click="componentSectionExpanded = !componentSectionExpanded" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none">
+                <span x-text="t('model_components')"></span>
+                <span style="font-size:11px;color:var(--text-dim)" x-text="componentSectionExpanded ? '▼ ' + (lang === 'zh' ? '收起' : 'Collapse') : '▶ ' + (lang === 'zh' ? '展开' : 'Expand')"></span>
+              </div>
+              <ul class="panel-list" x-show="componentSectionExpanded" x-transition.duration.150ms>
                 <template x-for="(m, mi) in componentModels()" :key="'mobile-component-' + (m.name || mi)">
                   <li class="model-list-item">
                     <span class="dot dot-dim"></span>
@@ -6351,6 +6357,7 @@ function aimaApp() {
       mem: { pct: 0, used: '0', total: '0' }
     },
     gpuExpanded: false,
+    componentSectionExpanded: false,
     hostname: '',
     selfIp: '',
     engines: [],
