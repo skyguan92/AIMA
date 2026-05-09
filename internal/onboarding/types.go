@@ -22,10 +22,11 @@ type EventSink func(Event)
 
 // GPU is a single GPU entry in the onboarding status response.
 type GPU struct {
-	Name    string `json:"name"`
-	VRAMMiB int    `json:"vram_mib"`
-	Count   int    `json:"count"`
-	Arch    string `json:"arch"`
+	Name          string `json:"name"`
+	VRAMMiB       int    `json:"vram_mib"`
+	Count         int    `json:"count"`
+	Arch          string `json:"arch"`
+	UnifiedMemory bool   `json:"unified_memory,omitempty"`
 }
 
 // CPU describes the host CPU in the onboarding status response.
@@ -36,12 +37,13 @@ type CPU struct {
 
 // Hardware aggregates hardware info for the onboarding status response.
 type Hardware struct {
-	GPU          []GPU  `json:"gpu"`
-	CPU          CPU    `json:"cpu"`
-	RAMMiB       int    `json:"ram_mib"`
-	OS           string `json:"os"`
-	Arch         string `json:"arch"`
-	ProfileMatch string `json:"profile_match"`
+	GPU           []GPU  `json:"gpu"`
+	CPU           CPU    `json:"cpu"`
+	RAMMiB        int    `json:"ram_mib"`
+	OS            string `json:"os"`
+	Arch          string `json:"arch"`
+	ProfileMatch  string `json:"profile_match"`
+	UnifiedMemory bool   `json:"unified_memory,omitempty"`
 }
 
 // StackStatusInfo describes the stack readiness for onboarding.

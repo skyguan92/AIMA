@@ -476,6 +476,46 @@ body {
   cursor: default;
   opacity: 0.55;
 }
+.panel-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.panel-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0.5px solid var(--border-medium);
+  border-radius: 999px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--duration-fast) var(--ease-smooth),
+    border-color var(--duration-fast) var(--ease-smooth),
+    color var(--duration-fast) var(--ease-smooth);
+}
+.panel-action-btn:hover {
+  background: var(--btn-icon-hover);
+  border-color: var(--accent);
+}
+.panel-action-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* Fleet device card */
+.model-deploy-btn.is-stop {
+  color: var(--text);
+}
 
 /* Fleet device card */
 .fleet-device {
@@ -3361,7 +3401,7 @@ body {
               </div>
               <!-- VRAM -->
               <div class="wiz-hw-item">
-                <div class="label" x-text="t('wiz_vram')"></div>
+                <div class="label" x-text="wizHwVramLabel()"></div>
                 <div class="value" x-text="wizHwVram()"></div>
               </div>
               <!-- CPU -->
@@ -3370,7 +3410,7 @@ body {
                 <div class="value" x-text="wizHwCpu()"></div>
               </div>
               <!-- RAM -->
-              <div class="wiz-hw-item">
+              <div class="wiz-hw-item" x-show="!wizHwUnifiedMemory()">
                 <div class="label" x-text="t('wiz_ram')"></div>
                 <div class="value" x-text="wizHwRam()"></div>
               </div>
@@ -3802,7 +3842,7 @@ body {
               </div>
               <div class="gauge">
                 <div class="gauge-label">
-                  <span x-text="'VRAM ' + hw.gpu.vramSummary"></span>
+                  <span x-text="hwGpuLabel() + ' ' + hw.gpu.vramSummary"></span>
                   <span x-text="hw.gpu.memUsed + '/' + hw.gpu.memTotal"></span>
                 </div>
                 <div class="gauge-bar">
@@ -3861,9 +3901,9 @@ body {
             <span x-text="hw.cpu.model"></span>
             <span x-show="hw.cpu.coreInfo" x-text="' · ' + hw.cpu.coreInfo"></span>
           </div>
-          <div class="gauge" style="margin-top:6px">
+          <div class="gauge" style="margin-top:6px" x-show="hwShowSeparateRam()">
             <div class="gauge-label">
-              <span>RAM</span>
+              <span x-text="hwHostMemoryLabel()"></span>
               <span x-text="hw.mem.used + '/' + hw.mem.total"></span>
             </div>
             <div class="gauge-bar">
@@ -3875,7 +3915,7 @@ body {
 
       <!-- Models Panel -->
       <div class="panel">
-        <div class="panel-title">&#x25C6; <span x-text="t('models')"></span></div>
+        <div class="panel-title">&#x25C6; <span x-text="t('models')"></span><span class="panel-title-actions"><button type="button" class="panel-action-btn" :disabled="modelScanning" @click="scanModels()" x-text="modelScanning ? t('scanning_label') : t('scan_label')"></button></span></div>
         <template x-if="deployableModels().length === 0">
           <div class="empty" x-text="t('no_models')"></div>
         </template>
@@ -3903,8 +3943,11 @@ body {
         </ul>
         <template x-if="componentModels().length > 0">
           <div class="hardware-group" style="margin-top:14px">
-            <div class="hardware-group-title" x-text="t('model_components')"></div>
-            <ul class="panel-list">
+            <div class="hardware-group-title" @click="componentSectionExpanded = !componentSectionExpanded" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none">
+              <span x-text="t('model_components')"></span>
+              <span style="font-size:11px;color:var(--text-dim)" x-text="componentSectionExpanded ? '▼ ' + (lang === 'zh' ? '收起' : 'Collapse') : '▶ ' + (lang === 'zh' ? '展开' : 'Expand')"></span>
+            </div>
+            <ul class="panel-list" x-show="componentSectionExpanded" x-transition.duration.150ms>
               <template x-for="(m, mi) in componentModels()" :key="'component-' + (m.name || mi)">
                 <li class="model-list-item">
                   <span class="dot dot-dim"></span>
@@ -3926,7 +3969,7 @@ body {
 
       <!-- Engines Panel -->
       <div class="panel">
-        <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span></div>
+        <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span><span class="panel-title-actions"><button type="button" class="panel-action-btn" :disabled="engineScanning" @click="scanEngines()" x-text="engineScanning ? t('scanning_label') : t('scan_label')"></button></span></div>
         <template x-if="engines.length === 0">
           <div class="empty" x-text="t('no_engines')"></div>
         </template>
@@ -4438,7 +4481,7 @@ body {
 
       <!-- Deployments Panel -->
       <div class="panel">
-        <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
+        <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span><span class="panel-title-actions"><button type="button" class="panel-action-btn" :disabled="deploymentScanning" @click="scanDeployments()" x-text="deploymentScanning ? t('scanning_label') : t('scan_label')"></button></span></div>
         <template x-if="deployments.length === 0">
           <div class="empty" x-text="t('no_deployments')"></div>
         </template>
@@ -4476,6 +4519,15 @@ body {
                   <div class="deploy-error-lines" x-text="dep.failure_detail" :title="dep.error_lines || dep.failure_detail"></div>
                 </template>
               </div>
+              <template x-if="dep.name">
+                <button
+                  type="button"
+                  class="model-deploy-btn is-stop"
+                  :class="deploymentStopping[dep.name] ? 'is-busy' : ''"
+                  :disabled="deploymentStopping[dep.name]"
+                  @click="stopDeployment(dep.name)"
+                  x-text="deploymentStopping[dep.name] ? t('deploying_label') : t('stop_label')"></button>
+              </template>
             </li>
           </template>
         </ul>
@@ -4568,7 +4620,7 @@ body {
           </div>
         </div>
         <div class="panel">
-          <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
+          <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span><span class="panel-title-actions"><button type="button" class="panel-action-btn" :disabled="deploymentScanning" @click="scanDeployments()" x-text="deploymentScanning ? t('scanning_label') : t('scan_label')"></button></span></div>
           <template x-if="deployments.length === 0">
             <div class="empty" x-text="t('no_deployments')"></div>
           </template>
@@ -4599,10 +4651,19 @@ body {
                       </div>
                     </div>
                   </template>
-                  <template x-if="dep.phase === 'failed' && dep.failure_detail">
-                    <div class="deploy-error-lines" x-text="dep.failure_detail" :title="dep.error_lines || dep.failure_detail"></div>
-                  </template>
-                </div>
+                <template x-if="dep.phase === 'failed' && dep.failure_detail">
+                  <div class="deploy-error-lines" x-text="dep.failure_detail" :title="dep.error_lines || dep.failure_detail"></div>
+                </template>
+              </div>
+              <template x-if="dep.name">
+                <button
+                  type="button"
+                  class="model-deploy-btn is-stop"
+                  :class="deploymentStopping[dep.name] ? 'is-busy' : ''"
+                  :disabled="deploymentStopping[dep.name]"
+                  @click="stopDeployment(dep.name)"
+                  x-text="deploymentStopping[dep.name] ? t('deploying_label') : t('stop_label')"></button>
+              </template>
               </li>
             </template>
           </ul>
@@ -4614,7 +4675,7 @@ body {
             <template x-if="hw.gpu">
               <div>
                 <div class="gauge"><div class="gauge-label"><span x-text="hw.gpu.countLabel + ' ' + hw.gpu.name"></span><span x-text="hw.gpu.util + '%'"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.gpu.util > 90 ? 'crit' : hw.gpu.util > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.util + '%'"></div></div></div>
-                <div class="gauge"><div class="gauge-label"><span x-text="'VRAM ' + hw.gpu.vramSummary"></span><span x-text="hw.gpu.memUsed + '/' + hw.gpu.memTotal"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.gpu.memPct > 90 ? 'crit' : hw.gpu.memPct > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.memPct + '%'"></div></div></div>
+                <div class="gauge"><div class="gauge-label"><span x-text="hwGpuLabel() + ' ' + hw.gpu.vramSummary"></span><span x-text="hw.gpu.memUsed + '/' + hw.gpu.memTotal"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.gpu.memPct > 90 ? 'crit' : hw.gpu.memPct > 70 ? 'warn' : ''" :style="'width:' + hw.gpu.memPct + '%'"></div></div></div>
                 <div style="font-size:11px;color:var(--text-dim);margin-top:2px" x-show="hw.gpu.temp">
                   <span x-text="hw.gpu.temp + '\u00B0C'"></span>
                   <span x-show="hw.gpu.power" x-text="' / ' + hw.gpu.power + 'W'"></span>
@@ -4657,11 +4718,11 @@ body {
               <span x-text="hw.cpu.model"></span>
               <span x-show="hw.cpu.coreInfo" x-text="' \u00B7 ' + hw.cpu.coreInfo"></span>
             </div>
-            <div class="gauge" style="margin-top:6px"><div class="gauge-label"><span>RAM</span><span x-text="hw.mem.used + '/' + hw.mem.total"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.mem.pct > 90 ? 'crit' : hw.mem.pct > 70 ? 'warn' : ''" :style="'width:' + hw.mem.pct + '%'"></div></div></div>
+            <div class="gauge" style="margin-top:6px" x-show="hwShowSeparateRam()"><div class="gauge-label"><span x-text="hwHostMemoryLabel()"></span><span x-text="hw.mem.used + '/' + hw.mem.total"></span></div><div class="gauge-bar"><div class="gauge-fill" :class="hw.mem.pct > 90 ? 'crit' : hw.mem.pct > 70 ? 'warn' : ''" :style="'width:' + hw.mem.pct + '%'"></div></div></div>
           </div>
         </div>
         <div class="panel">
-          <div class="panel-title">&#x25C6; <span x-text="t('models')"></span></div>
+          <div class="panel-title">&#x25C6; <span x-text="t('models')"></span><span class="panel-title-actions"><button type="button" class="panel-action-btn" :disabled="modelScanning" @click="scanModels()" x-text="modelScanning ? t('scanning_label') : t('scan_label')"></button></span></div>
           <template x-if="deployableModels().length === 0">
             <div class="empty" x-text="t('no_models')"></div>
           </template>
@@ -4689,8 +4750,11 @@ body {
           </ul>
           <template x-if="componentModels().length > 0">
             <div class="hardware-group" style="margin-top:14px">
-              <div class="hardware-group-title" x-text="t('model_components')"></div>
-              <ul class="panel-list">
+              <div class="hardware-group-title" @click="componentSectionExpanded = !componentSectionExpanded" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none">
+                <span x-text="t('model_components')"></span>
+                <span style="font-size:11px;color:var(--text-dim)" x-text="componentSectionExpanded ? '▼ ' + (lang === 'zh' ? '收起' : 'Collapse') : '▶ ' + (lang === 'zh' ? '展开' : 'Expand')"></span>
+              </div>
+              <ul class="panel-list" x-show="componentSectionExpanded" x-transition.duration.150ms>
                 <template x-for="(m, mi) in componentModels()" :key="'mobile-component-' + (m.name || mi)">
                   <li class="model-list-item">
                     <span class="dot dot-dim"></span>
@@ -4710,7 +4774,7 @@ body {
           </template>
         </div>
         <div class="panel">
-          <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span></div>
+          <div class="panel-title">&#x25B6; <span x-text="t('engines')"></span><span class="panel-title-actions"><button type="button" class="panel-action-btn" :disabled="engineScanning" @click="scanEngines()" x-text="engineScanning ? t('scanning_label') : t('scan_label')"></button></span></div>
           <ul class="panel-list">
             <template x-for="(e, ei) in engines" :key="e.id || ei"><li><span class="dot" :class="e.available ? 'dot-green' : 'dot-dim'"></span><span x-text="e.type"></span></li></template>
           </ul>
@@ -4724,7 +4788,7 @@ body {
           <template x-for="(d, fi) in fleet" :key="d.id || d.addr || fi"><div class="fleet-device"><span class="status-dot" :class="d.online ? 'online' : 'offline'" style="width:6px;height:6px"></span><div><div class="name" x-text="d.name || d.id"></div><div class="meta" x-text="d.meta || ''"></div></div></div></template>
         </div>
         <div class="panel">
-          <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span></div>
+          <div class="panel-title">&#x25B2; <span x-text="t('deployments')"></span><span class="panel-title-actions"><button type="button" class="panel-action-btn" :disabled="deploymentScanning" @click="scanDeployments()" x-text="deploymentScanning ? t('scanning_label') : t('scan_label')"></button></span></div>
           <ul class="panel-list"><template x-for="dep in deployments" :key="dep.name || dep.model || dep.address || dep.detail"><li style="flex-wrap:wrap"><span class="dot" :class="dep.phase === 'running' && dep.ready ? 'dot-green' : dep.phase === 'failed' ? 'dot-red' : 'dot-orange'"></span><span x-text="dep.name"></span><span class="item-detail" x-text="dep.phase === 'failed' ? (dep.failure_detail || dep.detail) : (dep.startup_message || dep.phase)"></span><template x-if="dep.startup_progress > 0 && dep.startup_progress < 100"><div style="width:100%;margin-top:2px"><div class="deploy-progress"><div class="deploy-progress-fill" :style="'width:' + dep.startup_progress + '%'"></div></div></div></template></li></template></ul>
         </div>
       </div>
@@ -5223,6 +5287,8 @@ var I18N = {
     external_services: 'External services',
     fleet: 'Fleet',
     deployments: 'Deployments',
+    scan_label: 'Scan',
+    scanning_label: 'Scanning...',
     agent_status: 'Agent Status',
     agent_ready: 'L3a Agent Ready',
     direct_mode: 'Direct Mode',
@@ -5270,6 +5336,7 @@ var I18N = {
     deploy_label: 'Deploy',
     deploying_label: 'Deploying...',
     running_label: 'Running',
+    stop_label: 'Stop',
     retry_label: 'Retry',
     chat_placeholder: 'Ask AIMA or run a command...',
     cli_hint: 'Use <code>/cli</code> to run AIMA CLI and MCP commands.<br>Example: <code>/cli help</code> to see more.',
@@ -5513,6 +5580,8 @@ var I18N = {
     external_services: '\u5916\u90E8\u670D\u52A1',
     fleet: '\u8BBE\u5907\u7FA4',
     deployments: '\u90E8\u7F72',
+    scan_label: '\u626B\u63CF',
+    scanning_label: '\u626B\u63CF\u4E2D...',
     agent_status: 'Agent \u72B6\u6001',
     agent_ready: 'L3a Agent \u5C31\u7EEA',
     direct_mode: '\u76F4\u63A5\u6A21\u5F0F',
@@ -5560,6 +5629,7 @@ var I18N = {
     deploy_label: '\u90E8\u7F72',
     deploying_label: '\u90E8\u7F72\u4E2D...',
     running_label: '\u8FD0\u884C\u4E2D',
+    stop_label: '\u505C\u6B62',
     retry_label: '\u91CD\u8BD5',
     chat_placeholder: '\u8F93\u5165\u95EE\u9898\u6216\u547D\u4EE4...',
     cli_hint: '\u4F7F\u7528 <code>/cli</code> \u6267\u884C AIMA CLI \u548C MCP \u547D\u4EE4\u3002<br>\u793A\u4F8B\uFF1A<code>/cli help</code> \u67E5\u770B\u66F4\u591A\u3002',
@@ -6168,6 +6238,8 @@ var I18N = {
     models: 'Modelle',
     fleet: 'Ger\u00E4teflotte',
     deployments: 'Deployments',
+    scan_label: 'Scan',
+    scanning_label: 'Scanning...',
     agent_status: 'Agent-Status',
     agent_ready: 'L3a Agent bereit',
     direct_mode: 'Direktmodus',
@@ -6317,13 +6389,18 @@ function aimaApp() {
       mem: { pct: 0, used: '0', total: '0' }
     },
     gpuExpanded: false,
+    componentSectionExpanded: false,
     hostname: '',
     selfIp: '',
     engines: [],
     models: [],
     deployments: [],
     externalServices: [],
+    engineScanning: false,
+    modelScanning: false,
+    deploymentScanning: false,
     modelDeploying: {},
+    deploymentStopping: {},
     fleet: [],
     // View toggle (chat / support / explorer)
     currentView: 'chat',
@@ -6913,15 +6990,52 @@ function aimaApp() {
       var g = gpus[0];
       var txt = g.name || 'GPU';
       if (g.count && g.count > 1) txt = g.count + 'x ' + txt;
+      if (this.wizHwUnifiedMemory() && !/\bSoC\b/i.test(txt)) txt += ' SoC';
       return txt;
+    },
+    wizHwUnifiedMemory() {
+      if (!this.onboardingData || !this.onboardingData.hardware) return false;
+      var hw = this.onboardingData.hardware;
+      if (hw.unified_memory) return true;
+      var gpus = hw.gpu;
+      return !!(gpus && gpus.length && gpus[0] && gpus[0].unified_memory);
+    },
+    wizHwVramLabel() {
+      return this.wizHwUnifiedMemory() ? (this.lang === 'zh' ? '统一内存' : 'Unified Memory') : this.t('wiz_vram');
     },
     wizHwVram() {
       if (!this.onboardingData || !this.onboardingData.hardware) return '-';
       var gpus = this.onboardingData.hardware.gpu;
       if (!gpus || !gpus.length) return '-';
-      var mib = gpus[0].vram_mib || 0;
+      var hw = this.onboardingData.hardware;
+      var mib = this.wizHwUnifiedMemory()
+        ? this.normalizeInstalledMemoryMiB(hw.ram_mib || gpus[0].vram_mib || 0)
+        : (gpus[0].vram_mib || 0);
       if (mib <= 0) return '-';
       return (mib / 1024).toFixed(1) + ' GB';
+    },
+    hwGpuLabel() {
+      return (this.hw && this.hw.gpu && this.hw.gpu.unifiedMemory) ? (this.lang === 'zh' ? '统一内存' : 'Unified Memory') : 'VRAM';
+    },
+    hwHostMemoryLabel() {
+      if (this.hw && this.hw.gpu && this.hw.gpu.unifiedMemory) {
+        return this.lang === 'zh' ? '统一内存' : 'Unified Memory';
+      }
+      return 'RAM';
+    },
+    normalizeInstalledMemoryMiB(mib) {
+      if (!mib || mib <= 0) return 0;
+      const gib = mib / 1024;
+      const candidates = [4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512];
+      for (const candidate of candidates) {
+        if (gib >= candidate * 0.9 && gib <= candidate * 1.05) {
+          return candidate * 1024;
+        }
+      }
+      return mib;
+    },
+    hwShowSeparateRam() {
+      return !(this.hw && this.hw.gpu && this.hw.gpu.unifiedMemory);
     },
     wizHwCpu() {
       if (!this.onboardingData || !this.onboardingData.hardware) return '-';
@@ -7472,7 +7586,11 @@ function aimaApp() {
         const memPct = totalVram > 0 ? Math.round(totalUsed / totalVram * 100) : 0;
         const perCardVram = g.vram_mib || (count > 0 ? Math.round(totalVram / count) : 0);
         const countLabel = count > 1 ? (count + '\u00D7') : '';
-        const vramSummary = count > 1 ? ('(' + this.fmtMiB(perCardVram) + ' \u00D7 ' + count + ')') : '';
+        const unifiedMemory = !!(hw.unified_memory || g.unified_memory);
+        const unifiedTotalMiB = this.normalizeInstalledMemoryMiB(hw.ram_total_mib || hw.ram_mib || totalVram || g.vram_mib || 0);
+        const vramSummary = unifiedMemory
+          ? this.fmtMiB(unifiedTotalMiB)
+          : (count > 1 ? ('(' + this.fmtMiB(perCardVram) + ' \u00D7 ' + count + ')') : this.fmtMiB(perCardVram));
         // Build per-card array from metrics.gpu.cards
         const rawCards = (gm.cards || []);
         const cards = rawCards.map((c, i) => ({
@@ -7485,13 +7603,14 @@ function aimaApp() {
           power: c.power_draw_watts || 0
         }));
         this.hw.gpu = {
-          name: g.name || 'GPU',
+          name: (g.name || 'GPU') + (unifiedMemory && !/\bSoC\b/i.test(g.name || 'GPU') ? ' SoC' : ''),
           count: count,
           countLabel: countLabel,
           vramSummary: vramSummary,
           computeId: g.compute_id || '',
           util: gm.utilization_percent || 0,
-          memTotal: this.fmtMiB(totalVram),
+          unifiedMemory: unifiedMemory,
+          memTotal: this.fmtMiB(unifiedMemory ? unifiedTotalMiB : totalVram),
           memUsed: this.fmtMiB(totalUsed),
           memPct: memPct,
           temp: gm.temperature_celsius || g.temperature_celsius || 0,
@@ -7518,7 +7637,7 @@ function aimaApp() {
         this.hw.mem = {
           pct: mt > 0 ? Math.round(mu / mt * 100) : 0,
           used: this.fmtMiB(mu),
-          total: this.fmtMiB(mt)
+          total: this.fmtMiB(this.normalizeInstalledMemoryMiB(mt))
         };
       } else if (hw && hw.ram) {
         const mt = hw.ram.total_mib || 0;
@@ -7527,7 +7646,7 @@ function aimaApp() {
         this.hw.mem = {
           pct: mt > 0 ? Math.round(mu / mt * 100) : 0,
           used: this.fmtMiB(mu),
-          total: this.fmtMiB(mt)
+          total: this.fmtMiB(this.normalizeInstalledMemoryMiB(mt))
         };
       }
       this.handleSupportStatus(data.support);
@@ -8205,6 +8324,25 @@ function aimaApp() {
       }));
     },
 
+    async scanEngines() {
+      if (this.engineScanning) return;
+      this.engineScanning = true;
+      this.messages.push({ role: 'system', text: this.lang === 'zh' ? '正在扫描引擎...' : 'Scanning engines...' });
+      this.scrollChat();
+      try {
+        const data = await this.callTool('engine.scan', { runtime: 'auto' });
+        if (data && data._err) {
+          this.messages.push({ role: 'error', text: (this.lang === 'zh' ? '扫描引擎失败: ' : 'Engine scan failed: ') + data._err });
+          return;
+        }
+        await this.pollEngines();
+        this.messages.push({ role: 'system', text: this.lang === 'zh' ? '引擎扫描完成。' : 'Engine scan complete.' });
+      } finally {
+        this.engineScanning = false;
+        this.scrollChat();
+      }
+    },
+
     async pollModels() {
       const data = await this.callTool('model.list');
       if (!data || data._err) return;
@@ -8228,6 +8366,25 @@ function aimaApp() {
         standalone_deploy: typeof m.standalone_deploy === 'boolean' ? m.standalone_deploy : null,
         size: this.fmtModelSize(m.size_bytes || 0, m.format || '')
       }));
+    },
+
+    async scanModels() {
+      if (this.modelScanning) return;
+      this.modelScanning = true;
+      this.messages.push({ role: 'system', text: this.lang === 'zh' ? '正在扫描模型...' : 'Scanning models...' });
+      this.scrollChat();
+      try {
+        const data = await this.callTool('model.scan', {});
+        if (data && data._err) {
+          this.messages.push({ role: 'error', text: (this.lang === 'zh' ? '扫描模型失败: ' : 'Model scan failed: ') + data._err });
+          return;
+        }
+        await this.pollModels();
+        this.messages.push({ role: 'system', text: this.lang === 'zh' ? '模型扫描完成。' : 'Model scan complete.' });
+      } finally {
+        this.modelScanning = false;
+        this.scrollChat();
+      }
     },
 
     isDeployableModel(model) {
@@ -8319,6 +8476,29 @@ function aimaApp() {
       }
     },
 
+    async stopDeployment(deploymentName) {
+      if (!deploymentName || this.deploymentStopping[deploymentName]) return;
+
+      this.deploymentStopping = { ...this.deploymentStopping, [deploymentName]: true };
+      this.messages.push({ role: 'system', text: (this.lang === 'zh' ? '正在停止部署 ' : 'Stopping deployment ') + deploymentName + '...' });
+      this.scrollChat();
+
+      try {
+        const data = await this.callTool('deploy.delete', { name: deploymentName });
+        if (data && data._err) {
+          this.messages.push({ role: 'error', text: (this.lang === 'zh' ? '停止 ' : 'Stop ') + deploymentName + (this.lang === 'zh' ? ' 失败: ' : ' failed: ') + data._err });
+          return;
+        }
+        this.messages.push({ role: 'system', text: (this.lang === 'zh' ? '已停止部署 ' : 'Stopped deployment ') + deploymentName + '.' });
+      } finally {
+        const next = { ...this.deploymentStopping };
+        delete next[deploymentName];
+        this.deploymentStopping = next;
+        await this.pollDeployments();
+        this.scrollChat();
+      }
+    },
+
     async pollDeployments() {
       const data = await this.callTool('deploy.list');
       if (!data || data._err) return;
@@ -8403,6 +8583,23 @@ function aimaApp() {
 
     externalServiceImportable(service) {
       return !!service && service.kind === 'openai';
+    },
+
+    async scanDeployments() {
+      if (this.deploymentScanning) return;
+      this.deploymentScanning = true;
+      this.messages.push({ role: 'system', text: this.lang === 'zh' ? '正在刷新运行中部署...' : 'Refreshing deployments...' });
+      this.scrollChat();
+      try {
+        await Promise.all([
+          this.pollDeployments(),
+          this.pollSystemStatus()
+        ]);
+        this.messages.push({ role: 'system', text: this.lang === 'zh' ? '运行中部署已刷新。' : 'Deployments refreshed.' });
+      } finally {
+        this.deploymentScanning = false;
+        this.scrollChat();
+      }
     },
 
     _adjustDeployPoll(fast) {
