@@ -190,42 +190,29 @@ func TestBootstrap_ConflictSurfacesPromptError(t *testing.T) {
 	}
 }
 
-// TestBootstrap_NoInviteLeavesUnregistered verifies offline-first: when no
-// invite code is configured anywhere (opts, env, or config), Bootstrap must
-// short-circuit with a RegistrationPromptError and leave registration_state
-// as "unregistered" — NOT auto-register against a built-in default code
-// (previous behavior that violated INV-8 offline-first).
-func TestBootstrap_NoInviteLeavesUnregistered(t *testing.T) {
+func TestBootstrap_DefaultInviteCodeRegistersWhenNoInviteConfigured(t *testing.T) {
 	// Cannot run in parallel: we rely on no env var leakage.
-	serverHit := false
-	fx := newBootstrapFixture(t, func(w http.ResponseWriter, _ *http.Request) {
-		serverHit = true
-		http.Error(w, `{"detail":"should not be called"}`, http.StatusInternalServerError)
-	})
+	fx := newBootstrapFixture(t, successRegisterHandler(t, "dev-default-invite"))
 
 	// Defensively unset any env-level invite sources — these tests may be run
 	// in an environment that happens to have them set.
 	t.Setenv(EnvInviteCode, "")
 	t.Setenv("AIMA_SUPPORT_INVITE_CODE", "")
 
-	_, err := fx.svc.Bootstrap(context.Background(), BootstrapOptions{})
-	var prompt *RegistrationPromptError
-	if !errors.As(err, &prompt) {
-		t.Fatalf("expected RegistrationPromptError, got %T: %v", err, err)
+	res, err := fx.svc.Bootstrap(context.Background(), BootstrapOptions{})
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
 	}
-	if prompt.Kind != RegistrationPromptInviteOrWorker {
-		t.Errorf("prompt kind = %q, want %q", prompt.Kind, RegistrationPromptInviteOrWorker)
+	if res.DeviceID != "dev-default-invite" {
+		t.Errorf("device_id = %q, want dev-default-invite", res.DeviceID)
 	}
-	if serverHit {
-		t.Error("Bootstrap must not hit /self-register when no invite is configured")
+	if fx.capturedInvite != DefaultInviteCode {
+		t.Errorf("server saw invite_code = %q, want %q", fx.capturedInvite, DefaultInviteCode)
 	}
 
 	got := fx.store.mustGet(cloud.ConfigRegistrationState)
-	if got == cloud.StateRegistered {
-		t.Errorf("registration_state = %q, must not be registered without an invite", got)
-	}
-	if got == cloud.StateFailed {
-		t.Errorf("registration_state = %q, should stay unregistered (missing config, not failed attempt)", got)
+	if got != cloud.StateRegistered {
+		t.Errorf("registration_state = %q, want registered", got)
 	}
 }
 
@@ -392,4 +379,3 @@ func TestTokenExpiringSoon(t *testing.T) {
 		})
 	}
 }
-

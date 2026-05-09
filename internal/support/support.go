@@ -20,9 +20,8 @@ const (
 	ConfigInviteCode = "support.invite_code"
 	ConfigWorkerCode = "support.worker_code"
 
-	DefaultEndpoint = "https://aimaserver.com"
-	// Empty: offline-first (INV-8) — no invite, no network.
-	DefaultInviteCode = ""
+	DefaultEndpoint   = "https://aimaserver.com"
+	DefaultInviteCode = "channel-aima"
 
 	configStateDeviceID             = "support.state.device_id"
 	configStateToken                = "support.state.token"
@@ -758,7 +757,7 @@ func (s *Service) ensureRegistered(ctx context.Context, req AskRequest) (deviceS
 		invite = DefaultInviteCode
 	}
 	if strings.TrimSpace(invite) == "" {
-		// Offline-first: without an invite code, do not contact aima-service.
+		// Defensive guard for builds that intentionally clear DefaultInviteCode.
 		// The prompt error lets StartRegistrationWorker exit cleanly.
 		return deviceState{}, "", nil, &RegistrationPromptError{
 			Kind:   RegistrationPromptInviteOrWorker,
