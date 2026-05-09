@@ -77,6 +77,103 @@ func TestResolveWithUserOverrides(t *testing.T) {
 	}
 }
 
+func TestResolveUsesVariantLocalPath(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{{
+			Metadata: EngineMetadata{Name: "testengine", Type: "testengine"},
+			Hardware: EngineHardware{GPUArch: "*"},
+			Startup: EngineStartup{Command: []string{"serve"}, DefaultArgs: map[string]any{}},
+		}},
+		ModelAssets: []ModelAsset{{
+			Metadata: ModelMetadata{Name: "local-variant-model"},
+			Storage: ModelStorage{
+				Sources: []ModelSource{{Type: "local_path", Path: "/opt/models/fallback"}},
+			},
+			Variants: []ModelVariant{{
+				Name:     "local-variant-model-testengine",
+				Hardware: ModelVariantHardware{GPUArch: "*"},
+				Engine:   "testengine",
+				Format:   "safetensors",
+				Source:   &ModelSource{Type: "local_path", Path: "/opt/models/variant"},
+			}},
+		}},
+	}
+
+	resolved, err := cat.Resolve(HardwareInfo{GPUArch: "TestArch", CPUArch: "x86_64"}, "local-variant-model", "testengine", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.ModelPath != "/opt/models/variant" {
+		t.Fatalf("ModelPath = %q, want /opt/models/variant", resolved.ModelPath)
+	}
+}
+
+func TestResolveUsesStorageLocalPath(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{{
+			Metadata: EngineMetadata{Name: "testengine", Type: "testengine"},
+			Hardware: EngineHardware{GPUArch: "*"},
+			Startup: EngineStartup{Command: []string{"serve"}, DefaultArgs: map[string]any{}},
+		}},
+		ModelAssets: []ModelAsset{{
+			Metadata: ModelMetadata{Name: "local-storage-model"},
+			Storage: ModelStorage{
+				Sources: []ModelSource{{Type: "local_path", Path: "/opt/models/storage"}},
+			},
+			Variants: []ModelVariant{{
+				Name:     "local-storage-model-testengine",
+				Hardware: ModelVariantHardware{GPUArch: "*"},
+				Engine:   "testengine",
+				Format:   "safetensors",
+			}},
+		}},
+	}
+
+	resolved, err := cat.Resolve(HardwareInfo{GPUArch: "TestArch", CPUArch: "x86_64"}, "local-storage-model", "testengine", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.ModelPath != "/opt/models/storage" {
+		t.Fatalf("ModelPath = %q, want /opt/models/storage", resolved.ModelPath)
+	}
+}
+
+func TestResolveModelPathOverrideStillWins(t *testing.T) {
+	cat := &Catalog{
+		EngineAssets: []EngineAsset{{
+			Metadata: EngineMetadata{Name: "testengine", Type: "testengine"},
+			Hardware: EngineHardware{GPUArch: "*"},
+			Startup: EngineStartup{Command: []string{"serve"}, DefaultArgs: map[string]any{}},
+		}},
+		ModelAssets: []ModelAsset{{
+			Metadata: ModelMetadata{Name: "override-model"},
+			Storage: ModelStorage{
+				Sources: []ModelSource{{Type: "local_path", Path: "/opt/models/storage"}},
+			},
+			Variants: []ModelVariant{{
+				Name:     "override-model-testengine",
+				Hardware: ModelVariantHardware{GPUArch: "*"},
+				Engine:   "testengine",
+				Format:   "safetensors",
+				Source:   &ModelSource{Type: "local_path", Path: "/opt/models/variant"},
+			}},
+		}},
+	}
+
+	resolved, err := cat.Resolve(
+		HardwareInfo{GPUArch: "TestArch", CPUArch: "x86_64"},
+		"override-model",
+		"testengine",
+		map[string]any{"model_path": "/tmp/custom"},
+	)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.ModelPath != "/tmp/custom" {
+		t.Fatalf("ModelPath = %q, want /tmp/custom", resolved.ModelPath)
+	}
+}
+
 func TestResolveIncludesCompatibilityMetadata(t *testing.T) {
 	cat := mustLoadCatalog(t)
 

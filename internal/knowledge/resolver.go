@@ -294,9 +294,19 @@ func (c *Catalog) Resolve(hw HardwareInfo, modelName, engineType string, userOve
 		resolved.ResourceEstimate = estimateResources(engine, variant, hw)
 	}
 
-	// Set ModelPath from user overrides or default pattern
+	// Prefer an explicit user override, otherwise honor catalog local_path
+	// declarations for preloaded models before falling back to runtime discovery.
 	if mp, ok := userOverrides["model_path"]; ok {
 		resolved.ModelPath = fmt.Sprint(mp)
+	} else if variant != nil && variant.Source != nil && variant.Source.Type == "local_path" && strings.TrimSpace(variant.Source.Path) != "" {
+		resolved.ModelPath = strings.TrimSpace(variant.Source.Path)
+	} else {
+		for _, src := range model.Storage.Sources {
+			if src.Type == "local_path" && strings.TrimSpace(src.Path) != "" {
+				resolved.ModelPath = strings.TrimSpace(src.Path)
+				break
+			}
+		}
 	}
 
 	return resolved, nil
