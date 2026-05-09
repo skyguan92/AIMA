@@ -431,6 +431,7 @@ func run() error {
 			_, _ = w.Write(data)
 		})
 		mux.HandleFunc("POST /ui/api/onboarding-deploy", handleOnboardingDeploy(ac, deps))
+		mux.HandleFunc("POST /ui/api/onboarding-use-existing", handleOnboardingUseExisting(ac, deps))
 
 		// Start power sampling goroutine (30s interval, 7-day retention)
 		go func() {

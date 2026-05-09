@@ -73,13 +73,41 @@ type GPUProcess struct {
 	GPUMemMiB int    `json:"gpu_mem_mib,omitempty"`
 }
 
+// RunningService describes an already-running inference service that AIMA can
+// use directly instead of starting a second model.
+type RunningService struct {
+	Name                string `json:"name,omitempty"`
+	Model               string `json:"model"`
+	UpstreamModel       string `json:"upstream_model,omitempty"`
+	Engine              string `json:"engine,omitempty"`
+	Endpoint            string `json:"endpoint"`
+	BackendEndpoint     string `json:"backend_endpoint,omitempty"`
+	Source              string `json:"source"` // "proxy_backend", "deployment", "container", "remote"
+	Status              string `json:"status"`
+	Ready               bool   `json:"ready"`
+	ParameterCount      string `json:"parameter_count,omitempty"`
+	ContextWindowTokens int    `json:"context_window_tokens,omitempty"`
+}
+
+// BestChoice is the wizard's first recommended action when an existing running
+// model is already healthy.
+type BestChoice struct {
+	Action   string `json:"action"`
+	Model    string `json:"model"`
+	Engine   string `json:"engine,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
 // StatusResult is the full onboarding status response.
 type StatusResult struct {
-	OnboardingCompleted bool            `json:"onboarding_completed"`
-	Hardware            Hardware        `json:"hardware"`
-	StackStatus         StackStatusInfo `json:"stack_status"`
-	Version             VersionInfo     `json:"version"`
-	GPUOccupancy        []GPUProcess    `json:"gpu_occupancy,omitempty"`
+	OnboardingCompleted bool             `json:"onboarding_completed"`
+	Hardware            Hardware         `json:"hardware"`
+	StackStatus         StackStatusInfo  `json:"stack_status"`
+	Version             VersionInfo      `json:"version"`
+	GPUOccupancy        []GPUProcess     `json:"gpu_occupancy,omitempty"`
+	RunningServices     []RunningService `json:"running_services,omitempty"`
+	BestChoice          *BestChoice      `json:"best_choice,omitempty"`
 }
 
 // ScanEngineEntry describes one discovered engine (binary/image).

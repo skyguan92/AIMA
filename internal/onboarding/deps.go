@@ -20,6 +20,9 @@ type Deps struct {
 	BuildHardwareInfo func(ctx context.Context) knowledge.HardwareInfo
 	// DetectHWProfile wraps cmd/aima/infra.go:detectHWProfile.
 	DetectHWProfile func(ctx context.Context) string
+	// ListRunningServices returns already-registered inference backends that
+	// can be used directly by onboarding.
+	ListRunningServices func(ctx context.Context) []RunningService
 
 	// Catalog + SQLite + knowledge store used by Recommend.
 	Cat    *knowledge.Catalog
