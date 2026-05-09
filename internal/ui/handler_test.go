@@ -226,6 +226,34 @@ func TestRegisterRoutes_IndexFallbackOnboardingUsesCLICommands(t *testing.T) {
 	}
 }
 
+func TestRegisterRoutes_IndexOnlyAllowsOpenAIExternalServiceImport(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	start := strings.Index(body, "externalServiceImportable(service) {")
+	if start == -1 {
+		t.Fatal("externalServiceImportable not found")
+	}
+	end := strings.Index(body[start:], "\n    }")
+	if end == -1 {
+		t.Fatal("could not isolate externalServiceImportable body")
+	}
+	fnBody := body[start : start+end]
+	if !strings.Contains(fnBody, "service.kind === 'openai'") {
+		t.Fatalf("externalServiceImportable should allow openai services, body=%s", fnBody)
+	}
+	if strings.Contains(fnBody, "healthz") {
+		t.Fatalf("externalServiceImportable should not allow healthz imports, body=%s", fnBody)
+	}
+}
+
 func TestRegisterRoutes_IndexIncludesDeploymentStageFeedback(t *testing.T) {
 	t.Parallel()
 

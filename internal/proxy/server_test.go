@@ -303,6 +303,37 @@ func TestChatCompletions_RoutesToCorrectBackend(t *testing.T) {
 	}
 }
 
+func TestChatCompletions_UsesBackendScheme(t *testing.T) {
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("backend path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"chatcmpl-1","choices":[{"message":{"content":"hello"}}]}`)
+	}))
+	defer backend.Close()
+
+	s := NewServer(WithTransport(backend.Client().Transport))
+	addr := strings.TrimPrefix(backend.URL, "https://")
+	s.RegisterBackend("secure-model", &Backend{
+		ModelName:  "secure-model",
+		EngineType: "external-openai",
+		Scheme:     "https",
+		Address:    addr,
+		Ready:      true,
+		External:   true,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"secure-model","messages":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
 func TestChatCompletions_AppliesRequestRewriter(t *testing.T) {
 	var receivedBody map[string]any
 	backend := newTestBackend(t, func(w http.ResponseWriter, r *http.Request) {
@@ -691,6 +722,50 @@ func TestAudioTranscriptions_MultipartRoutesToBackend(t *testing.T) {
 	}
 	if !strings.Contains(receivedBody, "mooer-asr-1.5b") || !strings.Contains(receivedBody, "sample.wav") {
 		t.Fatalf("backend body missing multipart fields, got %q", receivedBody)
+	}
+}
+
+func TestAudioTranscriptions_ExternalASRPathOverride(t *testing.T) {
+	var receivedPath string
+	backend := newTestBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"hello"}`))
+	})
+	defer backend.Close()
+
+	s := NewServer()
+	host := strings.TrimPrefix(backend.URL, "http://")
+	s.RegisterBackend("local-stt", &Backend{
+		ModelName: "local-stt",
+		Address:   host,
+		Ready:     true,
+		External:  true,
+		PathOverrides: map[string]string{
+			"/v1/audio/transcriptions": "/v1/asr",
+		},
+	})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "local-stt")
+	part, err := writer.CreateFormFile("file", "sample.wav")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	_, _ = part.Write([]byte("RIFFdemo"))
+	_ = writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	s.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /v1/audio/transcriptions status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if receivedPath != "/v1/asr" {
+		t.Fatalf("backend received path %q, want /v1/asr", receivedPath)
 	}
 }
 

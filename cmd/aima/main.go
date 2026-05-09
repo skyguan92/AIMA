@@ -17,6 +17,7 @@ import (
 	"github.com/jguan/aima/internal/agent"
 	"github.com/jguan/aima/internal/cli"
 	"github.com/jguan/aima/internal/engine"
+	extsvc "github.com/jguan/aima/internal/external"
 	"github.com/jguan/aima/internal/fleet"
 	"github.com/jguan/aima/internal/hal"
 	"github.com/jguan/aima/internal/knowledge"
@@ -1539,6 +1540,28 @@ func buildToolDeps(ac *appContext) *mcp.ToolDeps {
 	buildDeployDeps(ac, deps, pullModelCore, deployRunCore)
 	buildKnowledgeDeps(ac, deps)
 	buildBenchmarkDeps(ac, deps, resolveEndpoint)
+	externalReconciler := extsvc.NewReconciler(db, proxyServer)
+	deps.ScanExternalServices = func(ctx context.Context) (json.RawMessage, error) {
+		services, err := externalReconciler.Scan(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(services)
+	}
+	deps.ListExternalServices = func(ctx context.Context) (json.RawMessage, error) {
+		services, err := externalReconciler.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(services)
+	}
+	deps.ImportExternalService = func(ctx context.Context, idOrBaseURL string, models []string) (json.RawMessage, error) {
+		result, err := externalReconciler.Import(ctx, idOrBaseURL, models)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
 
 	// Onboarding (multi-action MCP tool). The closures below wrap the
 	// internal/onboarding package entry points; scan/init/deploy collect
