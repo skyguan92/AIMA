@@ -22,6 +22,7 @@ import (
 type deleteTrackingRuntime struct {
 	name    string
 	status  map[string]*aimaRuntime.DeploymentStatus
+	aliases map[string]string
 	list    []*aimaRuntime.DeploymentStatus
 	delErrs map[string]error
 	deleted []string
@@ -49,6 +50,9 @@ func (r *deleteTrackingRuntime) Delete(_ context.Context, name string) error {
 }
 
 func (r *deleteTrackingRuntime) Status(_ context.Context, name string) (*aimaRuntime.DeploymentStatus, error) {
+	if target, ok := r.aliases[name]; ok {
+		name = target
+	}
 	if s, ok := r.status[name]; ok {
 		return s, nil
 	}
@@ -212,6 +216,47 @@ func TestDeployDeleteFailsWhenDeploymentStillListedAfterDelete(t *testing.T) {
 	}
 	if len(tombstones) != 0 {
 		t.Fatalf("deleted deployment tombstones = %v, want empty on failed delete", tombstones)
+	}
+}
+
+func TestDeployDeleteFallsBackFromModelNameToResolvedDeploymentName(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	deploy := &aimaRuntime.DeploymentStatus{
+		Name:    "qwen3-6-35b-a3b-sglang",
+		Phase:   "running",
+		Ready:   true,
+		Runtime: "docker",
+	}
+	dockerRt := &deleteTrackingRuntime{
+		name:    "docker",
+		status:  map[string]*aimaRuntime.DeploymentStatus{deploy.Name: deploy},
+		aliases: map[string]string{"qwen3.6-35b-a3b": deploy.Name},
+	}
+
+	deps := &mcp.ToolDeps{}
+	buildDeployDeps(&appContext{
+		db:       db,
+		rt:       dockerRt,
+		dockerRt: dockerRt,
+		proxy:    proxy.NewServer(),
+	}, deps,
+		func(context.Context, string, func(string, string), func(int64, int64)) error { return nil },
+		func(context.Context, string, string, string, map[string]any, bool, func(string, string), func(engine.ProgressEvent), func(int64, int64)) (json.RawMessage, error) {
+			return nil, nil
+		},
+	)
+
+	if err := deps.DeployDelete(ctx, "qwen3.6-35b-a3b"); err != nil {
+		t.Fatalf("DeployDelete: %v", err)
+	}
+	if got := dockerRt.deleted; len(got) != 1 || got[0] != deploy.Name {
+		t.Fatalf("docker delete sequence = %v, want [%s]", got, deploy.Name)
 	}
 }
 

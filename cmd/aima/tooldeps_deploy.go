@@ -445,6 +445,15 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 	deps.DeployDelete = func(ctx context.Context, name string) error {
 		matches := findMatchingDeployments(ctx, name, nil, rt, nativeRt, dockerRt)
 		if len(matches) == 0 {
+			// Backward-compatible fallback: some UI paths pass the model name
+			// instead of the concrete deployment name.
+			suppressRecentlyDeleted := loadDeletedDeploymentSuppressor(ctx, db)
+			modelStatus, statusErr := findDeploymentStatus(ctx, name, suppressRecentlyDeleted, rt, nativeRt, dockerRt)
+			if statusErr == nil && modelStatus != nil && modelStatus.Name != "" {
+				matches = findMatchingDeployments(ctx, modelStatus.Name, nil, rt, nativeRt, dockerRt)
+			}
+		}
+		if len(matches) == 0 {
 			return fmt.Errorf("deployment %q not found", name)
 		}
 
