@@ -104,11 +104,13 @@ func buildHardware(ctx context.Context, deps *Deps, hw *hal.HardwareInfo) Hardwa
 
 	if hw.GPU != nil {
 		result.GPU = []GPU{{
-			Name:    hw.GPU.Name,
-			VRAMMiB: hw.GPU.VRAMMiB,
-			Count:   hw.GPU.Count,
-			Arch:    hw.GPU.Arch,
+			Name:          hw.GPU.Name,
+			VRAMMiB:       hw.GPU.VRAMMiB,
+			Count:         hw.GPU.Count,
+			Arch:          hw.GPU.Arch,
+			UnifiedMemory: hw.GPU.UnifiedMemory,
 		}}
+		result.UnifiedMemory = hw.GPU.UnifiedMemory
 	}
 
 	result.CPU = CPU{
