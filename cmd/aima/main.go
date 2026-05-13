@@ -182,6 +182,7 @@ func run() error {
 		if skipPerms {
 			ctx = context.WithValue(ctx, ctxKeySkipPerms, true)
 		}
+		reloadLLMSettings(ctx, db, llmClient, proxyServer.APIKey())
 		result, sid, toolCalls, err := dispatcher.Ask(ctx, query, agent.DispatchOption{SessionID: sessionID})
 		if err != nil {
 			return nil, "", err
@@ -197,7 +198,7 @@ func run() error {
 		if explorationMgr != nil {
 			activeRuns = explorationMgr.ActiveCount()
 		}
-		return buildAgentStatusPayload(ctx, llmClient, goAgent.ToolMode(), activeRuns)
+		return buildFreshAgentStatusPayload(ctx, db, llmClient, proxyServer.APIKey(), goAgent.ToolMode(), activeRuns)
 	}
 	// 9c. Wire rollback tools
 	deps.RollbackList = func(ctx context.Context) (json.RawMessage, error) {
@@ -269,6 +270,7 @@ func run() error {
 			return json.Marshal(map[string]string{"status": "ok"})
 		},
 		DispatchAskStream: func(ctx context.Context, query, sessionID string, cb func(string, []byte)) (json.RawMessage, error) {
+			reloadLLMSettings(ctx, db, llmClient, proxyServer.APIKey())
 			var streamCB agent.StreamCallback
 			if cb != nil {
 				streamCB = func(ev agent.StreamEvent) {

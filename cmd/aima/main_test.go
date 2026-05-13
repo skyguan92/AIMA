@@ -1972,6 +1972,66 @@ func TestReloadLLMSettings_FallsBackToServeAPIKeyForLocalProxy(t *testing.T) {
 	}
 }
 
+func TestBuildFreshAgentStatusPayloadReloadsModelFromDB(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	t.Setenv("AIMA_LLM_ENDPOINT", "")
+	t.Setenv("AIMA_LLM_MODEL", "")
+	t.Setenv("AIMA_API_KEY", "")
+	t.Setenv("AIMA_LLM_USER_AGENT", "")
+	t.Setenv("AIMA_LLM_EXTRA_PARAMS", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok","models":[{"model_name":"new-model","ready":true}]}`))
+		case "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"new-model"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	if err := db.SetConfig(ctx, "llm.endpoint", server.URL+"/v1"); err != nil {
+		t.Fatalf("SetConfig endpoint: %v", err)
+	}
+	if err := db.SetConfig(ctx, "llm.model", "new-model"); err != nil {
+		t.Fatalf("SetConfig model: %v", err)
+	}
+
+	client := agent.NewOpenAIClient(server.URL+"/v1", agent.WithModel("old-model"))
+	data, err := buildFreshAgentStatusPayload(ctx, db, client, "", "enabled", 0)
+	if err != nil {
+		t.Fatalf("buildFreshAgentStatusPayload: %v", err)
+	}
+
+	var payload struct {
+		LLMRoute struct {
+			ConfiguredModel string `json:"configured_model"`
+			Selected        struct {
+				Model string `json:"model"`
+			} `json:"selected"`
+		} `json:"llm_route"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.LLMRoute.ConfiguredModel != "new-model" {
+		t.Fatalf("configured model = %q, want new-model", payload.LLMRoute.ConfiguredModel)
+	}
+	if payload.LLMRoute.Selected.Model != "new-model" {
+		t.Fatalf("selected model = %q, want new-model", payload.LLMRoute.Selected.Model)
+	}
+}
+
 func TestMCPToolAdapter_SystemConfigReadAllowedWriteBlocked(t *testing.T) {
 	s := mcp.NewServer()
 	called := 0
