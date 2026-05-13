@@ -474,6 +474,7 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 		deletedAt := time.Now()
 		tombstoneKeys := []string{name}
 		seenKeys := map[string]struct{}{normalizeDeletedDeploymentKey(name): {}}
+		verificationQueries := []string{name}
 		rememberKey := func(key string) {
 			norm := normalizeDeletedDeploymentKey(key)
 			if norm == "" {
@@ -485,6 +486,18 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 			seenKeys[norm] = struct{}{}
 			tombstoneKeys = append(tombstoneKeys, key)
 		}
+		rememberVerificationQuery := func(key string) {
+			norm := normalizeDeletedDeploymentKey(key)
+			if norm == "" {
+				return
+			}
+			for _, existing := range verificationQueries {
+				if normalizeDeletedDeploymentKey(existing) == norm {
+					return
+				}
+			}
+			verificationQueries = append(verificationQueries, key)
+		}
 
 		for _, match := range matches {
 			if match.Runtime == nil || match.Status == nil {
@@ -494,11 +507,16 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 				return fmt.Errorf("delete deployment %q on %s: %w", match.Status.Name, match.Runtime.Name(), err)
 			}
 			rememberKey(match.Status.Name)
-			rememberKey(deploymentModelKey(match.Status))
+			modelKey := deploymentModelKey(match.Status)
+			rememberKey(modelKey)
+			rememberVerificationQuery(match.Status.Name)
+			rememberVerificationQuery(modelKey)
 		}
 
-		if remaining := findMatchingDeployments(ctx, name, nil, rt, nativeRt, dockerRt); len(remaining) > 0 {
-			return fmt.Errorf("delete deployment %q: deployment still active after delete (%s)", name, summarizeMatchedDeployments(remaining))
+		for _, query := range verificationQueries {
+			if remaining := findMatchingDeployments(ctx, query, nil, rt, nativeRt, dockerRt); len(remaining) > 0 {
+				return fmt.Errorf("delete deployment %q: deployment still active after delete (%s)", name, summarizeMatchedDeployments(remaining))
+			}
 		}
 
 		for _, key := range tombstoneKeys {

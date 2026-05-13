@@ -260,6 +260,61 @@ func TestDeployDeleteFallsBackFromModelNameToResolvedDeploymentName(t *testing.T
 	}
 }
 
+func TestDeployDeleteFallbackFailsWhenResolvedDeploymentStillActive(t *testing.T) {
+	ctx := context.Background()
+	db, err := state.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	deploy := &aimaRuntime.DeploymentStatus{
+		Name:    "qwen3-6-35b-a3b-sglang",
+		Phase:   "running",
+		Ready:   true,
+		Runtime: "docker",
+		Labels: map[string]string{
+			"aima.dev/model":  "qwen3-6-35b-a3b",
+			"aima.dev/engine": "sglang",
+		},
+	}
+	dockerRt := &deleteTrackingRuntime{
+		name:    "docker",
+		status:  map[string]*aimaRuntime.DeploymentStatus{deploy.Name: deploy},
+		aliases: map[string]string{"qwen3.6-35b-a3b": deploy.Name},
+		keep:    map[string]bool{deploy.Name: true},
+	}
+
+	deps := &mcp.ToolDeps{}
+	buildDeployDeps(&appContext{
+		db:       db,
+		rt:       dockerRt,
+		dockerRt: dockerRt,
+		proxy:    proxy.NewServer(),
+	}, deps,
+		func(context.Context, string, func(string, string), func(int64, int64)) error { return nil },
+		func(context.Context, string, string, string, map[string]any, bool, func(string, string), func(engine.ProgressEvent), func(int64, int64)) (json.RawMessage, error) {
+			return nil, nil
+		},
+	)
+
+	err = deps.DeployDelete(ctx, "qwen3.6-35b-a3b")
+	if err == nil {
+		t.Fatal("DeployDelete error = nil, want verification failure")
+	}
+	if !strings.Contains(err.Error(), "still active after delete") {
+		t.Fatalf("DeployDelete error = %v, want still-active verification failure", err)
+	}
+
+	tombstones, err := db.ListDeletedDeploymentsSince(ctx, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("ListDeletedDeploymentsSince: %v", err)
+	}
+	if len(tombstones) != 0 {
+		t.Fatalf("deleted deployment tombstones = %v, want empty on failed delete", tombstones)
+	}
+}
+
 func TestDeployListAndStatusExposeTopLevelModelAndEngine(t *testing.T) {
 	ctx := context.Background()
 	db, err := state.Open(ctx, ":memory:")
