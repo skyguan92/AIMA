@@ -300,6 +300,9 @@ func run() error {
 			}
 			return raw, nil
 		},
+		APIKey: func(context.Context) string {
+			return proxyServer.APIKey()
+		},
 	})
 
 	// OpenClaw integration: wire adapters + routes + sync tool

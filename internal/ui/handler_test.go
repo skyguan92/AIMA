@@ -151,6 +151,27 @@ func TestRegisterRoutes_IndexUsesConsolidatedPatrolTool(t *testing.T) {
 	}
 }
 
+func TestRegisterRoutes_IndexReadsBootstrapAPIKey(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(nil)(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, token := range []string{
+		`window.__AIMA_BOOTSTRAP_API_KEY__ = "";`,
+		`localStorage.getItem('aima_api_key') || window.__AIMA_BOOTSTRAP_API_KEY__ || ''`,
+	} {
+		if !strings.Contains(body, token) {
+			t.Fatalf("body missing bootstrap API key token %q", token)
+		}
+	}
+}
+
 func TestRegisterRoutes_IndexScanResultsDoNotLookSelectable(t *testing.T) {
 	t.Parallel()
 
@@ -508,6 +529,44 @@ func TestRegisterRoutes_IndexIncludesDirectModeRoutingAndModelCards(t *testing.T
 		if !strings.Contains(body, token) {
 			t.Fatalf("body missing %q", token)
 		}
+	}
+}
+
+func TestRegisterRoutes_IndexBootstrapsAPIKeyForLoopbackOnly(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(&Deps{
+		APIKey: func(context.Context) string {
+			return "local-secret"
+		},
+	})(mux)
+
+	localReq := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	localReq.Host = "127.0.0.1:6188"
+	localReq.RemoteAddr = "127.0.0.1:51000"
+	localRec := httptest.NewRecorder()
+	mux.ServeHTTP(localRec, localReq)
+	if localRec.Code != http.StatusOK {
+		t.Fatalf("local status = %d, want %d", localRec.Code, http.StatusOK)
+	}
+	if !strings.Contains(localRec.Body.String(), `window.__AIMA_BOOTSTRAP_API_KEY__ = "local-secret";`) {
+		t.Fatal("loopback UI did not receive bootstrap API key")
+	}
+
+	remoteReq := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	remoteReq.Host = "192.168.110.184:6188"
+	remoteReq.RemoteAddr = "127.0.0.1:51001"
+	remoteRec := httptest.NewRecorder()
+	mux.ServeHTTP(remoteRec, remoteReq)
+	if remoteRec.Code != http.StatusOK {
+		t.Fatalf("remote status = %d, want %d", remoteRec.Code, http.StatusOK)
+	}
+	if strings.Contains(remoteRec.Body.String(), "local-secret") {
+		t.Fatal("non-loopback UI response leaked bootstrap API key")
+	}
+	if !strings.Contains(remoteRec.Body.String(), `window.__AIMA_BOOTSTRAP_API_KEY__ = "";`) {
+		t.Fatal("non-loopback UI should keep an empty bootstrap API key")
 	}
 }
 
