@@ -125,9 +125,9 @@ variants:
       mm_encoder_attn_backend: TORCH_SDPA
       skip_mm_profiling: true
       max_num_batched_tokens: 8192
-      # speculative_config must be a JSON string, not a YAML map —
-      # configToFlags() uses fmt.Sprintf("%v") which renders maps as map[k:v], not JSON.
-      speculative_config: '{"method":"mtp","num_speculative_tokens":1}'
+      speculative_config:
+        method: mtp
+        num_speculative_tokens: 1
     expected_performance:
       startup_time_s: 190
       cold_start_time_s: 300
@@ -147,14 +147,12 @@ variants:
         116532: [72.017, 15.5, 1618]
 
   # --- GB10 speculative path: DFlash on FA2-injected GB10 vLLM image ---
-  # Same AIMA benchmark.run shape as MTP, plus GB10 runtime env requirements
-  # for the patched FlashAttention/GDN path.
   - name: qwen3.6-35b-a3b-blackwell-vllm-dflash
     hardware:
       gpu_arch: Blackwell
       vram_min_mib: 40960
       unified_memory: true
-    engine: vllm
+    engine: vllm-dflash-blackwell
     format: safetensors
     default_config:
       gpu_memory_utilization: 0.92
@@ -172,11 +170,11 @@ variants:
       skip_mm_profiling: true
       max_num_batched_tokens: 8192
       max_num_seqs: 1
-      no_async_scheduling: true
-      # speculative_config must be a JSON string (see MTP variant comment).
-      # async_scheduling: false does NOT work — configToFlags omits false bools.
-      # Use no_async_scheduling: true instead.
-      speculative_config: '{"method":"dflash","model":"/models/Qwen3.6-35B-A3B-DFlash","num_speculative_tokens":10}'
+      async_scheduling: false
+      speculative_config:
+        method: dflash
+        model: /models/Qwen3.6-35B-A3B-DFlash
+        num_speculative_tokens: 10
     expected_performance:
       startup_time_s: 376
       cold_start_time_s: 420
@@ -322,16 +320,9 @@ variants:
         116532: [35.169, 19.9, 3313]
         233039: [109.196, 13.5, 2134]
 
-  # --- GB10 MTP + VLM: multimodal (text + image input) with MTP speculative decoding ---
-  # Requires vllm-mtp-blackwell engine with flash_attn layers patch (see engine YAML comments).
-  # Key differences from text-only MTP variant:
-  #   - No language_model_only (enables vision encoder cross-attention)
-  #   - attention_backend: TRITON_ATTN (FA2 _vllm_fa2_C broken in MTP image)
-  #   - mm_encoder_attn_backend: TORCH_SDPA (VLM non-causal attention fallback)
-  #   - skip_mm_profiling: true (avoid VLM encoder memory profiling crash)
-  #   - extra_volumes patch required for vllm_flash_attn/layers/ (rotary embedding)
-  # DFlash + VLM is NOT viable on GB10 SM121: FA2 non-causal kernels lack SM121 PTX,
-  # and TRITON_ATTN does not support non-causal attention required by DFlash spec decoding.
+  # --- GB10 MTP + VLM: image input enabled. Same engine as MTP text-only,
+  # but without language_model_only. See expected_performance.notes for the
+  # FA2/PTX background and why DFlash+VLM is not viable on SM121.
   - name: qwen3.6-35b-a3b-blackwell-vllm-mtp-vlm
     hardware:
       gpu_arch: Blackwell
@@ -353,12 +344,38 @@ variants:
       skip_mm_profiling: true
       max_num_batched_tokens: 8192
       max_num_seqs: 4
-      no_async_scheduling: true
-      speculative_config: '{"method":"mtp","num_speculative_tokens":1}'
+      async_scheduling: false
+      speculative_config:
+        method: mtp
+        num_speculative_tokens: 1
     expected_performance:
       startup_time_s: 212
       cold_start_time_s: 300
       tokens_per_second: [27, 41]
       tpot_ms: [24, 37]
       vram_mib: 68710
-      notes: "Validated 2026-05-13 on gb10-4t. Text decode ~40 tok/s, VLM (image+text) ~37 tok/s. First request has ~10s JIT Triton warmup. Requires flash_attn layers patch volume mount (see engine YAML). Model loads 67.1 GiB, total boot ~212s (main model 174s + MTP drafter 16s + KV cache). MTP acceptance gives ~80% speedup over baseline 22 tok/s. DFlash+VLM failed on SM121 due to FA2 non-causal PTX incompatibility."
+      notes: |
+        Validated 2026-05-13 on gb10-4t. Text decode ~40 tok/s, VLM (image+text) ~37 tok/s,
+        first request has ~10s JIT Triton warmup. Boot ~212s (main model 174s + MTP drafter
+        16s + KV cache profiling). MTP acceptance gives ~80% speedup over baseline 22 tok/s.
+        Backend choices: attention_backend=TRITON_ATTN because the MTP image's FA2
+        (_vllm_fa2_C) is broken; mm_encoder_attn_backend=TORCH_SDPA because TRITON_ATTN
+        cannot handle the vision encoder's non-causal cross-attention; skip_mm_profiling
+        avoids the VLM encoder memory-profile crash.
+        Image patch required for VLM: qujing/vllm-gb10-mtp's vllm_flash_attn/ ships without
+        the layers/ subdir, so vision rotary embedding (forward_cuda) raises ModuleNotFoundError
+        on the first image request. Bridge it to the standalone flash_attn package via a
+        host-side shim and an extra_volumes mount in a runtime overlay:
+          mkdir -p /opt/aima/vllm_flash_attn_layers
+          echo 'from flash_attn.layers import *' > /opt/aima/vllm_flash_attn_layers/__init__.py
+          echo 'from flash_attn.layers.rotary import *' > /opt/aima/vllm_flash_attn_layers/rotary.py
+        Then in ~/.aima/catalog/engines/vllm-mtp-blackwell.yaml (overlay) add:
+          startup:
+            extra_volumes:
+              - name: flash-attn-layers-patch
+                host_path: /opt/aima/vllm_flash_attn_layers
+                mount_path: /usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/layers
+                read_only: true
+        Without the shim, text-only (language_model_only: true) still works.
+        DFlash+VLM is NOT viable on GB10 SM121: FA2 non-causal kernels lack SM121 PTX, and
+        TRITON_ATTN does not support non-causal attention required by DFlash spec decoding.

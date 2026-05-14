@@ -9,28 +9,17 @@ hardware:
   gpu_arch: Blackwell
   vram_min_mib: 4096
 image:
-  # Custom GB10 ARM64 build with MTP support for Qwen3.6.
-  # NOTE: private registry, requires pre-pull on target machine.
+  # Custom GB10 ARM64 build with native MTP (multi-token prediction) speculative
+  # decoding. Private registry; pre-pull on target device.
+  # VLM image input requires a flash_attn layers shim mounted via runtime overlay
+  # extra_volumes — see qwen3.6-35b-a3b-blackwell-vllm-mtp-vlm variant notes.
   name: qujing/vllm-gb10-mtp
   tag: "latest"
   platforms: [linux/arm64]
+patterns:
+  - "vllm-gb10-mtp"
 startup:
   env: {}
-  # VLM requires patching: the image's vllm_flash_attn/ is missing layers/ subdir,
-  # causing VLM vision encoder rotary embedding to fail with:
-  #   ModuleNotFoundError: No module named 'vllm.vllm_flash_attn.layers'
-  # Fix: create a 2-file shim on host that bridges to standalone flash_attn package:
-  #   mkdir -p /path/to/vllm_flash_attn_layers
-  #   echo 'from flash_attn.layers import *' > __init__.py
-  #   echo 'from flash_attn.layers.rotary import *' > rotary.py
-  # Then add extra_volumes in runtime overlay:
-  #   extra_volumes:
-  #     - name: flash-attn-layers-patch
-  #       host_path: /path/to/vllm_flash_attn_layers
-  #       mount_path: /usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/layers
-  #       read_only: true
-  # Without this patch, text-only (language_model_only: true) works fine;
-  # only VLM image input triggers the missing module error.
   default_args:
     gpu_memory_utilization: 0.80
     max_model_len: 131072
@@ -42,6 +31,8 @@ amplifier:
 time_constraints:
   cold_start_s: [120, 300]
   model_switch_s: [120, 300]
+power_constraints:
+  typical_draw_watts: [40, 80]
 runtime:
   default: "container"
   platform_recommendations:
