@@ -124,7 +124,6 @@ func mergeTTS(cfg map[string]any, managed, next *ManagedState, result *SyncResul
 				"apiKey":  directToolAPIKey(result.APIKey),
 				"baseUrl": result.ProxyAddr,
 				"model":   result.TTSModel.ID,
-				"voice":   "default",
 			},
 		},
 	}

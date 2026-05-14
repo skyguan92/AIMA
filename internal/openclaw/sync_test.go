@@ -265,6 +265,9 @@ func TestSyncWritesTTSProviderSchema(t *testing.T) {
 	if got := openaiTTS["model"]; got != "qwen3-tts-0.6b" {
 		t.Fatalf("messages.tts.providers.openai.model = %v, want qwen3-tts-0.6b", got)
 	}
+	if _, ok := openaiTTS["voice"]; ok {
+		t.Fatalf("messages.tts.providers.openai.voice should not be written as an implicit default: %v", openaiTTS)
+	}
 	plugins := lookupMap(cfg, "plugins")
 	if plugins == nil {
 		t.Fatal("plugins missing after TTS sync")
@@ -1013,6 +1016,18 @@ func TestDeployPluginsWritesAIMAPlugins(t *testing.T) {
 	}
 	if !strings.Contains(string(ttsEntryData), `output path must stay within the OpenClaw workspace`) {
 		t.Fatal("expected TTS plugin to restrict output paths to the OpenClaw workspace")
+	}
+	if strings.Contains(string(ttsEntryData), `use_default_reference`) {
+		t.Fatal("TTS plugin must not ask backends to use a default reference voice")
+	}
+	if strings.Contains(string(ttsEntryData), `useDefaultReference`) {
+		t.Fatal("TTS plugin must not expose a default-reference control")
+	}
+	if strings.Contains(string(ttsEntryData), `route.voice ||`) {
+		t.Fatal("TTS plugin must not treat configured voice as an implicit request default")
+	}
+	if !strings.Contains(string(ttsEntryData), `voice cloning requires referenceAudioPath`) {
+		t.Fatal("expected TTS plugin to require explicit reference audio for voice cloning")
 	}
 
 	if _, err := os.Stat(filepath.Join(targetDir, "aima-local-image", "openclaw.plugin.json")); err != nil {
