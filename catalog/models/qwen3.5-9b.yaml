@@ -7,6 +7,7 @@ metadata:
   released_at: "2025-09"
 openclaw:
   chat_provider: false
+http:
   request_patches:
     - path: /v1/chat/completions
       engine_prefixes: [vllm]

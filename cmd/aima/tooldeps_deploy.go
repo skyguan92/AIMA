@@ -464,6 +464,15 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 			matches = findMatchingDeployments(ctx, name, nil, rt, nativeRt, dockerRt)
 		}
 		if len(matches) == 0 {
+			// Backward-compatible fallback: some UI paths pass the model name
+			// instead of the concrete deployment name.
+			suppressRecentlyDeleted := loadDeletedDeploymentSuppressor(ctx, db)
+			modelStatus, statusErr := findDeploymentStatus(ctx, name, suppressRecentlyDeleted, rt, nativeRt, dockerRt)
+			if statusErr == nil && modelStatus != nil && modelStatus.Name != "" {
+				matches = findMatchingDeployments(ctx, modelStatus.Name, nil, rt, nativeRt, dockerRt)
+			}
+		}
+		if len(matches) == 0 {
 			return fmt.Errorf("deployment %q not found", name)
 		}
 		if len(matches) > 1 {
@@ -507,7 +516,8 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 				return fmt.Errorf("delete deployment %q on %s: %w", match.Status.Name, match.Runtime.Name(), err)
 			}
 			rememberKey(match.Status.Name)
-			rememberKey(deploymentModelKey(match.Status))
+			modelKey := deploymentModelKey(match.Status)
+			rememberKey(modelKey)
 		}
 
 		if remaining := findExactDeploymentNameMatches(ctx, matches[0].Status.Name, nil, rt, nativeRt, dockerRt); len(remaining) > 0 {

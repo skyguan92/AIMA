@@ -14,6 +14,7 @@ import (
 	"github.com/jguan/aima/internal/agent"
 	"github.com/jguan/aima/internal/engine"
 	"github.com/jguan/aima/internal/fleet"
+	"github.com/jguan/aima/internal/inferencehttp"
 	"github.com/jguan/aima/internal/k3s"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
@@ -584,10 +585,10 @@ func (a *podQuerierAdapter) ListPodsByLabel(ctx context.Context, namespace, labe
 	return details, nil
 }
 
-// proxyBackendAdapter bridges proxy.Server to openclaw.BackendLister.
-type proxyBackendAdapter struct{ s *proxy.Server }
+// openClawBackendAdapter bridges proxy.Server to openclaw.BackendLister.
+type openClawBackendAdapter struct{ s *proxy.Server }
 
-func (a proxyBackendAdapter) ListBackends() map[string]*openclaw.Backend {
+func (a openClawBackendAdapter) ListBackends() map[string]*openclaw.Backend {
 	pbs := a.s.ListBackends()
 	result := make(map[string]*openclaw.Backend, len(pbs))
 	for k, b := range pbs {
@@ -603,7 +604,26 @@ func (a proxyBackendAdapter) ListBackends() map[string]*openclaw.Backend {
 	return result
 }
 
-// catalogAdapter bridges knowledge.Catalog to openclaw.CatalogReader.
+// inferenceHTTPBackendAdapter bridges proxy.Server to inferencehttp.BackendLister.
+type inferenceHTTPBackendAdapter struct{ s *proxy.Server }
+
+func (a inferenceHTTPBackendAdapter) ListBackends() map[string]*inferencehttp.Backend {
+	pbs := a.s.ListBackends()
+	result := make(map[string]*inferencehttp.Backend, len(pbs))
+	for k, b := range pbs {
+		result[k] = &inferencehttp.Backend{
+			ModelName:           b.ModelName,
+			EngineType:          b.EngineType,
+			Address:             b.Address,
+			Ready:               b.Ready,
+			Remote:              b.Remote,
+			ContextWindowTokens: b.ContextWindowTokens,
+		}
+	}
+	return result
+}
+
+// catalogAdapter bridges knowledge.Catalog to package-local reader interfaces.
 type catalogAdapter struct{ cat *knowledge.Catalog }
 
 func (a catalogAdapter) ModelType(name string) string {
@@ -640,14 +660,14 @@ func (a catalogAdapter) ModelChatProvider(name string) bool {
 	return true
 }
 
-func (a catalogAdapter) OpenClawAdapters(name string) []openclaw.Adapter {
+func (a catalogAdapter) Adapters(name string) []inferencehttp.Adapter {
 	for _, m := range a.cat.ModelAssets {
-		if !strings.EqualFold(m.Metadata.Name, name) || m.OpenClaw == nil {
+		if !strings.EqualFold(m.Metadata.Name, name) || m.HTTP == nil {
 			continue
 		}
-		out := make([]openclaw.Adapter, 0, len(m.OpenClaw.Adapters))
-		for _, adapter := range m.OpenClaw.Adapters {
-			out = append(out, openclaw.Adapter{
+		out := make([]inferencehttp.Adapter, 0, len(m.HTTP.Adapters))
+		for _, adapter := range m.HTTP.Adapters {
+			out = append(out, inferencehttp.Adapter{
 				Path: adapter.Path,
 				Kind: adapter.Kind,
 			})
@@ -657,14 +677,14 @@ func (a catalogAdapter) OpenClawAdapters(name string) []openclaw.Adapter {
 	return nil
 }
 
-func (a catalogAdapter) OpenClawRequestPatches(name string) []openclaw.RequestPatch {
+func (a catalogAdapter) RequestPatches(name string) []inferencehttp.RequestPatch {
 	for _, m := range a.cat.ModelAssets {
-		if !strings.EqualFold(m.Metadata.Name, name) || m.OpenClaw == nil {
+		if !strings.EqualFold(m.Metadata.Name, name) || m.HTTP == nil {
 			continue
 		}
-		out := make([]openclaw.RequestPatch, 0, len(m.OpenClaw.RequestPatches))
-		for _, patch := range m.OpenClaw.RequestPatches {
-			out = append(out, openclaw.RequestPatch{
+		out := make([]inferencehttp.RequestPatch, 0, len(m.HTTP.RequestPatches))
+		for _, patch := range m.HTTP.RequestPatches {
+			out = append(out, inferencehttp.RequestPatch{
 				Path:           patch.Path,
 				EnginePrefixes: append([]string(nil), patch.EnginePrefixes...),
 				Body:           patch.Body,

@@ -20,6 +20,7 @@ import (
 	extsvc "github.com/jguan/aima/internal/external"
 	"github.com/jguan/aima/internal/fleet"
 	"github.com/jguan/aima/internal/hal"
+	"github.com/jguan/aima/internal/inferencehttp"
 	"github.com/jguan/aima/internal/knowledge"
 	"github.com/jguan/aima/internal/mcp"
 	"github.com/jguan/aima/internal/model"
@@ -305,21 +306,26 @@ func run() error {
 		},
 	})
 
-	// OpenClaw integration: wire adapters + routes + sync tool
+	// AIMA inference HTTP routes and OpenClaw config sync share backend/catalog readers,
+	// but OpenClaw does not own the HTTP protocol surface.
 	mcpCommand := "aima"
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		mcpCommand = exe
 	}
+	inferenceHTTPDeps := &inferencehttp.Deps{
+		Backends: inferenceHTTPBackendAdapter{proxyServer},
+		Catalog:  catalogAdapter{cat},
+	}
+	inferenceHTTPRoutes := inferencehttp.RegisterRoutes(inferenceHTTPDeps)
 	openclawDeps := &openclaw.Deps{
-		Backends:   proxyBackendAdapter{proxyServer},
+		Backends:   openClawBackendAdapter{proxyServer},
 		Catalog:    catalogAdapter{cat},
 		ConfigPath: openclaw.DefaultConfigPath(),
 		ProxyAddr:  fmt.Sprintf("http://127.0.0.1:%d/v1", proxy.DefaultPort),
 		APIKey:     proxyServer.APIKey,
 		MCPCommand: mcpCommand,
 	}
-	openclawRoutes := openclaw.RegisterRoutes(openclawDeps)
-	proxyServer.SetRequestRewriter(openclaw.RequestBodyRewriter(openclawDeps.Catalog))
+	proxyServer.SetRequestRewriter(inferencehttp.RequestBodyRewriter(inferenceHTTPDeps.Catalog))
 	refreshOpenClawBackends := func(ctx context.Context) {
 		// Ensure proxy has up-to-date backends (CLI mode has no sync loop).
 		if deps.DeployList != nil {
@@ -370,7 +376,7 @@ func run() error {
 	proxyServer.SetExtraRoutes(func(mux *http.ServeMux) {
 		fleetRoutes(mux)
 		uiRoutes(mux)
-		openclawRoutes(mux)
+		inferenceHTTPRoutes(mux)
 		mux.HandleFunc("POST /api/v1/cli/exec", cli.NewExecHandler(func() *cli.App { return app }))
 		mux.HandleFunc("/api/v1/power", handlePowerSnapshot(cat))
 		mux.HandleFunc("/api/v1/power/history", func(w http.ResponseWriter, r *http.Request) {

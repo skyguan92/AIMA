@@ -1,8 +1,9 @@
-package openclaw
+package inferencehttp
 
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -27,17 +28,32 @@ func (s staticBackendLister) ListBackends() map[string]*Backend {
 	return out
 }
 
-type staticOpenClawCatalog struct {
+type staticCatalog struct {
 	adapters map[string][]Adapter
 }
 
-func (s staticOpenClawCatalog) ModelType(string) string                      { return "" }
-func (s staticOpenClawCatalog) ModelContextWindow(string) int                { return 0 }
-func (s staticOpenClawCatalog) ModelFamily(string) string                    { return "" }
-func (s staticOpenClawCatalog) ModelChatProvider(string) bool                { return true }
-func (s staticOpenClawCatalog) OpenClawRequestPatches(string) []RequestPatch { return nil }
-func (s staticOpenClawCatalog) OpenClawAdapters(name string) []Adapter {
+func (s staticCatalog) RequestPatches(string) []RequestPatch { return nil }
+func (s staticCatalog) Adapters(name string) []Adapter {
 	return append([]Adapter(nil), s.adapters[name]...)
+}
+
+type mockCatalog struct{}
+
+func (m *mockCatalog) Adapters(string) []Adapter { return nil }
+
+func (m *mockCatalog) RequestPatches(name string) []RequestPatch {
+	if name != "qwen3.5-9b" {
+		return nil
+	}
+	return []RequestPatch{{
+		Path:           "/v1/chat/completions",
+		EnginePrefixes: []string{"vllm"},
+		Body: map[string]any{
+			"chat_template_kwargs": map[string]any{
+				"enable_thinking": false,
+			},
+		},
+	}}
 }
 
 func TestHandleTTSLiteTTSRewrite(t *testing.T) {
@@ -69,7 +85,7 @@ func TestHandleTTSLiteTTSRewrite(t *testing.T) {
 				Ready:      true,
 			},
 		}},
-		Catalog: staticOpenClawCatalog{adapters: map[string][]Adapter{
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
 			"litetts-mnn": []Adapter{{Path: "/v1/audio/speech", Kind: adapterLiteTTSHTTP}},
 		}},
 	}
@@ -131,7 +147,7 @@ func TestHandleTTSLiteTTSRewriteCustomPath(t *testing.T) {
 				Ready:      true,
 			},
 		}},
-		Catalog: staticOpenClawCatalog{adapters: map[string][]Adapter{
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
 			"litetts-mnn": []Adapter{{Path: "/v1/tts", Kind: adapterLiteTTSHTTP}},
 		}},
 	}
@@ -308,6 +324,369 @@ func TestHandleTTSProxyAcceptsReferenceAudioBeyondLegacyBodyLimit(t *testing.T) 
 	}
 }
 
+func TestHandleTTSJSONFallsBackToSpeechAndWrapsAudio(t *testing.T) {
+	var (
+		paths   []string
+		gotBody map[string]any
+	)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if r.URL.Path == "/v1/tts" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"detail":"Not Found"}`))
+			return
+		}
+		if err := json.Unmarshal(data, &gotBody); err != nil {
+			t.Fatalf("Unmarshal fallback body: %v", err)
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write([]byte("RIFFdemo"))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"voxcpm2": {
+				ModelName: "voxcpm2",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+			},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(`{"model":"voxcpm2","text":"hello","response_format":"wav"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if strings.Join(paths, ",") != "/v1/tts,/v1/audio/speech" {
+		t.Fatalf("paths = %v, want fallback from /v1/tts to /v1/audio/speech", paths)
+	}
+	if gotBody["input"] != "hello" {
+		t.Fatalf("fallback input = %#v, want hello", gotBody["input"])
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if resp["audio_base64"] != "UklGRmRlbW8=" {
+		t.Fatalf("audio_base64 = %#v, want encoded RIFFdemo", resp["audio_base64"])
+	}
+	if resp["format"] != "wav" {
+		t.Fatalf("format = %#v, want wav", resp["format"])
+	}
+}
+
+func TestHandleTTSVoxCPMCloneJSONRoutesToCloneAndWrapsAudio(t *testing.T) {
+	var (
+		gotPath        string
+		gotContentType string
+		gotFields      map[string][]string
+		gotRefAudio    []byte
+		gotRefName     string
+	)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotContentType = r.Header.Get("Content-Type")
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		gotFields = r.MultipartForm.Value
+		file, header, err := r.FormFile("ref_audio")
+		if err != nil {
+			t.Fatalf("FormFile ref_audio: %v", err)
+		}
+		defer file.Close()
+		gotRefName = header.Filename
+		gotRefAudio, err = io.ReadAll(file)
+		if err != nil {
+			t.Fatalf("ReadAll ref_audio: %v", err)
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write([]byte("RIFFclone"))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"voxcpm2": {
+				ModelName: "voxcpm2",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+			},
+		}},
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
+			"voxcpm2": {{Path: "/v1/tts", Kind: adapterVoxCPMClone}},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	reqBody := `{"model":"voxcpm2","text":"hello","response_format":"wav","reference_audio":"data:audio/wav;base64,UklGRg==","reference_text":"sample voice"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/v1/clone" {
+		t.Fatalf("backend path = %q, want /v1/clone", gotPath)
+	}
+	if !strings.HasPrefix(gotContentType, "multipart/form-data; boundary=") {
+		t.Fatalf("content-type = %q, want multipart boundary", gotContentType)
+	}
+	field := func(name string) string {
+		if values := gotFields[name]; len(values) > 0 {
+			return values[0]
+		}
+		return ""
+	}
+	if field("text") != "hello" {
+		t.Fatalf("text field = %q, want hello", field("text"))
+	}
+	if field("ref_text") != "sample voice" {
+		t.Fatalf("ref_text field = %q, want sample voice", field("ref_text"))
+	}
+	if field("response_format") != "wav" {
+		t.Fatalf("response_format field = %q, want wav", field("response_format"))
+	}
+	if gotRefName != "reference.wav" {
+		t.Fatalf("ref_audio filename = %q, want reference.wav", gotRefName)
+	}
+	if string(gotRefAudio) != "RIFF" {
+		t.Fatalf("ref_audio = %q, want RIFF", string(gotRefAudio))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if resp["audio_base64"] != base64.StdEncoding.EncodeToString([]byte("RIFFclone")) {
+		t.Fatalf("audio_base64 = %#v, want encoded RIFFclone", resp["audio_base64"])
+	}
+	if resp["format"] != "wav" {
+		t.Fatalf("format = %#v, want wav", resp["format"])
+	}
+}
+
+func TestHandleTTSSpeechVoxCPMCloneReturnsAudio(t *testing.T) {
+	var gotPath string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write([]byte("RIFFclone"))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"voxcpm2": {
+				ModelName: "voxcpm2",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+			},
+		}},
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
+			"voxcpm2": {{Path: "/v1/audio/speech", Kind: adapterVoxCPMClone}},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	reqBody := `{"model":"voxcpm2","input":"hello","reference_audio":"UklGRg=="}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/v1/clone" {
+		t.Fatalf("backend path = %q, want /v1/clone", gotPath)
+	}
+	if got := w.Body.String(); got != "RIFFclone" {
+		t.Fatalf("body = %q, want RIFFclone", got)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "audio/wav" {
+		t.Fatalf("content-type = %q, want audio/wav", ct)
+	}
+}
+
+func TestHandleTTSSpeechFallsBackToJSONAndDecodesAudio(t *testing.T) {
+	var paths []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/v1/audio/speech" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"detail":"Not Found"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"audio_base64":"UklGRmRlbW8=","format":"wav"}`))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"json-tts": {
+				ModelName: "json-tts",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+			},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"model":"json-tts","input":"hello","response_format":"wav"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if strings.Join(paths, ",") != "/v1/audio/speech,/v1/tts" {
+		t.Fatalf("paths = %v, want fallback from /v1/audio/speech to /v1/tts", paths)
+	}
+	if got := w.Body.String(); got != "RIFFdemo" {
+		t.Fatalf("body = %q, want decoded audio", got)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "audio/wav" {
+		t.Fatalf("content-type = %q, want audio/wav", ct)
+	}
+}
+
+func TestHandleAudioQualityJSONRoutesToScore(t *testing.T) {
+	var (
+		gotPath string
+		gotBody map[string]any
+	)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if err := json.Unmarshal(data, &gotBody); err != nil {
+			t.Fatalf("Unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"pass","mos":4.2}`))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"dnsmos-quality": {
+				ModelName: "dnsmos-quality",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+			},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/quality", strings.NewReader(`{"model":"dnsmos-quality","path":"/tmp/demo.wav","threshold":3.5}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/score" {
+		t.Fatalf("backend path = %q, want /score", gotPath)
+	}
+	if gotBody["path"] != "/tmp/demo.wav" {
+		t.Fatalf("payload path = %#v, want /tmp/demo.wav", gotBody["path"])
+	}
+}
+
+func TestHandleAudioQualityMultipartRoutesToScoreUpload(t *testing.T) {
+	var (
+		gotPath        string
+		gotContentType string
+		gotBody        string
+	)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotContentType = r.Header.Get("Content-Type")
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		gotBody = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"fail","mos":2.1}`))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"nisqa-tts-quality": {
+				ModelName: "nisqa-tts-quality",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+			},
+		}},
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("model", "nisqa-tts-quality"); err != nil {
+		t.Fatalf("WriteField model: %v", err)
+	}
+	part, err := writer.CreateFormFile("file", "sample.wav")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := part.Write([]byte("RIFFdemo")); err != nil {
+		t.Fatalf("Write file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/quality", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/score/upload" {
+		t.Fatalf("backend path = %q, want /score/upload", gotPath)
+	}
+	if !strings.HasPrefix(gotContentType, "multipart/form-data; boundary=") {
+		t.Fatalf("content-type = %q, want multipart boundary", gotContentType)
+	}
+	if !strings.Contains(gotBody, "nisqa-tts-quality") || !strings.Contains(gotBody, "sample.wav") {
+		t.Fatalf("backend body missing fields, got %q", gotBody)
+	}
+}
+
 func TestHandleASRMooERRewrite(t *testing.T) {
 	orig := mooerRecognize
 	defer func() { mooerRecognize = orig }()
@@ -334,7 +713,7 @@ func TestHandleASRMooERRewrite(t *testing.T) {
 				Ready:      true,
 			},
 		}},
-		Catalog: staticOpenClawCatalog{adapters: map[string][]Adapter{
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
 			"mooer-asr-1.5b": []Adapter{{Path: "/v1/audio/transcriptions", Kind: adapterMooERGRPC}},
 		}},
 	}
@@ -408,7 +787,7 @@ func TestHandleASRMooERTextResponse(t *testing.T) {
 				Ready:      true,
 			},
 		}},
-		Catalog: staticOpenClawCatalog{adapters: map[string][]Adapter{
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
 			"mooer-asr-1.5b": []Adapter{{Path: "/v1/audio/transcriptions", Kind: adapterMooERGRPC}},
 		}},
 	}
