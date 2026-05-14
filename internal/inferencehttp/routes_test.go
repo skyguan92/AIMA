@@ -433,7 +433,7 @@ func TestHandleTTSVoxCPMCloneJSONRoutesToCloneAndWrapsAudio(t *testing.T) {
 	mux := http.NewServeMux()
 	RegisterRoutes(deps)(mux)
 
-	reqBody := `{"model":"voxcpm2","text":"hello","response_format":"wav","reference_audio":"data:audio/wav;base64,UklGRg==","reference_text":"sample voice"}`
+	reqBody := `{"model":"voxcpm2","text":"hello","response_format":"wav","speed":1.1,"reference_audio":"data:audio/wav;base64,UklGRg==","reference_text":"sample voice"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -462,6 +462,9 @@ func TestHandleTTSVoxCPMCloneJSONRoutesToCloneAndWrapsAudio(t *testing.T) {
 	}
 	if field("response_format") != "wav" {
 		t.Fatalf("response_format field = %q, want wav", field("response_format"))
+	}
+	if field("speed") != "1.1" {
+		t.Fatalf("speed field = %q, want 1.1", field("speed"))
 	}
 	if gotRefName != "reference.wav" {
 		t.Fatalf("ref_audio filename = %q, want reference.wav", gotRefName)

@@ -636,7 +636,7 @@ func buildVoxCPMCloneRequest(raw map[string]any) ([]byte, string, error) {
 			return nil, "", err
 		}
 	}
-	for _, key := range []string{"response_format", "temperature", "cfg", "max_length"} {
+	for _, key := range []string{"response_format", "temperature", "cfg", "max_length", "speed"} {
 		if value, ok := raw[key]; ok {
 			if err := writer.WriteField(key, fmt.Sprint(value)); err != nil {
 				return nil, "", err
