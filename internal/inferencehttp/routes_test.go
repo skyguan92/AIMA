@@ -481,6 +481,68 @@ func TestHandleTTSVoxCPMCloneJSONRoutesToCloneAndWrapsAudio(t *testing.T) {
 	}
 }
 
+func TestHandleTTSRemoteBackendSkipsLocalAdapter(t *testing.T) {
+	var (
+		gotPath string
+		gotAuth string
+		gotBody map[string]any
+	)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if err := json.Unmarshal(data, &gotBody); err != nil {
+			t.Fatalf("Unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"audio_base64":"UklGRg==","format":"wav"}`))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"voxcpm2": {
+				ModelName: "voxcpm2",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+				Remote:    true,
+			},
+		}},
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
+			"voxcpm2": {{Path: "/v1/tts", Kind: adapterVoxCPMClone}},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	reqBody := `{"model":"voxcpm2","input":"hello","reference_audio":"UklGRg=="}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer qujing")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/v1/tts" {
+		t.Fatalf("backend path = %q, want /v1/tts", gotPath)
+	}
+	if gotAuth != "Bearer qujing" {
+		t.Fatalf("authorization = %q, want Bearer qujing", gotAuth)
+	}
+	if gotBody["text"] != "hello" {
+		t.Fatalf("payload text = %#v, want hello", gotBody["text"])
+	}
+	if _, hasRefAudio := gotBody["reference_audio"]; !hasRefAudio {
+		t.Fatalf("payload missing reference_audio: %#v", gotBody)
+	}
+}
+
 func TestHandleTTSSpeechVoxCPMCloneReturnsAudio(t *testing.T) {
 	var gotPath string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -599,6 +661,9 @@ func TestHandleAudioQualityJSONRoutesToScore(t *testing.T) {
 				Ready:     true,
 			},
 		}},
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
+			"dnsmos-quality": {{Path: "/v1/audio/quality", Kind: "http_forward", TargetPath: "/score", UploadTargetPath: "/score/upload"}},
+		}},
 	}
 
 	mux := http.NewServeMux()
@@ -647,6 +712,9 @@ func TestHandleAudioQualityMultipartRoutesToScoreUpload(t *testing.T) {
 				Ready:     true,
 			},
 		}},
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
+			"nisqa-tts-quality": {{Path: "/v1/audio/quality", Kind: "http_forward", TargetPath: "/score", UploadTargetPath: "/score/upload"}},
+		}},
 	}
 
 	var body bytes.Buffer
@@ -684,6 +752,92 @@ func TestHandleAudioQualityMultipartRoutesToScoreUpload(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, "nisqa-tts-quality") || !strings.Contains(gotBody, "sample.wav") {
 		t.Fatalf("backend body missing fields, got %q", gotBody)
+	}
+}
+
+func TestHandleAudioQualityRequiresConfiguredAdapterForLocalBackend(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("backend should not be called without a quality adapter")
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"dnsmos-quality": {
+				ModelName: "dnsmos-quality",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+			},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/quality", strings.NewReader(`{"model":"dnsmos-quality","path":"/tmp/demo.wav"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", ct)
+	}
+	var resp apiErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal error response: %v", err)
+	}
+	if resp.Error.Type != apiErrorInvalidRequest {
+		t.Fatalf("error type = %q, want %q", resp.Error.Type, apiErrorInvalidRequest)
+	}
+	if !strings.Contains(resp.Error.Message, "does not define an HTTP adapter") {
+		t.Fatalf("error message = %q, want missing adapter message", resp.Error.Message)
+	}
+}
+
+func TestHandleAudioQualityRemoteBackendForwardsGenericRoute(t *testing.T) {
+	var (
+		gotPath string
+		gotAuth string
+	)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"pass","mos":4.2}`))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"dnsmos-quality": {
+				ModelName: "dnsmos-quality",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+				Remote:    true,
+			},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/quality", strings.NewReader(`{"model":"dnsmos-quality","path":"/tmp/demo.wav"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer qujing")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/v1/audio/quality" {
+		t.Fatalf("backend path = %q, want /v1/audio/quality", gotPath)
+	}
+	if gotAuth != "Bearer qujing" {
+		t.Fatalf("authorization = %q, want Bearer qujing", gotAuth)
 	}
 }
 
@@ -764,6 +918,74 @@ func TestHandleASRMooERRewrite(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("content-type = %q, want %q", ct, "application/json")
+	}
+}
+
+func TestHandleASRRemoteBackendSkipsLocalAdapter(t *testing.T) {
+	orig := mooerRecognize
+	defer func() { mooerRecognize = orig }()
+	mooerRecognize = func(context.Context, string, []byte) (*mooerRecognizeResponse, error) {
+		t.Fatal("mooer adapter should not be called for a remote backend")
+		return nil, nil
+	}
+
+	var (
+		gotPath string
+		gotAuth string
+	)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"remote transcript"}`))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"mooer-asr-1.5b": {
+				ModelName: "mooer-asr-1.5b",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+				Remote:    true,
+			},
+		}},
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
+			"mooer-asr-1.5b": {{Path: "/v1/audio/transcriptions", Kind: adapterMooERGRPC}},
+		}},
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "mooer-asr-1.5b")
+	part, err := writer.CreateFormFile("file", "sample.wav")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := part.Write([]byte("RIFFdemo")); err != nil {
+		t.Fatalf("Write file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer qujing")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/v1/audio/transcriptions" {
+		t.Fatalf("backend path = %q, want /v1/audio/transcriptions", gotPath)
+	}
+	if gotAuth != "Bearer qujing" {
+		t.Fatalf("authorization = %q, want Bearer qujing", gotAuth)
 	}
 }
 

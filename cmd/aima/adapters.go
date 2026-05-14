@@ -668,8 +668,10 @@ func (a catalogAdapter) Adapters(name string) []inferencehttp.Adapter {
 		out := make([]inferencehttp.Adapter, 0, len(m.HTTP.Adapters))
 		for _, adapter := range m.HTTP.Adapters {
 			out = append(out, inferencehttp.Adapter{
-				Path: adapter.Path,
-				Kind: adapter.Kind,
+				Path:             adapter.Path,
+				Kind:             adapter.Kind,
+				TargetPath:       adapter.TargetPath,
+				UploadTargetPath: adapter.UploadTargetPath,
 			})
 		}
 		return out

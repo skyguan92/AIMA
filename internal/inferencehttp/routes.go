@@ -23,6 +23,37 @@ const (
 	adapterVoxCPMClone = "voxcpm_clone"
 )
 
+const (
+	apiErrorInvalidRequest = "invalid_request_error"
+	apiErrorServer         = "server_error"
+	apiErrorBackend        = "backend_error"
+)
+
+type apiErrorResponse struct {
+	Error apiError `json:"error"`
+}
+
+type apiError struct {
+	Message string  `json:"message"`
+	Type    string  `json:"type"`
+	Param   *string `json:"param"`
+	Code    *string `json:"code"`
+}
+
+func writeAPIError(w http.ResponseWriter, status int, errorType, message string) {
+	if strings.TrimSpace(errorType) == "" {
+		errorType = apiErrorInvalidRequest
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(apiErrorResponse{
+		Error: apiError{
+			Message: message,
+			Type:    errorType,
+		},
+	})
+}
+
 // RegisterRoutes returns a function that registers AIMA inference proxy routes.
 // Pattern follows internal/fleet/handler.go.
 func RegisterRoutes(deps *Deps) func(*http.ServeMux) {
@@ -46,7 +77,7 @@ func RegisterRoutes(deps *Deps) func(*http.ServeMux) {
 // reference_text are preserved for backends that support them.
 func (d *Deps) handleTTS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, apiErrorInvalidRequest, "method not allowed")
 		return
 	}
 
@@ -54,36 +85,38 @@ func (d *Deps) handleTTS(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxTTSRequestBody)) // Allows base64 reference audio clips.
 	r.Body.Close()
 	if err != nil {
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "failed to read request body")
 		return
 	}
 
 	body, raw, err := normalizeTTSRequestBody(r.URL.Path, body)
 	if err != nil {
-		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "invalid JSON body")
 		return
 	}
 
 	model, _ := raw["model"].(string)
 	if model == "" {
-		http.Error(w, `{"error":"missing or invalid model field"}`, http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "missing or invalid model field")
 		return
 	}
 
 	backend := d.findBackend(model)
 	if backend == nil {
-		http.Error(w, fmt.Sprintf(`{"error":"model %q not found"}`, model), http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, apiErrorInvalidRequest, fmt.Sprintf("model %q not found", model))
 		return
 	}
 
-	adapter := d.adapterFor(model, r.URL.Path)
-	if adapter == adapterLiteTTSHTTP {
-		d.handleLiteTTS(w, r, backend, raw)
-		return
-	}
-	if adapter == adapterVoxCPMClone && hasTTSReferenceAudio(raw) {
-		d.handleVoxCPMClone(w, r, backend, raw, body)
-		return
+	if !backend.Remote {
+		adapter := d.adapterFor(model, r.URL.Path)
+		if adapter == adapterLiteTTSHTTP {
+			d.handleLiteTTS(w, r, backend, raw)
+			return
+		}
+		if adapter == adapterVoxCPMClone && hasTTSReferenceAudio(raw) {
+			d.handleVoxCPMClone(w, r, backend, raw, body)
+			return
+		}
 	}
 
 	switch r.URL.Path {
@@ -126,7 +159,7 @@ func normalizeTTSRequestBody(path string, body []byte) ([]byte, map[string]any, 
 // Expects multipart/form-data with a "model" field.
 func (d *Deps) handleASR(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, apiErrorInvalidRequest, "method not allowed")
 		return
 	}
 
@@ -135,13 +168,13 @@ func (d *Deps) handleASR(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 100<<20)) // 100 MB limit for audio
 	r.Body.Close()
 	if err != nil {
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "failed to read request body")
 		return
 	}
 
 	upload, err := parseASRUpload(r, body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, err.Error())
 		return
 	}
 
@@ -159,62 +192,78 @@ func (d *Deps) handleASR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if model == "" {
-		http.Error(w, `{"error":"missing model field"}`, http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "missing model field")
 		return
 	}
 
 	backend := d.findBackend(model)
 	if backend == nil {
-		http.Error(w, fmt.Sprintf(`{"error":"model %q not found"}`, model), http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, apiErrorInvalidRequest, fmt.Sprintf("model %q not found", model))
 		return
 	}
 
-	if d.adapterFor(model, r.URL.Path) == adapterMooERGRPC {
+	if !backend.Remote && d.adapterFor(model, r.URL.Path) == adapterMooERGRPC {
 		d.handleMooERASR(w, r, backend, upload)
 		return
 	}
 
-	d.forwardASR(w, r, backend.Address, body)
+	d.forwardASR(w, r, backend, body)
 }
 
 // handleAudioQuality routes audio quality scoring to the requested quality backend.
-// JSON requests are forwarded to /score; multipart uploads are forwarded to /score/upload.
+// Remote AIMA peers receive the same public route; local backend target paths
+// come from the model's catalog adapter.
 func (d *Deps) handleAudioQuality(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, apiErrorInvalidRequest, "method not allowed")
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 100<<20))
 	r.Body.Close()
 	if err != nil {
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "failed to read request body")
 		return
 	}
 
-	model, targetPath, err := qualityRequestTarget(r, body)
+	qualityReq, err := parseQualityRequest(r, body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, err.Error())
 		return
 	}
-	if model == "" {
-		http.Error(w, `{"error":"missing model field"}`, http.StatusBadRequest)
+	if qualityReq.Model == "" {
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "missing model field")
 		return
 	}
 
-	backend := d.findBackend(model)
+	backend := d.findBackend(qualityReq.Model)
 	if backend == nil {
-		http.Error(w, fmt.Sprintf(`{"error":"model %q not found"}`, model), http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, apiErrorInvalidRequest, fmt.Sprintf("model %q not found", qualityReq.Model))
 		return
 	}
 
-	d.forwardRequest(w, r, backend.Address, targetPath, r.Header.Get("Content-Type"), body)
+	targetPath := r.URL.Path
+	if !backend.Remote {
+		var ok bool
+		targetPath, ok = d.qualityTargetPath(qualityReq.Model, qualityReq.Upload)
+		if !ok {
+			writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, fmt.Sprintf("model %q does not define an HTTP adapter for %s", qualityReq.Model, r.URL.Path))
+			return
+		}
+	}
+
+	d.forwardRequest(w, r, backend, targetPath, r.Header.Get("Content-Type"), body)
 }
 
-func qualityRequestTarget(r *http.Request, body []byte) (string, string, error) {
+type qualityRequest struct {
+	Model  string
+	Upload bool
+}
+
+func parseQualityRequest(r *http.Request, body []byte) (qualityRequest, error) {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil && strings.TrimSpace(r.Header.Get("Content-Type")) != "" {
-		return "", "", fmt.Errorf(`{"error":"invalid content type"}`)
+		return qualityRequest{}, fmt.Errorf("invalid content type")
 	}
 
 	switch mediaType {
@@ -223,56 +272,60 @@ func qualityRequestTarget(r *http.Request, body []byte) (string, string, error) 
 			Model string `json:"model"`
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
-			return "", "", fmt.Errorf(`{"error":"invalid JSON body"}`)
+			return qualityRequest{}, fmt.Errorf("invalid JSON body")
 		}
-		return strings.TrimSpace(req.Model), "/score", nil
+		return qualityRequest{Model: strings.TrimSpace(req.Model)}, nil
 	case "multipart/form-data":
 		upload, err := parseASRUpload(r, body)
 		if err != nil {
-			return "", "", err
+			return qualityRequest{}, err
 		}
 		if upload == nil {
-			return "", "", fmt.Errorf(`{"error":"invalid multipart form body"}`)
+			return qualityRequest{}, fmt.Errorf("invalid multipart form body")
 		}
-		return strings.TrimSpace(upload.Model), "/score/upload", nil
+		return qualityRequest{Model: strings.TrimSpace(upload.Model), Upload: true}, nil
 	default:
-		return "", "", fmt.Errorf(`{"error":"unsupported content type %q"}`, mediaType)
+		return qualityRequest{}, fmt.Errorf("unsupported content type %q", mediaType)
 	}
 }
 
 // forwardASR forwards the ASR request and cleans the response text.
 // vLLM Qwen3-ASR returns text like "language Chinese<asr_text>你好" —
 // we strip the metadata prefix to return clean transcription text.
-func (d *Deps) forwardASR(w http.ResponseWriter, r *http.Request, targetAddr string, body []byte) {
+func (d *Deps) forwardASR(w http.ResponseWriter, r *http.Request, backend *Backend, body []byte) {
+	targetAddr := backend.Address
 	if !strings.HasPrefix(targetAddr, "http://") && !strings.HasPrefix(targetAddr, "https://") {
 		targetAddr = "http://" + targetAddr
 	}
 	target, err := url.Parse(targetAddr)
 	if err != nil {
 		slog.Error("aima proxy: invalid ASR backend address", "addr", targetAddr, "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, apiErrorServer, "internal server error")
 		return
 	}
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
-		target.String()+r.URL.Path, bytes.NewReader(body))
+		strings.TrimRight(target.String(), "/")+r.URL.Path, bytes.NewReader(body))
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, apiErrorServer, "internal server error")
 		return
 	}
 	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+	if backend.Remote {
+		copyAuthHeader(req.Header, r.Header)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		slog.Warn("aima proxy: ASR backend request failed", "backend", targetAddr, "err", err)
-		http.Error(w, "backend unreachable", http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, apiErrorBackend, "backend unreachable")
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		http.Error(w, "failed to read backend response", http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, apiErrorBackend, "failed to read backend response")
 		return
 	}
 
@@ -347,15 +400,39 @@ func RequestBodyRewriter(cat CatalogReader) func(path, contentType, model, engin
 }
 
 func (d *Deps) adapterFor(model, path string) string {
-	if d == nil || d.Catalog == nil {
+	adapter, ok := d.adapterForPath(model, path)
+	if !ok {
 		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(adapter.Kind))
+}
+
+func (d *Deps) adapterForPath(model, path string) (Adapter, bool) {
+	if d == nil || d.Catalog == nil {
+		return Adapter{}, false
 	}
 	for _, adapter := range d.Catalog.Adapters(model) {
 		if strings.TrimSpace(adapter.Path) == path {
-			return strings.ToLower(strings.TrimSpace(adapter.Kind))
+			return adapter, true
 		}
 	}
-	return ""
+	return Adapter{}, false
+}
+
+func (d *Deps) qualityTargetPath(model string, upload bool) (string, bool) {
+	adapter, ok := d.adapterForPath(model, "/v1/audio/quality")
+	if !ok {
+		return "", false
+	}
+	if upload {
+		if targetPath := strings.TrimSpace(adapter.UploadTargetPath); targetPath != "" {
+			return targetPath, true
+		}
+	}
+	if targetPath := strings.TrimSpace(adapter.TargetPath); targetPath != "" {
+		return targetPath, true
+	}
+	return "", false
 }
 
 // stripOrphanedToolChoice removes tool_choice from JSON request bodies when
@@ -463,19 +540,19 @@ func cloneJSONValue(value any) any {
 }
 
 func (d *Deps) forwardTTSAudio(w http.ResponseWriter, r *http.Request, backend *Backend, body []byte) {
-	resp, respBody, err := d.callBackend(r, backend.Address, "/v1/audio/speech", r.Header.Get("Content-Type"), body)
+	resp, respBody, err := d.callBackend(r, backend, "/v1/audio/speech", r.Header.Get("Content-Type"), body)
 	if err != nil {
 		slog.Warn("aima proxy: TTS backend request failed", "backend", backend.Address, "err", err)
-		http.Error(w, "backend unreachable", http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, apiErrorBackend, "backend unreachable")
 		return
 	}
 	if isMissingRoute(resp.StatusCode) {
 		fallbackBody, _, normErr := normalizeTTSRequestBody("/v1/tts", body)
 		if normErr == nil {
-			resp, respBody, err = d.callBackend(r, backend.Address, "/v1/tts", r.Header.Get("Content-Type"), fallbackBody)
+			resp, respBody, err = d.callBackend(r, backend, "/v1/tts", r.Header.Get("Content-Type"), fallbackBody)
 			if err != nil {
 				slog.Warn("aima proxy: TTS fallback request failed", "backend", backend.Address, "err", err)
-				http.Error(w, "backend unreachable", http.StatusBadGateway)
+				writeAPIError(w, http.StatusBadGateway, apiErrorBackend, "backend unreachable")
 				return
 			}
 		}
@@ -487,19 +564,19 @@ func (d *Deps) forwardTTSAudio(w http.ResponseWriter, r *http.Request, backend *
 }
 
 func (d *Deps) forwardTTSJSON(w http.ResponseWriter, r *http.Request, backend *Backend, body []byte) {
-	resp, respBody, err := d.callBackend(r, backend.Address, "/v1/tts", r.Header.Get("Content-Type"), body)
+	resp, respBody, err := d.callBackend(r, backend, "/v1/tts", r.Header.Get("Content-Type"), body)
 	if err != nil {
 		slog.Warn("aima proxy: TTS backend request failed", "backend", backend.Address, "err", err)
-		http.Error(w, "backend unreachable", http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, apiErrorBackend, "backend unreachable")
 		return
 	}
 	if isMissingRoute(resp.StatusCode) {
 		fallbackBody, _, normErr := normalizeTTSRequestBody("/v1/audio/speech", body)
 		if normErr == nil {
-			resp, respBody, err = d.callBackend(r, backend.Address, "/v1/audio/speech", r.Header.Get("Content-Type"), fallbackBody)
+			resp, respBody, err = d.callBackend(r, backend, "/v1/audio/speech", r.Header.Get("Content-Type"), fallbackBody)
 			if err != nil {
 				slog.Warn("aima proxy: TTS fallback request failed", "backend", backend.Address, "err", err)
-				http.Error(w, "backend unreachable", http.StatusBadGateway)
+				writeAPIError(w, http.StatusBadGateway, apiErrorBackend, "backend unreachable")
 				return
 			}
 		}
@@ -514,14 +591,14 @@ func (d *Deps) forwardTTSJSON(w http.ResponseWriter, r *http.Request, backend *B
 func (d *Deps) handleVoxCPMClone(w http.ResponseWriter, r *http.Request, backend *Backend, raw map[string]any, requestBody []byte) {
 	body, contentType, err := buildVoxCPMCloneRequest(raw)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, err.Error())
 		return
 	}
 
-	resp, respBody, err := d.callBackend(r, backend.Address, "/v1/clone", contentType, body)
+	resp, respBody, err := d.callBackend(r, backend, "/v1/clone", contentType, body)
 	if err != nil {
 		slog.Warn("aima proxy: VoxCPM clone backend request failed", "backend", backend.Address, "err", err)
-		http.Error(w, "backend unreachable", http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, apiErrorBackend, "backend unreachable")
 		return
 	}
 
@@ -538,11 +615,11 @@ func (d *Deps) handleVoxCPMClone(w http.ResponseWriter, r *http.Request, backend
 func buildVoxCPMCloneRequest(raw map[string]any) ([]byte, string, error) {
 	text := extractTTSText(raw)
 	if text == "" {
-		return nil, "", fmt.Errorf(`{"error":"missing or invalid input field"}`)
+		return nil, "", fmt.Errorf("missing or invalid input field")
 	}
 	refAudio := firstTTSString(raw, "reference_audio", "ref_audio")
 	if refAudio == "" {
-		return nil, "", fmt.Errorf(`{"error":"missing or invalid reference_audio field"}`)
+		return nil, "", fmt.Errorf("missing or invalid reference_audio field")
 	}
 	audio, filename, err := decodeReferenceAudio(refAudio)
 	if err != nil {
@@ -599,7 +676,7 @@ func decodeReferenceAudio(value string) ([]byte, string, error) {
 	}
 	audio, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
-		return nil, "", fmt.Errorf(`{"error":"reference_audio must be a data URL or base64 audio"}`)
+		return nil, "", fmt.Errorf("reference_audio must be a data URL or base64 audio")
 	}
 	return audio, "reference.wav", nil
 }
@@ -607,16 +684,16 @@ func decodeReferenceAudio(value string) ([]byte, string, error) {
 func decodeReferenceAudioDataURL(value string) ([]byte, string, error) {
 	comma := strings.IndexByte(value, ',')
 	if comma < 0 {
-		return nil, "", fmt.Errorf(`{"error":"invalid reference_audio data URL"}`)
+		return nil, "", fmt.Errorf("invalid reference_audio data URL")
 	}
 	meta := value[len("data:"):comma]
 	payload := value[comma+1:]
 	if !strings.Contains(strings.ToLower(meta), ";base64") {
-		return nil, "", fmt.Errorf(`{"error":"reference_audio data URL must be base64 encoded"}`)
+		return nil, "", fmt.Errorf("reference_audio data URL must be base64 encoded")
 	}
 	audio, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
-		return nil, "", fmt.Errorf(`{"error":"invalid reference_audio base64 data"}`)
+		return nil, "", fmt.Errorf("invalid reference_audio base64 data")
 	}
 
 	contentType := strings.TrimSpace(strings.Split(meta, ";")[0])
@@ -627,7 +704,8 @@ func decodeReferenceAudioDataURL(value string) ([]byte, string, error) {
 	return audio, "reference." + format, nil
 }
 
-func (d *Deps) callBackend(r *http.Request, targetAddr, targetPath, contentType string, body []byte) (*http.Response, []byte, error) {
+func (d *Deps) callBackend(r *http.Request, backend *Backend, targetPath, contentType string, body []byte) (*http.Response, []byte, error) {
+	targetAddr := backend.Address
 	if !strings.HasPrefix(targetAddr, "http://") && !strings.HasPrefix(targetAddr, "https://") {
 		targetAddr = "http://" + targetAddr
 	}
@@ -641,6 +719,9 @@ func (d *Deps) callBackend(r *http.Request, targetAddr, targetPath, contentType 
 		return nil, nil, err
 	}
 	req.Header.Set("Content-Type", contentType)
+	if backend.Remote {
+		copyAuthHeader(req.Header, r.Header)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, nil, err
@@ -651,6 +732,12 @@ func (d *Deps) callBackend(r *http.Request, targetAddr, targetPath, contentType 
 		return nil, nil, readErr
 	}
 	return resp, respBody, nil
+}
+
+func copyAuthHeader(dst, src http.Header) {
+	for _, value := range src.Values("Authorization") {
+		dst.Add("Authorization", value)
+	}
 }
 
 func isMissingRoute(statusCode int) bool {
@@ -775,14 +862,14 @@ func contentTypeForAudioFormat(format string) string {
 // Expects JSON body: {"model":"<model-name>", "prompt":"...", ...}
 func (d *Deps) handleImageGen(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, apiErrorInvalidRequest, "method not allowed")
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MB limit
 	r.Body.Close()
 	if err != nil {
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "failed to read request body")
 		return
 	}
 
@@ -790,28 +877,39 @@ func (d *Deps) handleImageGen(w http.ResponseWriter, r *http.Request) {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil || req.Model == "" {
-		http.Error(w, `{"error":"missing or invalid model field"}`, http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "missing or invalid model field")
 		return
 	}
 
 	backend := d.findBackend(req.Model)
 	if backend == nil {
-		http.Error(w, fmt.Sprintf(`{"error":"model %q not found"}`, req.Model), http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, apiErrorInvalidRequest, fmt.Sprintf("model %q not found", req.Model))
 		return
 	}
 
 	d.reverseProxy(w, r, backend.Address, body)
 }
 
-// findBackend looks up a ready, local backend by model name.
+// findBackend looks up a ready backend by model name, preferring local backends
+// and falling back to remote AIMA peers for federation.
 func (d *Deps) findBackend(model string) *Backend {
+	if d == nil || d.Backends == nil {
+		return nil
+	}
 	backends := d.Backends.ListBackends()
+	var remote *Backend
 	for _, b := range backends {
-		if b.ModelName == model && b.Ready && !b.Remote {
+		if b == nil || !strings.EqualFold(b.ModelName, model) || !b.Ready || strings.TrimSpace(b.Address) == "" {
+			continue
+		}
+		if !b.Remote {
 			return b
 		}
+		if remote == nil {
+			remote = b
+		}
 	}
-	return nil
+	return remote
 }
 
 // reverseProxy sends the request to the target backend.
@@ -823,7 +921,7 @@ func (d *Deps) reverseProxy(w http.ResponseWriter, r *http.Request, targetAddr s
 	target, err := url.Parse(targetAddr)
 	if err != nil {
 		slog.Error("aima proxy: invalid backend address", "addr", targetAddr, "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, apiErrorServer, "internal server error")
 		return
 	}
 
@@ -836,6 +934,10 @@ func (d *Deps) reverseProxy(w http.ResponseWriter, r *http.Request, targetAddr s
 			req.ContentLength = int64(len(body))
 			req.Body = io.NopCloser(strings.NewReader(string(body)))
 		},
+		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
+			slog.Warn("aima proxy: backend request failed", "backend", targetAddr, "path", req.URL.Path, "err", err)
+			writeAPIError(rw, http.StatusBadGateway, apiErrorBackend, "backend unreachable")
+		},
 	}
 	proxy.ServeHTTP(w, r)
 }
@@ -843,7 +945,7 @@ func (d *Deps) reverseProxy(w http.ResponseWriter, r *http.Request, targetAddr s
 func (d *Deps) handleLiteTTS(w http.ResponseWriter, r *http.Request, backend *Backend, raw map[string]any) {
 	text := extractTTSText(raw)
 	if text == "" {
-		http.Error(w, `{"error":"missing or invalid input field"}`, http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "missing or invalid input field")
 		return
 	}
 
@@ -859,11 +961,11 @@ func (d *Deps) handleLiteTTS(w http.ResponseWriter, r *http.Request, backend *Ba
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		http.Error(w, `{"error":"failed to encode LiteTTS request"}`, http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, apiErrorServer, "failed to encode LiteTTS request")
 		return
 	}
 
-	d.forwardRequest(w, r, backend.Address, "/tts/api/v1/generate", "application/json", body)
+	d.forwardRequest(w, r, backend, "/tts/api/v1/generate", "application/json", body)
 }
 
 func extractTTSText(raw map[string]any) string {
@@ -876,28 +978,32 @@ func extractTTSText(raw map[string]any) string {
 	return ""
 }
 
-func (d *Deps) forwardRequest(w http.ResponseWriter, r *http.Request, targetAddr, targetPath, contentType string, body []byte) {
+func (d *Deps) forwardRequest(w http.ResponseWriter, r *http.Request, backend *Backend, targetPath, contentType string, body []byte) {
+	targetAddr := backend.Address
 	if !strings.HasPrefix(targetAddr, "http://") && !strings.HasPrefix(targetAddr, "https://") {
 		targetAddr = "http://" + targetAddr
 	}
 	target, err := url.Parse(targetAddr)
 	if err != nil {
 		slog.Error("aima proxy: invalid backend address", "addr", targetAddr, "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, apiErrorServer, "internal server error")
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target.String()+targetPath, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(target.String(), "/")+targetPath, bytes.NewReader(body))
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, apiErrorServer, "internal server error")
 		return
 	}
 	req.Header.Set("Content-Type", contentType)
+	if backend.Remote {
+		copyAuthHeader(req.Header, r.Header)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		slog.Warn("aima proxy: backend request failed", "backend", targetAddr, "path", targetPath, "err", err)
-		http.Error(w, "backend unreachable", http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, apiErrorBackend, "backend unreachable")
 		return
 	}
 	defer resp.Body.Close()

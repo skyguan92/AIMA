@@ -128,7 +128,7 @@ func parseASRUpload(r *http.Request, body []byte) (*asrUpload, error) {
 	}
 	boundary := params["boundary"]
 	if boundary == "" {
-		return nil, fmt.Errorf(`{"error":"multipart request missing boundary"}`)
+		return nil, fmt.Errorf("multipart request missing boundary")
 	}
 
 	upload := &asrUpload{}
@@ -139,14 +139,14 @@ func parseASRUpload(r *http.Request, body []byte) (*asrUpload, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf(`{"error":"invalid multipart form body"}`)
+			return nil, fmt.Errorf("invalid multipart form body")
 		}
 
 		name := part.FormName()
 		data, readErr := io.ReadAll(io.LimitReader(part, 100<<20))
 		part.Close()
 		if readErr != nil {
-			return nil, fmt.Errorf(`{"error":"failed to read multipart field %q"}`, name)
+			return nil, fmt.Errorf("failed to read multipart field %q", name)
 		}
 
 		switch name {
@@ -164,17 +164,17 @@ func parseASRUpload(r *http.Request, body []byte) (*asrUpload, error) {
 
 func (d *Deps) handleMooERASR(w http.ResponseWriter, r *http.Request, backend *Backend, upload *asrUpload) {
 	if upload == nil || len(upload.AudioData) == 0 {
-		http.Error(w, `{"error":"missing file field"}`, http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, apiErrorInvalidRequest, "missing file field")
 		return
 	}
 
 	resp, err := mooerRecognize(r.Context(), backend.Address, upload.AudioData)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"mooer recognize failed: %s"}`, err), http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, apiErrorBackend, fmt.Sprintf("mooer recognize failed: %s", err))
 		return
 	}
 	if resp.Status != mooerStatusOK {
-		http.Error(w, `{"error":"mooer recognize returned non-OK status"}`, http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, apiErrorBackend, "mooer recognize returned non-OK status")
 		return
 	}
 

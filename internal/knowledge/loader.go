@@ -365,8 +365,10 @@ type ModelHTTPHints struct {
 }
 
 type HTTPAdapter struct {
-	Path string `yaml:"path"`
-	Kind string `yaml:"kind"`
+	Path             string `yaml:"path"`
+	Kind             string `yaml:"kind"`
+	TargetPath       string `yaml:"target_path,omitempty"`
+	UploadTargetPath string `yaml:"upload_target_path,omitempty"`
 }
 
 type HTTPRequestPatch struct {

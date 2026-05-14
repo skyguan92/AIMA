@@ -28,8 +28,10 @@ type RequestPatch struct {
 }
 
 type Adapter struct {
-	Path string
-	Kind string
+	Path             string
+	Kind             string
+	TargetPath       string
+	UploadTargetPath string
 }
 
 // CatalogReader provides model-specific HTTP adapter hints from the knowledge catalog.
