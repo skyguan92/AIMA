@@ -294,21 +294,15 @@ func GeneratePod(resolved *ResolvedConfig) ([]byte, error) {
 		}
 		sort.Strings(keys) // deterministic ordering for reproducible pod specs
 		for _, k := range keys {
-			flagName := strings.ReplaceAll(k, "_", "-")
-			switch v := resolved.Config[k].(type) {
-			case bool:
-				if v {
-					args = append(args, "--"+flagName)
-				} else {
-					args = append(args, "--no-"+flagName)
-				}
-			case string:
-				expanded := strings.ReplaceAll(v, "{{.ModelName}}", resolved.ModelName)
+			// String values need template expansion before formatting;
+			// other types delegate to FormatConfigFlag (shared with Docker/Native runtime).
+			if s, ok := resolved.Config[k].(string); ok {
+				expanded := strings.ReplaceAll(s, "{{.ModelName}}", resolved.ModelName)
 				expanded = strings.ReplaceAll(expanded, "{{.ModelPath}}", containerModelPath)
-				args = append(args, "--"+flagName, expanded)
-			default:
-				args = append(args, "--"+flagName, fmt.Sprintf("%v", v))
+				args = append(args, "--"+strings.ReplaceAll(k, "_", "-"), expanded)
+				continue
 			}
+			args = append(args, FormatConfigFlag(k, resolved.Config[k])...)
 		}
 	}
 

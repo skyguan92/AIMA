@@ -142,10 +142,10 @@ func isPortFlag(s string) bool {
 	return strings.HasPrefix(s, "--") && strings.Contains(s, "port")
 }
 
-// configToFlags converts a Config map into CLI flags.
-// Keys are underscore-separated (e.g. "mem_fraction_static") → "--mem-fraction-static".
-// "port" is excluded (handled separately by each runtime).
-// Bool true → flag only (no value); bool false → omitted.
+// configToFlags converts a Config map into CLI flags via knowledge.FormatConfigFlag.
+// "port" and other reserved keys are skipped; quantization is filtered via
+// ShouldIncludeConfigFlag. Serialization rules (bool/map/scalar) live in
+// FormatConfigFlag so K3S podgen and Docker/Native runtime stay consistent.
 func configToFlags(config map[string]any, command []string, modelPath string, reservedKeys map[string]struct{}) []string {
 	if len(config) == 0 {
 		return nil
@@ -163,15 +163,7 @@ func configToFlags(config map[string]any, command []string, modelPath string, re
 	sort.Strings(keys)
 	var flags []string
 	for _, k := range keys {
-		flag := "--" + strings.ReplaceAll(k, "_", "-")
-		switch v := config[k].(type) {
-		case bool:
-			if v {
-				flags = append(flags, flag)
-			}
-		default:
-			flags = append(flags, flag, fmt.Sprintf("%v", v))
-		}
+		flags = append(flags, knowledge.FormatConfigFlag(k, config[k])...)
 	}
 	return flags
 }

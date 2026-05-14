@@ -2,10 +2,39 @@ package knowledge
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// FormatConfigFlag emits CLI tokens for a single config key/value pair.
+// Returns tokens to append to args, e.g. ["--flag", "value"], ["--flag"], or ["--no-flag"].
+//
+// Rules (consistent across all runtimes — K3S podgen and Docker/Native runtime):
+//   - true bool                      → "--flag"
+//   - false bool                     → "--no-flag"
+//   - map / slice                    → "--flag", <JSON-encoded value>
+//   - other (numbers, strings, etc.) → "--flag", fmt.Sprintf("%v", value)
+//
+// String template expansion (e.g. {{.ModelPath}}) is the caller's responsibility.
+func FormatConfigFlag(key string, value any) []string {
+	dash := strings.ReplaceAll(key, "_", "-")
+	flagName := "--" + dash
+	switch v := value.(type) {
+	case bool:
+		if v {
+			return []string{flagName}
+		}
+		return []string{"--no-" + dash}
+	case map[string]any, []any:
+		// YAML-parsed map/slice values are always JSON-marshalable; error is impossible here.
+		b, _ := json.Marshal(value)
+		return []string{flagName, string(b)}
+	default:
+		return []string{flagName, fmt.Sprintf("%v", v)}
+	}
+}
 
 // ShouldIncludeConfigFlag reports whether a resolved config key should be emitted
 // as a runtime CLI flag for the given startup command and local model path.
