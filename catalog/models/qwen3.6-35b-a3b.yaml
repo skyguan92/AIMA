@@ -109,7 +109,7 @@ variants:
       gpu_arch: Blackwell
       vram_min_mib: 40960
       unified_memory: true
-    engine: vllm
+    engine: vllm-mtp-blackwell
     format: safetensors
     default_config:
       gpu_memory_utilization: 0.92
@@ -125,9 +125,9 @@ variants:
       mm_encoder_attn_backend: TORCH_SDPA
       skip_mm_profiling: true
       max_num_batched_tokens: 8192
-      speculative_config:
-        method: mtp
-        num_speculative_tokens: 1
+      # speculative_config must be a JSON string, not a YAML map —
+      # configToFlags() uses fmt.Sprintf("%v") which renders maps as map[k:v], not JSON.
+      speculative_config: '{"method":"mtp","num_speculative_tokens":1}'
     expected_performance:
       startup_time_s: 190
       cold_start_time_s: 300
@@ -172,11 +172,11 @@ variants:
       skip_mm_profiling: true
       max_num_batched_tokens: 8192
       max_num_seqs: 1
-      async_scheduling: false
-      speculative_config:
-        method: dflash
-        model: /models/Qwen3.6-35B-A3B-DFlash
-        num_speculative_tokens: 10
+      no_async_scheduling: true
+      # speculative_config must be a JSON string (see MTP variant comment).
+      # async_scheduling: false does NOT work — configToFlags omits false bools.
+      # Use no_async_scheduling: true instead.
+      speculative_config: '{"method":"dflash","model":"/models/Qwen3.6-35B-A3B-DFlash","num_speculative_tokens":10}'
     expected_performance:
       startup_time_s: 376
       cold_start_time_s: 420
@@ -321,3 +321,44 @@ variants:
         58277:  [13.749, 26.2, 4239]
         116532: [35.169, 19.9, 3313]
         233039: [109.196, 13.5, 2134]
+
+  # --- GB10 MTP + VLM: multimodal (text + image input) with MTP speculative decoding ---
+  # Requires vllm-mtp-blackwell engine with flash_attn layers patch (see engine YAML comments).
+  # Key differences from text-only MTP variant:
+  #   - No language_model_only (enables vision encoder cross-attention)
+  #   - attention_backend: TRITON_ATTN (FA2 _vllm_fa2_C broken in MTP image)
+  #   - mm_encoder_attn_backend: TORCH_SDPA (VLM non-causal attention fallback)
+  #   - skip_mm_profiling: true (avoid VLM encoder memory profiling crash)
+  #   - extra_volumes patch required for vllm_flash_attn/layers/ (rotary embedding)
+  # DFlash + VLM is NOT viable on GB10 SM121: FA2 non-causal kernels lack SM121 PTX,
+  # and TRITON_ATTN does not support non-causal attention required by DFlash spec decoding.
+  - name: qwen3.6-35b-a3b-blackwell-vllm-mtp-vlm
+    hardware:
+      gpu_arch: Blackwell
+      vram_min_mib: 40960
+      unified_memory: true
+    engine: vllm-mtp-blackwell
+    format: safetensors
+    default_config:
+      gpu_memory_utilization: 0.80
+      max_model_len: 131072
+      dtype: bfloat16
+      enforce_eager: true
+      trust_remote_code: true
+      reasoning_parser: qwen3
+      enable_auto_tool_choice: true
+      tool_call_parser: qwen3_xml
+      attention_backend: TRITON_ATTN
+      mm_encoder_attn_backend: TORCH_SDPA
+      skip_mm_profiling: true
+      max_num_batched_tokens: 8192
+      max_num_seqs: 4
+      no_async_scheduling: true
+      speculative_config: '{"method":"mtp","num_speculative_tokens":1}'
+    expected_performance:
+      startup_time_s: 212
+      cold_start_time_s: 300
+      tokens_per_second: [27, 41]
+      tpot_ms: [24, 37]
+      vram_mib: 68710
+      notes: "Validated 2026-05-13 on gb10-4t. Text decode ~40 tok/s, VLM (image+text) ~37 tok/s. First request has ~10s JIT Triton warmup. Requires flash_attn layers patch volume mount (see engine YAML). Model loads 67.1 GiB, total boot ~212s (main model 174s + MTP drafter 16s + KV cache). MTP acceptance gives ~80% speedup over baseline 22 tok/s. DFlash+VLM failed on SM121 due to FA2 non-causal PTX incompatibility."
