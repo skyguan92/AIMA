@@ -636,12 +636,8 @@ func buildVoxCPMCloneRequest(raw map[string]any) ([]byte, string, error) {
 			return nil, "", err
 		}
 	}
-	for _, key := range []string{"response_format", "temperature", "cfg", "max_length", "speed"} {
-		if value, ok := raw[key]; ok {
-			if err := writer.WriteField(key, fmt.Sprint(value)); err != nil {
-				return nil, "", err
-			}
-		}
+	if err := writeTTSBackendFormFields(writer, raw); err != nil {
+		return nil, "", err
 	}
 	part, err := writer.CreateFormFile("ref_audio", filename)
 	if err != nil {
@@ -654,6 +650,48 @@ func buildVoxCPMCloneRequest(raw map[string]any) ([]byte, string, error) {
 		return nil, "", err
 	}
 	return body.Bytes(), writer.FormDataContentType(), nil
+}
+
+func writeTTSBackendFormFields(writer *multipart.Writer, raw map[string]any) error {
+	for key, value := range raw {
+		key = strings.TrimSpace(key)
+		if key == "" || value == nil || isTTSCloneProtocolField(key) {
+			continue
+		}
+		fieldValue, err := formFieldValue(value)
+		if err != nil {
+			return fmt.Errorf("encode %s field: %w", key, err)
+		}
+		if err := writer.WriteField(key, fieldValue); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isTTSCloneProtocolField(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "model", "input", "text", "reference_audio", "ref_audio", "reference_text", "ref_text",
+		"use_default_reference", "usedefaultreference", "allow_default_reference", "allowdefaultreference":
+		return true
+	default:
+		return false
+	}
+}
+
+func formFieldValue(value any) (string, error) {
+	switch typed := value.(type) {
+	case string:
+		return typed, nil
+	case bool, float64, float32, int, int64, int32, uint, uint64, uint32:
+		return fmt.Sprint(typed), nil
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return "", err
+		}
+		return string(encoded), nil
+	}
 }
 
 func hasTTSReferenceAudio(raw map[string]any) bool {

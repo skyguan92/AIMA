@@ -433,7 +433,7 @@ func TestHandleTTSVoxCPMCloneJSONRoutesToCloneAndWrapsAudio(t *testing.T) {
 	mux := http.NewServeMux()
 	RegisterRoutes(deps)(mux)
 
-	reqBody := `{"model":"voxcpm2","text":"hello","response_format":"wav","speed":1.1,"reference_audio":"data:audio/wav;base64,UklGRg==","reference_text":"sample voice"}`
+	reqBody := `{"model":"voxcpm2","text":"hello","response_format":"wav","speed":1.1,"top_p":0.8,"seed":42,"x_vector_only_mode":true,"voice":"explicit","use_default_reference":true,"reference_audio":"data:audio/wav;base64,UklGRg==","reference_text":"sample voice"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -465,6 +465,21 @@ func TestHandleTTSVoxCPMCloneJSONRoutesToCloneAndWrapsAudio(t *testing.T) {
 	}
 	if field("speed") != "1.1" {
 		t.Fatalf("speed field = %q, want 1.1", field("speed"))
+	}
+	if field("top_p") != "0.8" {
+		t.Fatalf("top_p field = %q, want 0.8", field("top_p"))
+	}
+	if field("seed") != "42" {
+		t.Fatalf("seed field = %q, want 42", field("seed"))
+	}
+	if field("x_vector_only_mode") != "true" {
+		t.Fatalf("x_vector_only_mode field = %q, want true", field("x_vector_only_mode"))
+	}
+	if field("voice") != "explicit" {
+		t.Fatalf("voice field = %q, want explicit", field("voice"))
+	}
+	if field("model") != "" || field("reference_audio") != "" || field("use_default_reference") != "" {
+		t.Fatalf("protocol-only fields leaked to backend: %#v", gotFields)
 	}
 	if gotRefName != "reference.wav" {
 		t.Fatalf("ref_audio filename = %q, want reference.wav", gotRefName)
