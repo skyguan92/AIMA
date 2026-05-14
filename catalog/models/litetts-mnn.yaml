@@ -14,6 +14,7 @@ capabilities:
   standalone_deploy: true
 openclaw:
   chat_provider: false
+http:
   adapters:
     - path: /v1/audio/speech
       kind: litetts_http

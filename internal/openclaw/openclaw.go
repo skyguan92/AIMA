@@ -32,25 +32,12 @@ type Backend struct {
 	ContextWindowTokens int // actual deployed context window (from aima.dev/context_window label)
 }
 
-type RequestPatch struct {
-	Path           string
-	EnginePrefixes []string
-	Body           map[string]any
-}
-
-type Adapter struct {
-	Path string
-	Kind string
-}
-
 // CatalogReader provides model metadata lookup from the knowledge catalog.
 type CatalogReader interface {
 	ModelType(name string) string
 	ModelContextWindow(name string) int
 	ModelFamily(name string) string
 	ModelChatProvider(name string) bool // whether model should register as LLM chat provider
-	OpenClawAdapters(name string) []Adapter
-	OpenClawRequestPatches(name string) []RequestPatch
 }
 
 // DefaultConfigPath returns the default OpenClaw config path (~/.openclaw/openclaw.json).

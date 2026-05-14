@@ -63,25 +63,6 @@ func (m *mockCatalog) ModelChatProvider(name string) bool {
 	return name != "glm-4.1v-9b"
 }
 
-func (m *mockCatalog) OpenClawAdapters(name string) []Adapter {
-	return nil
-}
-
-func (m *mockCatalog) OpenClawRequestPatches(name string) []RequestPatch {
-	if name != "qwen3.5-9b" {
-		return nil
-	}
-	return []RequestPatch{{
-		Path:           "/v1/chat/completions",
-		EnginePrefixes: []string{"vllm"},
-		Body: map[string]any{
-			"chat_template_kwargs": map[string]any{
-				"enable_thinking": false,
-			},
-		},
-	}}
-}
-
 func TestSyncDryRun(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "openclaw.json")
 	deps := &Deps{

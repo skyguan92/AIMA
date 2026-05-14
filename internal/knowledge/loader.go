@@ -321,6 +321,7 @@ type ModelAsset struct {
 	UI           ModelUI           `yaml:"ui,omitempty"`
 	Capabilities ModelCapabilities `yaml:"capabilities,omitempty"`
 	OpenClaw     *OpenClawHints    `yaml:"openclaw,omitempty"`
+	HTTP         *ModelHTTPHints   `yaml:"http,omitempty"`
 	Storage      ModelStorage      `yaml:"storage"`
 	Variants     []ModelVariant    `yaml:"variants"`
 	synthetic    bool
@@ -355,17 +356,20 @@ type ModelCapabilities struct {
 }
 
 type OpenClawHints struct {
-	ChatProvider   *bool                  `yaml:"chat_provider,omitempty"` // register as LLM chat provider (default true)
-	Adapters       []OpenClawAdapter      `yaml:"adapters,omitempty"`
-	RequestPatches []OpenClawRequestPatch `yaml:"request_patches,omitempty"`
+	ChatProvider *bool `yaml:"chat_provider,omitempty"` // register as LLM chat provider (default true)
 }
 
-type OpenClawAdapter struct {
+type ModelHTTPHints struct {
+	Adapters       []HTTPAdapter      `yaml:"adapters,omitempty"`
+	RequestPatches []HTTPRequestPatch `yaml:"request_patches,omitempty"`
+}
+
+type HTTPAdapter struct {
 	Path string `yaml:"path"`
 	Kind string `yaml:"kind"`
 }
 
-type OpenClawRequestPatch struct {
+type HTTPRequestPatch struct {
 	Path           string         `yaml:"path"`
 	EnginePrefixes []string       `yaml:"engine_prefixes,omitempty"`
 	Body           map[string]any `yaml:"body,omitempty"`
