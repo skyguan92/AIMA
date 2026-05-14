@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -19,6 +20,7 @@ const maxTTSRequestBody = 16 << 20
 const (
 	adapterLiteTTSHTTP = "litetts_http"
 	adapterMooERGRPC   = "mooer_grpc"
+	adapterVoxCPMClone = "voxcpm_clone"
 )
 
 // RegisterRoutes returns a function that registers AIMA inference proxy routes.
@@ -74,8 +76,13 @@ func (d *Deps) handleTTS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if d.adapterFor(model, r.URL.Path) == adapterLiteTTSHTTP {
+	adapter := d.adapterFor(model, r.URL.Path)
+	if adapter == adapterLiteTTSHTTP {
 		d.handleLiteTTS(w, r, backend, raw)
+		return
+	}
+	if adapter == adapterVoxCPMClone && hasTTSReferenceAudio(raw) {
+		d.handleVoxCPMClone(w, r, backend, raw, body)
 		return
 	}
 
@@ -502,6 +509,122 @@ func (d *Deps) forwardTTSJSON(w http.ResponseWriter, r *http.Request, backend *B
 		return
 	}
 	writeBackendResponse(w, resp, respBody)
+}
+
+func (d *Deps) handleVoxCPMClone(w http.ResponseWriter, r *http.Request, backend *Backend, raw map[string]any, requestBody []byte) {
+	body, contentType, err := buildVoxCPMCloneRequest(raw)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	resp, respBody, err := d.callBackend(r, backend.Address, "/v1/clone", contentType, body)
+	if err != nil {
+		slog.Warn("aima proxy: VoxCPM clone backend request failed", "backend", backend.Address, "err", err)
+		http.Error(w, "backend unreachable", http.StatusBadGateway)
+		return
+	}
+
+	if r.URL.Path == "/v1/tts" && resp.StatusCode >= 200 && resp.StatusCode < 300 && isAudioContent(resp.Header.Get("Content-Type")) {
+		writeAudioJSON(w, respBody, requestBody, resp.Header.Get("Content-Type"), resp.StatusCode)
+		return
+	}
+	if r.URL.Path == "/v1/audio/speech" && resp.StatusCode >= 200 && resp.StatusCode < 300 && writeAudioFromJSON(w, respBody, requestBody, resp.StatusCode) {
+		return
+	}
+	writeBackendResponse(w, resp, respBody)
+}
+
+func buildVoxCPMCloneRequest(raw map[string]any) ([]byte, string, error) {
+	text := extractTTSText(raw)
+	if text == "" {
+		return nil, "", fmt.Errorf(`{"error":"missing or invalid input field"}`)
+	}
+	refAudio := firstTTSString(raw, "reference_audio", "ref_audio")
+	if refAudio == "" {
+		return nil, "", fmt.Errorf(`{"error":"missing or invalid reference_audio field"}`)
+	}
+	audio, filename, err := decodeReferenceAudio(refAudio)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("text", text); err != nil {
+		return nil, "", err
+	}
+	if refText := firstTTSString(raw, "reference_text", "ref_text"); refText != "" {
+		if err := writer.WriteField("ref_text", refText); err != nil {
+			return nil, "", err
+		}
+	}
+	for _, key := range []string{"response_format", "temperature", "cfg", "max_length"} {
+		if value, ok := raw[key]; ok {
+			if err := writer.WriteField(key, fmt.Sprint(value)); err != nil {
+				return nil, "", err
+			}
+		}
+	}
+	part, err := writer.CreateFormFile("ref_audio", filename)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := part.Write(audio); err != nil {
+		return nil, "", err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", err
+	}
+	return body.Bytes(), writer.FormDataContentType(), nil
+}
+
+func hasTTSReferenceAudio(raw map[string]any) bool {
+	return firstTTSString(raw, "reference_audio", "ref_audio") != ""
+}
+
+func firstTTSString(raw map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, _ := raw[key].(string); strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func decodeReferenceAudio(value string) ([]byte, string, error) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(strings.ToLower(value), "data:") {
+		return decodeReferenceAudioDataURL(value)
+	}
+	audio, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, "", fmt.Errorf(`{"error":"reference_audio must be a data URL or base64 audio"}`)
+	}
+	return audio, "reference.wav", nil
+}
+
+func decodeReferenceAudioDataURL(value string) ([]byte, string, error) {
+	comma := strings.IndexByte(value, ',')
+	if comma < 0 {
+		return nil, "", fmt.Errorf(`{"error":"invalid reference_audio data URL"}`)
+	}
+	meta := value[len("data:"):comma]
+	payload := value[comma+1:]
+	if !strings.Contains(strings.ToLower(meta), ";base64") {
+		return nil, "", fmt.Errorf(`{"error":"reference_audio data URL must be base64 encoded"}`)
+	}
+	audio, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, "", fmt.Errorf(`{"error":"invalid reference_audio base64 data"}`)
+	}
+
+	contentType := strings.TrimSpace(strings.Split(meta, ";")[0])
+	format := audioFormatFromContentType(contentType)
+	if format == "" {
+		format = "wav"
+	}
+	return audio, "reference." + format, nil
 }
 
 func (d *Deps) callBackend(r *http.Request, targetAddr, targetPath, contentType string, body []byte) (*http.Response, []byte, error) {

@@ -3,6 +3,7 @@ package inferencehttp
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -383,6 +384,145 @@ func TestHandleTTSJSONFallsBackToSpeechAndWrapsAudio(t *testing.T) {
 	}
 	if resp["format"] != "wav" {
 		t.Fatalf("format = %#v, want wav", resp["format"])
+	}
+}
+
+func TestHandleTTSVoxCPMCloneJSONRoutesToCloneAndWrapsAudio(t *testing.T) {
+	var (
+		gotPath        string
+		gotContentType string
+		gotFields      map[string][]string
+		gotRefAudio    []byte
+		gotRefName     string
+	)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotContentType = r.Header.Get("Content-Type")
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		gotFields = r.MultipartForm.Value
+		file, header, err := r.FormFile("ref_audio")
+		if err != nil {
+			t.Fatalf("FormFile ref_audio: %v", err)
+		}
+		defer file.Close()
+		gotRefName = header.Filename
+		gotRefAudio, err = io.ReadAll(file)
+		if err != nil {
+			t.Fatalf("ReadAll ref_audio: %v", err)
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write([]byte("RIFFclone"))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"voxcpm2": {
+				ModelName: "voxcpm2",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+			},
+		}},
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
+			"voxcpm2": {{Path: "/v1/tts", Kind: adapterVoxCPMClone}},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	reqBody := `{"model":"voxcpm2","text":"hello","response_format":"wav","reference_audio":"data:audio/wav;base64,UklGRg==","reference_text":"sample voice"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/tts", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/v1/clone" {
+		t.Fatalf("backend path = %q, want /v1/clone", gotPath)
+	}
+	if !strings.HasPrefix(gotContentType, "multipart/form-data; boundary=") {
+		t.Fatalf("content-type = %q, want multipart boundary", gotContentType)
+	}
+	field := func(name string) string {
+		if values := gotFields[name]; len(values) > 0 {
+			return values[0]
+		}
+		return ""
+	}
+	if field("text") != "hello" {
+		t.Fatalf("text field = %q, want hello", field("text"))
+	}
+	if field("ref_text") != "sample voice" {
+		t.Fatalf("ref_text field = %q, want sample voice", field("ref_text"))
+	}
+	if field("response_format") != "wav" {
+		t.Fatalf("response_format field = %q, want wav", field("response_format"))
+	}
+	if gotRefName != "reference.wav" {
+		t.Fatalf("ref_audio filename = %q, want reference.wav", gotRefName)
+	}
+	if string(gotRefAudio) != "RIFF" {
+		t.Fatalf("ref_audio = %q, want RIFF", string(gotRefAudio))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if resp["audio_base64"] != base64.StdEncoding.EncodeToString([]byte("RIFFclone")) {
+		t.Fatalf("audio_base64 = %#v, want encoded RIFFclone", resp["audio_base64"])
+	}
+	if resp["format"] != "wav" {
+		t.Fatalf("format = %#v, want wav", resp["format"])
+	}
+}
+
+func TestHandleTTSSpeechVoxCPMCloneReturnsAudio(t *testing.T) {
+	var gotPath string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write([]byte("RIFFclone"))
+	}))
+	defer backend.Close()
+
+	deps := &Deps{
+		Backends: staticBackendLister{backends: map[string]*Backend{
+			"voxcpm2": {
+				ModelName: "voxcpm2",
+				Address:   strings.TrimPrefix(backend.URL, "http://"),
+				Ready:     true,
+			},
+		}},
+		Catalog: staticCatalog{adapters: map[string][]Adapter{
+			"voxcpm2": {{Path: "/v1/audio/speech", Kind: adapterVoxCPMClone}},
+		}},
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(deps)(mux)
+
+	reqBody := `{"model":"voxcpm2","input":"hello","reference_audio":"UklGRg=="}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/v1/clone" {
+		t.Fatalf("backend path = %q, want /v1/clone", gotPath)
+	}
+	if got := w.Body.String(); got != "RIFFclone" {
+		t.Fatalf("body = %q, want RIFFclone", got)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "audio/wav" {
+		t.Fatalf("content-type = %q, want audio/wav", ct)
 	}
 }
 
