@@ -228,6 +228,7 @@ func buildModelDeps(ac *appContext, deps *mcp.ToolDeps,
 		if err != nil {
 			return nil, err
 		}
+		models = foldCatalogAliasModels(cat, models)
 		annotateModelsFromCatalog(models, cat)
 		return json.Marshal(models)
 	}
@@ -337,4 +338,49 @@ func buildModelDeps(ac *appContext, deps *mcp.ToolDeps,
 		}
 		return nil
 	}
+}
+
+func foldCatalogAliasModels(cat *knowledge.Catalog, models []*state.Model) []*state.Model {
+	if cat == nil || len(models) < 2 {
+		return models
+	}
+
+	canonicalPresent := make(map[string]bool)
+	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		name := strings.TrimSpace(m.Name)
+		canonical := strings.TrimSpace(cat.ResolveCatalogModelName(name))
+		if canonical == "" || !sameModelListName(name, canonical) {
+			continue
+		}
+		canonicalPresent[modelListNameKey(canonical)] = true
+	}
+	if len(canonicalPresent) == 0 {
+		return models
+	}
+
+	filtered := make([]*state.Model, 0, len(models))
+	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		name := strings.TrimSpace(m.Name)
+		canonical := strings.TrimSpace(cat.ResolveCatalogModelName(name))
+		canonicalKey := modelListNameKey(canonical)
+		if canonicalPresent[canonicalKey] && canonicalKey != modelListNameKey(name) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	return filtered
+}
+
+func sameModelListName(a, b string) bool {
+	return modelListNameKey(a) == modelListNameKey(b)
+}
+
+func modelListNameKey(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
 }

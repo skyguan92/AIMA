@@ -1004,6 +1004,15 @@ func (c *Catalog) resolveCatalogModelName(modelName string) string {
 	return trimmed
 }
 
+// ResolveCatalogModelName returns the catalog canonical model name for a user,
+// scan, or deployment model identifier. Unknown names are returned trimmed.
+func (c *Catalog) ResolveCatalogModelName(modelName string) string {
+	if c == nil {
+		return strings.TrimSpace(modelName)
+	}
+	return c.resolveCatalogModelName(modelName)
+}
+
 // DefaultEngine returns the fallback engine type from the catalog.
 // Priority: explicit default: true in metadata, then first wildcard gpu_arch engine.
 func (c *Catalog) DefaultEngine() string {

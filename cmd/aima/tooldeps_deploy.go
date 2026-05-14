@@ -153,40 +153,46 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 		}
 		deployName := knowledge.SanitizePodName(modelName + "-" + resolved.Engine)
 		suppressRecentlyDeleted := loadDeletedDeploymentSuppressor(ctx, db)
-		if existing, _ := findDeploymentStatus(ctx, deployName, suppressRecentlyDeleted, activeRt, rt, nativeRt, dockerRt); existing != nil {
-			if shouldReuseExistingDeployment(existing, engineType, slot, configOverrides) {
-				proxyServer.RegisterBackend(modelName, &proxy.Backend{
-					ModelName:           modelName,
-					UpstreamModel:       deploymentUpstreamModel(existing, upstreamModel),
-					EngineType:          resolved.Engine,
-					Address:             existing.Address,
-					Ready:               existing.Ready,
-					ParameterCount:      firstNonEmpty(existing.Labels[proxy.LabelParameterCount], catalogModelParameterCount(cat, modelName)),
-					ContextWindowTokens: firstPositiveInt(contextWindowFromStatus(existing), contextWindowFromResolvedConfig(resolved.Config)),
-				})
-				runtimeName := activeRt.Name()
-				if existing.Runtime != "" {
-					runtimeName = existing.Runtime
-				}
-				status := "deploying"
-				if existing.Ready {
-					status = "ready"
-				}
-				result := map[string]any{
-					"name":    deployName,
-					"model":   modelName,
-					"engine":  resolved.Engine,
-					"slot":    resolved.Slot,
-					"status":  status,
-					"phase":   existing.Phase,
-					"runtime": runtimeName,
-					"config":  resolved.Config,
-				}
-				if existing.Address != "" {
-					result["address"] = existing.Address
-				}
-				return json.Marshal(result)
+		if existing, err := findReusableDeployment(ctx, deployName, modelName, engineType, slot, configOverrides, suppressRecentlyDeleted, activeRt, rt, nativeRt, dockerRt); err != nil {
+			return nil, err
+		} else if existing != nil {
+			proxyServer.RegisterBackend(modelName, &proxy.Backend{
+				ModelName:           modelName,
+				UpstreamModel:       deploymentUpstreamModel(existing, upstreamModel),
+				EngineType:          resolved.Engine,
+				Address:             existing.Address,
+				Ready:               existing.Ready,
+				ParameterCount:      firstNonEmpty(existing.Labels[proxy.LabelParameterCount], catalogModelParameterCount(cat, modelName)),
+				ContextWindowTokens: firstPositiveInt(contextWindowFromStatus(existing), contextWindowFromResolvedConfig(resolved.Config)),
+			})
+			runtimeName := activeRt.Name()
+			if existing.Runtime != "" {
+				runtimeName = existing.Runtime
 			}
+			status := "deploying"
+			if existing.Ready {
+				status = "ready"
+			}
+			existingName := firstNonEmpty(existing.Name, deployName)
+			result := map[string]any{
+				"name":    existingName,
+				"model":   modelName,
+				"engine":  resolved.Engine,
+				"slot":    resolved.Slot,
+				"status":  status,
+				"phase":   existing.Phase,
+				"runtime": runtimeName,
+				"config":  resolved.Config,
+				"reused":  true,
+				"message": fmt.Sprintf("deployment %s already exists; returning current deployment", existingName),
+			}
+			if existing.Address != "" {
+				result["address"] = existing.Address
+			}
+			if err := setActiveLLMModelConfig(ctx, db, modelName); err != nil {
+				return nil, err
+			}
+			return json.Marshal(result)
 		}
 		// Pre-flight: ensure image is available in containerd for K3S deployments.
 		// Auto-import from Docker or pre-pull from registries if needed.
@@ -296,6 +302,9 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 			ParameterCount:      catalogModelParameterCount(cat, modelName),
 			ContextWindowTokens: contextWindowFromResolvedConfig(resolved.Config),
 		})
+		if err := setActiveLLMModelConfig(ctx, db, modelName); err != nil {
+			return nil, err
+		}
 		result := map[string]any{
 			"name":  deployName,
 			"model": modelName, "engine": resolved.Engine,
@@ -450,7 +459,10 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 	}
 
 	deps.DeployDelete = func(ctx context.Context, name string) error {
-		matches := findMatchingDeployments(ctx, name, nil, rt, nativeRt, dockerRt)
+		matches := findExactDeploymentNameMatches(ctx, name, nil, rt, nativeRt, dockerRt)
+		if len(matches) == 0 {
+			matches = findMatchingDeployments(ctx, name, nil, rt, nativeRt, dockerRt)
+		}
 		if len(matches) == 0 {
 			// Backward-compatible fallback: some UI paths pass the model name
 			// instead of the concrete deployment name.
@@ -462,6 +474,9 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 		}
 		if len(matches) == 0 {
 			return fmt.Errorf("deployment %q not found", name)
+		}
+		if len(matches) > 1 {
+			return fmt.Errorf("deployment %q is ambiguous; matches: %s; use an exact deployment name", name, summarizeMatchedDeployments(matches))
 		}
 
 		for _, match := range matches {
@@ -481,7 +496,6 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 		deletedAt := time.Now()
 		tombstoneKeys := []string{name}
 		seenKeys := map[string]struct{}{normalizeDeletedDeploymentKey(name): {}}
-		verificationQueries := []string{name}
 		rememberKey := func(key string) {
 			norm := normalizeDeletedDeploymentKey(key)
 			if norm == "" {
@@ -492,18 +506,6 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 			}
 			seenKeys[norm] = struct{}{}
 			tombstoneKeys = append(tombstoneKeys, key)
-		}
-		rememberVerificationQuery := func(key string) {
-			norm := normalizeDeletedDeploymentKey(key)
-			if norm == "" {
-				return
-			}
-			for _, existing := range verificationQueries {
-				if normalizeDeletedDeploymentKey(existing) == norm {
-					return
-				}
-			}
-			verificationQueries = append(verificationQueries, key)
 		}
 
 		for _, match := range matches {
@@ -516,14 +518,10 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 			rememberKey(match.Status.Name)
 			modelKey := deploymentModelKey(match.Status)
 			rememberKey(modelKey)
-			rememberVerificationQuery(match.Status.Name)
-			rememberVerificationQuery(modelKey)
 		}
 
-		for _, query := range verificationQueries {
-			if remaining := findMatchingDeployments(ctx, query, nil, rt, nativeRt, dockerRt); len(remaining) > 0 {
-				return fmt.Errorf("delete deployment %q: deployment still active after delete (%s)", name, summarizeMatchedDeployments(remaining))
-			}
+		if remaining := findExactDeploymentNameMatches(ctx, matches[0].Status.Name, nil, rt, nativeRt, dockerRt); len(remaining) > 0 {
+			return fmt.Errorf("delete deployment %q: deployment still active after delete (%s)", name, summarizeMatchedDeployments(remaining))
 		}
 
 		for _, key := range tombstoneKeys {
@@ -603,6 +601,17 @@ func buildDeployDeps(ac *appContext, deps *mcp.ToolDeps,
 		}
 		return logs, err
 	}
+}
+
+func setActiveLLMModelConfig(ctx context.Context, db *state.DB, modelName string) error {
+	modelName = strings.TrimSpace(modelName)
+	if db == nil || modelName == "" {
+		return nil
+	}
+	if err := db.SetConfig(ctx, "llm.model", modelName); err != nil {
+		return fmt.Errorf("update llm.model after deploy: %w", err)
+	}
+	return nil
 }
 
 func catalogModelParameterCount(cat *knowledge.Catalog, name string) string {

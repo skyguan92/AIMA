@@ -489,6 +489,88 @@ func assertNoDiscoveredModelEvent(t *testing.T, sub <-chan agent.ExplorerEvent, 
 	}
 }
 
+func TestListModelsFoldsCatalogAliasesIntoCanonicalModel(t *testing.T) {
+	ctx := context.Background()
+	db := mustOpenTooldepsDB(t)
+
+	for _, m := range []*state.Model{
+		{
+			ID:           "canonical",
+			Name:         "qwen3.6-35b-a3b",
+			Type:         "llm",
+			Path:         "/home/qujing/.aima/models/qwen3.6-35b-a3b",
+			Format:       "safetensors",
+			SizeBytes:    71903776776,
+			Quantization: "bf16",
+			Status:       "registered",
+		},
+		{
+			ID:           "alias",
+			Name:         "qwen3.6-35b-a3b-bf16",
+			Type:         "llm",
+			Path:         "/home/qujing/.aima/models/qwen3.6-35b-a3b-bf16",
+			Format:       "safetensors",
+			SizeBytes:    71903776776,
+			Quantization: "bf16",
+			Status:       "registered",
+		},
+		{
+			ID:           "awq",
+			Name:         "qwen3.6-35b-a3b-awq",
+			Type:         "llm",
+			Path:         "/home/qujing/.aima/models/qwen3.6-35b-a3b-awq",
+			Format:       "awq",
+			SizeBytes:    24481313587,
+			Quantization: "awq",
+			Status:       "registered",
+		},
+	} {
+		if err := db.InsertModel(ctx, m); err != nil {
+			t.Fatalf("InsertModel(%s): %v", m.Name, err)
+		}
+	}
+
+	deps := &mcp.ToolDeps{}
+	buildModelDeps(&appContext{
+		cat: &knowledge.Catalog{ModelAssets: []knowledge.ModelAsset{
+			{Metadata: knowledge.ModelMetadata{
+				Name:    "qwen3.6-35b-a3b",
+				Aliases: []string{"qwen3.6-35b-a3b-bf16", "qwen36-35b-a3b-bf16"},
+			}},
+		}},
+		db:      db,
+		dataDir: t.TempDir(),
+	}, deps, func(context.Context, string, func(string, string), func(int64, int64)) error {
+		return nil
+	}, NewDownloadTracker(filepath.Join(t.TempDir(), "downloads")))
+
+	data, err := deps.ListModels(ctx)
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	var listed []state.Model
+	if err := json.Unmarshal(data, &listed); err != nil {
+		t.Fatalf("Unmarshal list data: %v", err)
+	}
+
+	names := make(map[string]state.Model)
+	for _, m := range listed {
+		names[m.Name] = m
+	}
+	if _, ok := names["qwen3.6-35b-a3b-bf16"]; ok {
+		t.Fatalf("alias model was listed separately: %+v", listed)
+	}
+	if _, ok := names["qwen3.6-35b-a3b"]; !ok {
+		t.Fatalf("canonical model missing from list: %+v", listed)
+	}
+	if _, ok := names["qwen3.6-35b-a3b-awq"]; !ok {
+		t.Fatalf("distinct quantized variant missing from list: %+v", listed)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("listed %d models, want 2: %+v", len(listed), listed)
+	}
+}
+
 func writeScanModelFixture(dir string, weightSize int) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
