@@ -105,6 +105,13 @@ func buildAgentStatusPayload(ctx context.Context, llmClient *agent.OpenAIClient,
 	return json.Marshal(payload)
 }
 
+func buildFreshAgentStatusPayload(ctx context.Context, db *state.DB, llmClient *agent.OpenAIClient, localAPIKey, toolMode string, activeRuns int) (json.RawMessage, error) {
+	if db != nil && llmClient != nil {
+		reloadLLMSettings(ctx, db, llmClient, localAPIKey)
+	}
+	return buildAgentStatusPayload(ctx, llmClient, toolMode, activeRuns)
+}
+
 func loadLLMSettings(ctx context.Context, db *state.DB) llmSettings {
 	settings := llmSettings{
 		Endpoint: defaultLLMEndpoint(),

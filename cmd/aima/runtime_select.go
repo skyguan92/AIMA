@@ -245,6 +245,41 @@ func findMatchingDeployments(ctx context.Context, query string, suppress func(*r
 	return matches
 }
 
+func findExactDeploymentNameMatches(ctx context.Context, query string, suppress func(*runtime.DeploymentStatus) bool, rts ...runtime.Runtime) []matchedDeployment {
+	matches := make([]matchedDeployment, 0)
+	seen := make(map[string]struct{})
+	for _, rt := range uniqueRuntimes(rts...) {
+		if status, err := rt.Status(ctx, query); err == nil && status != nil && strings.EqualFold(status.Name, query) {
+			if suppress == nil || !suppress(status) {
+				key := fmt.Sprintf("%p|%s", rt, status.Name)
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					matches = append(matches, matchedDeployment{Runtime: rt, Status: status})
+				}
+			}
+		}
+		statuses, err := rt.List(ctx)
+		if err != nil {
+			continue
+		}
+		for _, status := range statuses {
+			if status == nil || !strings.EqualFold(status.Name, query) {
+				continue
+			}
+			if suppress != nil && suppress(status) {
+				continue
+			}
+			key := fmt.Sprintf("%p|%s", rt, status.Name)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			matches = append(matches, matchedDeployment{Runtime: rt, Status: status})
+		}
+	}
+	return matches
+}
+
 func summarizeMatchedDeployments(matches []matchedDeployment) string {
 	if len(matches) == 0 {
 		return ""
@@ -326,4 +361,26 @@ func shouldReuseExistingDeployment(existing *runtime.DeploymentStatus, engineTyp
 		return false
 	}
 	return len(configOverrides) == 0
+}
+
+func findReusableDeployment(ctx context.Context, deployName, modelName, engineType, slot string, configOverrides map[string]any, suppress func(*runtime.DeploymentStatus) bool, rts ...runtime.Runtime) (*runtime.DeploymentStatus, error) {
+	matches := findMatchingDeployments(ctx, modelName, suppress, rts...)
+	reusable := make([]matchedDeployment, 0, len(matches))
+	for _, match := range matches {
+		if shouldReuseExistingDeployment(match.Status, engineType, slot, configOverrides) {
+			reusable = append(reusable, match)
+		}
+	}
+	if len(reusable) > 1 {
+		return nil, fmt.Errorf("model %q already has multiple active deployments (%s); use an exact deployment name to undeploy the extra instance", modelName, summarizeMatchedDeployments(reusable))
+	}
+	if len(reusable) == 1 {
+		return reusable[0].Status, nil
+	}
+
+	existing, err := findDeploymentStatus(ctx, deployName, suppress, rts...)
+	if err != nil || !shouldReuseExistingDeployment(existing, engineType, slot, configOverrides) {
+		return nil, nil
+	}
+	return existing, nil
 }
