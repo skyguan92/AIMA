@@ -137,6 +137,13 @@ func (s *Service) RenewToken(ctx context.Context) (time.Time, error) {
 
 	var resp renewTokenResponse
 	url := endpoint + "/devices/" + state.DeviceID + "/renew-token"
+	if refreshed, ok, err := s.refreshTokenWithIdentity(ctx, endpoint, state); err == nil && ok {
+		state = refreshed
+		expires, _ := time.Parse(time.RFC3339, state.TokenExpiresAt)
+		return expires, nil
+	} else if err != nil && !isAuthError(err) {
+		s.logger.Warn("support identity token renewal failed; falling back to bearer renew", "error", err)
+	}
 	if err := s.doJSON(ctx, http.MethodPost, url, state.Token, nil, &resp); err != nil {
 		return time.Time{}, err
 	}
@@ -146,6 +153,13 @@ func (s *Service) RenewToken(ctx context.Context) (time.Time, error) {
 	if resp.TokenExpiresAt != "" {
 		state.TokenExpiresAt = resp.TokenExpiresAt
 	}
+	if resp.TokenKind != "" {
+		state.TokenKind = resp.TokenKind
+	}
+	if resp.TokenPersistence != "" {
+		state.TokenPersistence = resp.TokenPersistence
+	}
+	state.PersistentTokenFallbackEnabled = resp.PersistentTokenFallbackEnabled
 	if err := s.saveState(ctx, state); err != nil {
 		return time.Time{}, err
 	}
@@ -165,6 +179,15 @@ func (s *Service) ResetIdentity(ctx context.Context) error {
 		configStateRecoveryCode,
 		configStateReferralCode,
 		configStateTokenExpiresAt,
+		configStateTokenKind,
+		configStateTokenPersistence,
+		configStatePersistentToken,
+		configIdentityDeviceID,
+		configIdentityKeyID,
+		configIdentityPrivateKeyPEM,
+		configIdentityPublicKeyPEM,
+		configIdentityAlgorithm,
+		configIdentityStorageClass,
 		cloud.ConfigDeviceID,
 		cloud.ConfigDeviceToken,
 		cloud.ConfigRecoveryCode,
