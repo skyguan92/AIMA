@@ -1,0 +1,119 @@
+kind: engine_asset
+metadata:
+  name: lingbot-world-v2-w7900d
+  type: lingbot-world-v2
+  version: "2026-07-10"
+  supported_formats: [safetensors, pytorch]
+  supported_model_types: [video_gen]
+image:
+  # Local ROCm image validated on 8x AMD W7900D with the upstream LingBot-World-V2 repo.
+  name: lingbot-world-v2-w7900d
+  tag: "latest"
+  size_approx_mb: 62600
+  platforms: [linux/amd64]
+  distribution: local
+patterns:
+  - "^lingbot-world-v2-w7900d$"
+  - "lingbot-world-v2.*w7900d"
+  - "lingbot.*rocm"
+hardware:
+  gpu_arch: RDNA3
+  vram_min_mib: 49136
+  gpu_count_min: 8
+startup:
+  command:
+    - bash
+    - -lc
+    - >-
+      cd ${LINGBOT_SOURCE_DIR:-/disk/ssd1/lingbot-world-v2} &&
+      torchrun --nproc_per_node=8 generate.py --task i2v-A14B --infer_mode causal_fast
+      --size 480*832 --ckpt_dir {{.ModelPath}} --image examples/03/image.jpg
+      --action_path examples/03 --frame_num 45 --chunk_size 4 --offload_model false
+      --dit_fsdp --t5_fsdp --ulysses_size 8 --local_attn_size 18 --sink_size 6
+      --save_dir /outputs --prompt "A calm forward camera move through a bright indoor robotics lab."
+  env:
+    HSA_OVERRIDE_GFX_VERSION: "11.0.0"
+    HIP_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
+    CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
+    PYTORCH_ALLOC_CONF: expandable_segments:True
+    PYTORCH_HIP_ALLOC_CONF: expandable_segments:True
+    HF_HOME: /outputs/.cache/huggingface
+    TRANSFORMERS_CACHE: /outputs/.cache/huggingface
+  default_args:
+    dtype: bfloat16
+    frame_num: 45
+    chunk_size: 4
+    ulysses_size: 8
+    dit_fsdp: true
+    t5_fsdp: true
+    t5_cpu: false
+    offload_model: false
+    fsdp_sharding_strategy: FULL_SHARD
+    process_group_timeout_s: 3600
+    local_attn_size: 18
+    sink_size: 6
+  health_check:
+    timeout_s: 3600
+  warmup:
+    enabled: false
+  log_patterns:
+    phases:
+      - name: loading_model
+        pattern: "Loading checkpoint shards|Creating WanI2VCausal pipeline"
+        progress: 35
+      - name: generating
+        pattern: "0/3|0/5|Generating video"
+        progress: 70
+      - name: ready
+        pattern: "Finished.|END .* code=0"
+        progress: 100
+    errors:
+      - pattern: "OutOfMemoryError|HIP out of memory"
+        message: "W7900D LingBot profile needs FSDP FULL_SHARD, not SHARD_GRAD_OP."
+      - pattern: "Watchdog caught collective operation timeout|ProcessGroupNCCL"
+        message: "Increase process-group timeout or move rank0 VAE/video-save after distributed teardown."
+      - pattern: "ModuleNotFoundError|ImportError"
+        message: "LingBot runtime dependency is missing from the local ROCm image."
+api:
+  protocol: script
+  base_path: ""
+amplifier:
+  features:
+    - rocm_inference
+    - multi_gpu_inference
+    - fsdp_full_shard
+    - ulysses_sequence_parallelism
+    - no_cpu_offload
+    - image_to_video_generation
+  performance_gain: "Runs LingBot-World-V2 causal-fast I2V on 8x W7900D without CPU offload; FULL_SHARD avoids the 48GB/card FSDP unshard OOM seen with SHARD_GRAD_OP."
+  resource_expansion:
+    cpu_offload: false
+    ssd_offload: false
+    npu_offload: false
+  performance_multiplier: 8.0
+  extends_resource_boundary: true
+  effective_vram_multiplier: 8.0
+partition_hints:
+  min_gpu_memory_mib: 49136
+  min_gpu_count: 8
+  recommended_gpu_cores_percent: 100
+time_constraints:
+  cold_start_s: [600, 900]
+  generation_per_45_frames_s: [1350, 1500]
+power_constraints:
+  typical_draw_watts: [180, 260]
+runtime:
+  default: "container"
+  platform_recommendations:
+    linux/amd64: "container"
+notes: |
+  Validated 2026-07-10 on host w7900d / xinwei, 8x AMD W7900D 48GB.
+
+  Required runtime source adjustments:
+  - wan/distributed/fsdp.py: use ShardingStrategy.FULL_SHARD. The upstream SHARD_GRAD_OP path reached ~46GB/card and failed a 872MiB FSDP unshard allocation.
+  - generate.py: set init_process_group timeout to at least 3600s for longer runs because rank0 VAE decode/video save can leave other ranks waiting in a collective longer than the PyTorch 600s default.
+
+  Smoke evidence:
+  - 480x832 request produced 832x464 H.264 MP4 at 16fps.
+  - 13 frames: 755s end to end, output 0.81s video.
+  - 45 frames: 1420s end to end, output 2.81s video.

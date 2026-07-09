@@ -36,3 +36,38 @@ variants:
     expected_performance:
       disk_mib: 84000
       notes: "GB10 single-GPU smoke profile for the upstream causal-fast I2V script. Uses 480x832, frame_num=13, T5 GPU placement with CPU offload, and the upstream causal-fast sampler. Upstream recommends multi-GPU FSDP/Ulysses for full 361-frame generation; single-GB10 latency and memory ceiling must be validated per device."
+  - name: lingbot-world-v2-14b-causal-fast-w7900d-fsdp8-ulysses8
+    hardware:
+      gpu_arch: RDNA3
+      vram_min_mib: 49136
+      gpu_count_min: 8
+      unified_memory: false
+    engine: lingbot-world-v2-w7900d
+    source:
+      type: modelscope
+      repo: Robbyant/lingbot-world-v2-14b-causal-fast
+    default_config:
+      dtype: bfloat16
+      size: "480*832"
+      frame_num: 45
+      chunk_size: 4
+      offload_model: false
+      t5_cpu: false
+      dit_fsdp: true
+      t5_fsdp: true
+      ulysses_size: 8
+      fsdp_sharding_strategy: FULL_SHARD
+      process_group_timeout_s: 3600
+      local_attn_size: 18
+      sink_size: 6
+    expected_performance:
+      disk_mib: 84000
+      total_time_s: [1350, 1500]
+      sampling_loop_s: [55, 65]
+      output:
+        width: 832
+        height: 464
+        fps: 16
+        frames: 45
+        duration_s: 2.81
+      notes: "Validated 2026-07-10 on 8x AMD W7900D 48GB without CPU offload. Use DiT/T5 FSDP plus Ulysses-8 sequence parallelism. The key fix versus the initial OOM is FSDP FULL_SHARD; SHARD_GRAD_OP peaked near the 48GB/card limit and failed during block unshard."
