@@ -1,0 +1,38 @@
+kind: model_asset
+metadata:
+  name: lingbot-world-v2-14b-causal-fast
+  type: video_gen
+  family: lingbot-world
+  parameter_count: "14B"
+  released_at: "2026-07-09"
+  aliases:
+    - Robbyant/lingbot-world-v2-14b-causal-fast
+    - robbyant/lingbot-world-v2-14b-causal-fast
+    - LingBot-World-V2
+storage:
+  formats: [safetensors, pytorch]
+  default_path_pattern: "{{.DataDir}}/models/{{.Name}}"
+  sources:
+    - type: modelscope
+      repo: Robbyant/lingbot-world-v2-14b-causal-fast
+      format: safetensors
+    - type: huggingface
+      repo: robbyant/lingbot-world-v2-14b-causal-fast
+      format: safetensors
+    - type: local_path
+      path: ""
+variants:
+  - name: lingbot-world-v2-14b-causal-fast-gb10-smoke
+    hardware:
+      gpu_arch: Blackwell
+      vram_min_mib: 65536
+      gpu_count_min: 1
+      unified_memory: true
+    engine: lingbot-world-v2-gb10
+    source:
+      type: modelscope
+      repo: Robbyant/lingbot-world-v2-14b-causal-fast
+    default_config: {}
+    expected_performance:
+      disk_mib: 84000
+      notes: "GB10 single-GPU smoke profile for the upstream causal-fast I2V script. Uses 480x832, frame_num=13, T5 GPU placement with CPU offload, and the upstream causal-fast sampler. Upstream recommends multi-GPU FSDP/Ulysses for full 361-frame generation; single-GB10 latency and memory ceiling must be validated per device."
